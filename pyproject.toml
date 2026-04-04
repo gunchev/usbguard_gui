@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "usbguard_gui"
-version = "0.0.6"
+version = "0.0.7"
 description = "KDE/Qt system tray GUI for USBGuard — respond to USB device insertions with Allow, Block, or Reject."
 readme = "README.md"
 license = "GPL-2.0-or-later"

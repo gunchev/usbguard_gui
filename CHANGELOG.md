@@ -1,3 +1,10 @@
+## 0.0.7 — 2026-04-04
+
+### Changes since v0.0.6
+
+- 1e4fc6d rpm: install XDG autostart entry for session auto-start
+- e983a43 Start 0.0.7-dev
+
 ## 0.0.6 — 2026-04-04
 
 ### Changes since v0.0.5
