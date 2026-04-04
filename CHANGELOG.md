@@ -1,3 +1,12 @@
+## 0.0.4 — 2026-04-04
+
+### Changes since v0.0.3
+
+- 28396f0 Add whl_local/.gitignore
+- 49fbc4d rpm: fix %preun, drop %postun and unused systemd macros
+- 7b50b6f rpm: force-enable usbguard-dbus.service on install
+- f40e501 Start 0.0.4-dev
+
 ## 0.0.3 — 2026-04-04
 
 ### Changes since v0.0.2
