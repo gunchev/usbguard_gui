@@ -17,4 +17,4 @@ jobs:
     - name: Setup Podman and Run on Fedora 43
       run: |
         sudo apt-get update && sudo apt-get install -y podman
-        podman run --rm -v "$PWD:/work" -w "/work" quay.io/fedora/fedora:latest make check
+        podman run --rm -v "$PWD:/work" -w "/work" fedorapython/fedora-python-tox make check
