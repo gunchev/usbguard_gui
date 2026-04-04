@@ -1,3 +1,9 @@
+## 0.0.9 — 2026-04-05
+
+### Changes since v0.0.8
+
+- f604cac dynamic versioning from __init__.py (by big-pickle/OpenCode)
+
 ## 0.0.8 — 2026-04-05
 
 ### Changes since v0.0.7
