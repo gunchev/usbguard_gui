@@ -44,7 +44,10 @@ class USBGuardTrayApp:
         self._connect_signals()
 
     def _setup_tray(self) -> None:
-        self._tray = QSystemTrayIcon(QIcon.fromTheme("drive-removable-media"), self._app)
+        self._tray = QSystemTrayIcon(
+            QIcon.fromTheme("usbguard_gui", QIcon.fromTheme("drive-removable-media")),
+            self._app,
+        )
         self._tray.setToolTip("USBGuard GUI — connecting...")
 
         menu = QMenu()
