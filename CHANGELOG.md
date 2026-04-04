@@ -1,3 +1,10 @@
+## 0.0.2 — 2026-04-04
+
+### Changes since v0.0.1
+
+- b2408ca Add RPM packaging
+- 430cd16 Start 0.0.2-dev
+
 ## 0.0.1 — 2026-04-04
 
 ### Changes since beginning
