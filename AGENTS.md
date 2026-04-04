@@ -15,15 +15,15 @@ KDE/Qt system tray GUI for USBGuard — responds to USB device insertions with A
 
 ### Using uv (recommended)
 ```bash
-uv run usbguard_gui              # run the app
-uv run python -m usbguard_gui     # alternative entry point
-uv run pytest                     # run all tests
-uv run pytest tests/test_file.py  # run single test file
-uv run pytest -k test_name       # run single test by name
+uv run usbguard_gui                                 # run the app
+uv run python -m usbguard_gui                       # alternative entry point
+uv run pytest                                       # run all tests
+uv run pytest tests/test_file.py                    # run single test file
+uv run pytest -k test_name                          # run single test by name
 uv run pytest -v --cov . --cov-report=term-missing  # coverage
-uv run ruff check src/ tests/     # lint
-uv run ruff format src/ tests/    # format
-uv run tox                        # test across Python versions
+uv run ruff check src/ tests/                       # lint
+uv run ruff format src/ tests/                      # format
+uv run tox                                          # test across Python versions
 ```
 
 ### Using Make
