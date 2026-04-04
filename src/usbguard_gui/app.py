@@ -39,6 +39,14 @@ def _app_icon() -> QIcon:
     return QIcon.fromTheme("drive-removable-media")
 
 
+def _enum_name(enum: type, value: int, fallback: str = "?") -> str:
+    """Return the name of an enum member by value, or a fallback string."""
+    try:
+        return enum(value).name
+    except ValueError:
+        return fallback
+
+
 # Seconds to wait before locking the screen for HID devices
 HID_LOCK_DELAY = 3
 # Base seconds between reconnection attempts (will be exponentially increased)
@@ -128,9 +136,9 @@ class USBGuardTrayApp:
                 "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
                 device_id,
                 event,
-                PresenceEvent(event).name if event in PresenceEvent._value2member_map_ else "?",
+                _enum_name(PresenceEvent, event),
                 target,
-                DeviceTarget(target).name if target in DeviceTarget._value2member_map_ else "?",
+                _enum_name(DeviceTarget, target),
                 device_rule,
                 attributes,
             )
@@ -179,8 +187,8 @@ class USBGuardTrayApp:
             log.debug(
                 "DevicePolicyChanged: id=%d %s->%s",
                 device_id,
-                DeviceTarget(target_old).name if target_old in DeviceTarget._value2member_map_ else target_old,
-                DeviceTarget(target_new).name if target_new in DeviceTarget._value2member_map_ else target_new,
+                _enum_name(DeviceTarget, target_old, fallback=str(target_old)),
+                _enum_name(DeviceTarget, target_new, fallback=str(target_new)),
             )
             if target_new == int(DeviceTarget.ALLOW):
                 # Device was allowed by a permanent rule after the initial block —

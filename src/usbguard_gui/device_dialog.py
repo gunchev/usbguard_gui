@@ -39,7 +39,6 @@ class DeviceActionDialog(QDialog):
 
         self.setWindowTitle("New USB Device")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMinimumWidth(400)
 
         self._build_ui()

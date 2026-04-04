@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QTableView,
     QToolBar,
     QVBoxLayout,
@@ -191,13 +192,25 @@ class DeviceListWindow(QMainWindow):
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
         if target == DeviceTarget.ALLOW and not permanent and device.hash:
-            # Remove any permanent allow rule for this device so it is not
-            # re-allowed automatically on the next plug-in.
             for rule_id, rule_str in self._client.list_rules():
                 parsed = parse_device_rule(rule_str)
-                if parsed["rule"] == "allow" and parsed["hash"] == device.hash:
-                    self._client.remove_rule(rule_id)
-        self._client.apply_device_policy(device.number, target, permanent)
+                if (
+                    parsed["rule"] == "allow"
+                    and parsed["hash"] == device.hash
+                    and not self._client.remove_rule(rule_id)
+                ):
+                    QMessageBox.warning(
+                        self,
+                        "Failed to Remove Rule",
+                        f"Could not remove permanent allow rule for {device.name or device.id}.",
+                    )
+                    return
+        if not self._client.apply_device_policy(device.number, target, permanent):
+            QMessageBox.warning(
+                self,
+                "Failed to Apply Policy",
+                f"Could not apply {target.name.lower()} policy to {device.name or device.id}.",
+            )
         self.refresh()
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 
 from dasbus.connection import SessionMessageBus
@@ -44,9 +43,12 @@ class ScreensaverMonitor(QObject):
     def lock(self) -> None:
         """Lock the screen."""
         if not self._proxy:
+            log.warning("Cannot lock screen: screensaver proxy not available")
             return
-        with contextlib.suppress(DBusError):
+        try:
             self._proxy.Lock()
+        except DBusError as e:
+            log.warning("Failed to lock screen: %s", e)
 
     def _on_active_changed(self, active: bool) -> None:
         self._active = bool(active)
