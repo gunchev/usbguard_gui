@@ -17,18 +17,17 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from usbguard_gui.device import Device, DeviceTarget
+from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
 
 if TYPE_CHECKING:
     from usbguard_gui.dbus_client import USBGuardClient
 
 COLUMNS = ["#", "Status", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type", "Connection"]
 
-_STATUS_COLORS = {
-    "allow": QColor(0, 80, 0),
-    "block": QColor(80, 40, 0),
-    "reject": QColor(80, 0, 0),
-}
+_COLOR_ALLOW_PERMANENT = QColor(0, 80, 0)
+_COLOR_ALLOW_TEMPORARY = QColor(0, 50, 100)
+_COLOR_BLOCK = QColor(80, 40, 0)
+_COLOR_REJECT = QColor(80, 0, 0)
 
 
 class DeviceTableModel(QAbstractTableModel):
@@ -37,15 +36,29 @@ class DeviceTableModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._devices: list[Device] = []
+        self._permanent_allow_hashes: set[str] = set()
 
-    def set_devices(self, devices: list[Device]) -> None:
+    def set_devices(self, devices: list[Device], permanent_allow_hashes: set[str]) -> None:
         self.beginResetModel()
         self._devices = list(devices)
+        self._permanent_allow_hashes = permanent_allow_hashes
         self.endResetModel()
 
     def device_at(self, row: int) -> Device | None:
         if 0 <= row < len(self._devices):
             return self._devices[row]
+        return None
+
+    def _bg_color(self, device: Device) -> QColor | None:
+        rule = device.rule.lower()
+        if rule == "allow":
+            if device.hash and device.hash in self._permanent_allow_hashes:
+                return _COLOR_ALLOW_PERMANENT
+            return _COLOR_ALLOW_TEMPORARY
+        if rule == "block":
+            return _COLOR_BLOCK
+        if rule == "reject":
+            return _COLOR_REJECT
         return None
 
     # --- QAbstractTableModel interface ---
@@ -70,8 +83,8 @@ class DeviceTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return self._display_data(device, col)
         if role == Qt.ItemDataRole.BackgroundRole:
-            return _STATUS_COLORS.get(device.rule.lower())
-        if role == Qt.ItemDataRole.ForegroundRole and device.rule.lower() in _STATUS_COLORS:
+            return self._bg_color(device)
+        if role == Qt.ItemDataRole.ForegroundRole and self._bg_color(device) is not None:
             return QColor(Qt.GlobalColor.white)
         return None
 
@@ -141,7 +154,8 @@ class DeviceListWindow(QMainWindow):
     def refresh(self) -> None:
         """Reload the device list from USBGuard."""
         devices = self._client.list_devices()
-        self._model.set_devices(devices)
+        permanent_allow_hashes = _permanent_allow_hashes(self._client.list_rules())
+        self._model.set_devices(devices, permanent_allow_hashes)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -168,3 +182,13 @@ class DeviceListWindow(QMainWindow):
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
         self._client.apply_device_policy(device.number, target, permanent)
+
+
+def _permanent_allow_hashes(rules: list[tuple[int, str]]) -> set[str]:
+    """Return the set of device hashes that have a permanent allow rule."""
+    hashes: set[str] = set()
+    for _, rule_str in rules:
+        parsed = parse_device_rule(rule_str)
+        if parsed["rule"] == "allow" and parsed["hash"]:
+            hashes.add(parsed["hash"])
+    return hashes
