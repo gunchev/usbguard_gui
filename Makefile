@@ -99,7 +99,7 @@ srpm: rpmprep
 .PHONY: release
 release:
 	@[ -n "$(V)" ] || { echo "Error: V is not set.  Usage: make V=X.Y.Z release"; exit 1; }
-	"$(TOP)/release.py" "$(V)"
+	@uv run python3 -u release.py "$(V)"
 
 
 .PHONY: clean

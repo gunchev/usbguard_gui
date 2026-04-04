@@ -63,7 +63,7 @@ def get_last_tag() -> str | None:
 
 def _default_build_impl(top: pathlib.Path) -> None:
     """Default build implementation."""
-    subprocess.run(["python3", "-m", "build"], check=True, cwd=str(top))
+    subprocess.run(["uv", "build"], check=True, cwd=str(top))
 
 
 def release(
@@ -127,8 +127,13 @@ def release(
 
 
 def main() -> None:
+    """The main and only"""
     if len(sys.argv) != 2:
         _fail(f"Usage: python3 {sys.argv[0]} X.Y.Z")
 
     version = sys.argv[1]
     release(version)
+
+
+if __name__ == "__main__":
+    main()
