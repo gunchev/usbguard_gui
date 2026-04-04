@@ -66,7 +66,7 @@ build:
 .PHONY: run
 run:
 	uv sync --group dev
-	uv run usbguard_gui
+	uv run python -m usbguard_gui
 
 
 RPM_VER ?= $(shell git tag --sort=-version:refname | grep -E '^v?[0-9]' | head -1 | sed 's/^v//')
