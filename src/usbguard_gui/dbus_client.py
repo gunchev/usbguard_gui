@@ -18,6 +18,21 @@ USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
 USBGUARD_DEVICES_IFACE = "org.usbguard.Devices1"
 USBGUARD_POLICY_IFACE = "org.usbguard.Policy1"
 
+# D-Bus error names that indicate a permission problem, not a lost connection.
+_PERMISSION_ERRORS = frozenset(
+    [
+        "org.freedesktop.DBus.Error.AccessDenied",
+        "org.freedesktop.PolicyKit1.Error.NotAuthorized",
+        "org.usbguard.Error.PermissionDenied",
+    ]
+)
+
+
+def _is_permission_error(e: DBusError) -> bool:
+    name = getattr(e, "error_name", "") or ""
+    msg = str(e)
+    return name in _PERMISSION_ERRORS or "Not authorized" in msg or "AccessDenied" in msg
+
 
 class USBGuardClient(QObject):
     """D-Bus client for the USBGuard daemon.
@@ -46,6 +61,7 @@ class USBGuardClient(QObject):
 
     def connect(self) -> bool:
         """Connect to the USBGuard D-Bus service. Returns True on success."""
+        self._unsubscribe_signals()
         try:
             self._devices_proxy = self._bus.get_proxy(USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH)
             self._policy_proxy = self._bus.get_proxy(USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH)
@@ -66,6 +82,16 @@ class USBGuardClient(QObject):
             return
         self._devices_proxy.DevicePresenceChanged.connect(self._on_device_presence_changed)
         self._devices_proxy.DevicePolicyChanged.connect(self._on_device_policy_changed)
+
+    def _unsubscribe_signals(self) -> None:
+        """Unsubscribe from D-Bus signals on the current proxy, if any."""
+        if self._devices_proxy is None:
+            return
+        try:
+            self._devices_proxy.DevicePresenceChanged.disconnect(self._on_device_presence_changed)
+            self._devices_proxy.DevicePolicyChanged.disconnect(self._on_device_policy_changed)
+        except Exception:
+            pass
 
     def _on_device_presence_changed(
         self,
@@ -99,7 +125,8 @@ class USBGuardClient(QObject):
             return [Device.from_dbus(int(dev_id), str(rule_str)) for dev_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list devices: %s", e)
-            self._handle_disconnect()
+            if not _is_permission_error(e):
+                self._handle_disconnect()
             return []
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> int | None:
@@ -111,8 +138,11 @@ class USBGuardClient(QObject):
             log.info("Applied %s to device %d (permanent=%s) → rule %d", target.name, device_id, permanent, rule_id)
             return int(rule_id)
         except DBusError as e:
-            log.error("Failed to apply policy to device %d: %s", device_id, e)
-            self._handle_disconnect()
+            if _is_permission_error(e):
+                log.error("Not authorized to apply policy to device %d — install polkit rule", device_id)
+            else:
+                log.error("Failed to apply policy to device %d: %s", device_id, e)
+                self._handle_disconnect()
             return None
 
     def list_rules(self, label: str = "") -> list[tuple[int, str]]:
@@ -124,7 +154,8 @@ class USBGuardClient(QObject):
             return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list rules: %s", e)
-            self._handle_disconnect()
+            if not _is_permission_error(e):
+                self._handle_disconnect()
             return []
 
     def _handle_disconnect(self) -> None:

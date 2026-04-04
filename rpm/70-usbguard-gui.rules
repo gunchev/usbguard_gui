@@ -1,0 +1,27 @@
+// Polkit rules for usbguard-gui
+//
+// Allows users in the "wheel" group (i.e. local admins) to manage USB device
+// authorization via the USBGuard D-Bus interface without a password prompt.
+//
+// Install to: /etc/polkit-1/rules.d/70-usbguard-gui.rules
+//
+// To allow ALL local active console sessions (less restrictive):
+//   replace subject.isInGroup("wheel")
+//   with    subject.active == true && subject.local == true
+
+polkit.addRule(function(action, subject) {
+    var usbguardActions = [
+        "org.usbguard.Devices1.applyDevicePolicy",
+        "org.usbguard.Devices1.listDevices",
+        "org.usbguard.Policy1.listRules",
+        "org.usbguard.Policy1.appendRule",
+        "org.usbguard.Policy1.removeRule",
+        "org.usbguard.Policy1.getRule",
+    ];
+    if (usbguardActions.indexOf(action.id) !== -1 &&
+            subject.active == true &&
+            subject.local == true &&
+            subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
