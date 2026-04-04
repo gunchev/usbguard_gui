@@ -1,3 +1,21 @@
+## 0.0.10 — 2026-04-05
+
+### Changes since v0.0.9
+
+- 3a94720 fix: release.py
+- 5b72884 Configure ruff to prefer compact formatting: (by Qwen3.6 Plus Free)
+- 059df0f Remove empty file.
+- 7af2f9c Fix medium-priority issues: (by Qwen3.6 Plus Free)
+- 025d8a1 Fix high-priority issues: (by Qwen3.6 Plus Free)
+- 2d8f605 Fix critical bugs: by Qwen3.6 Plus Free - release.py build_impl crash - HID stale device reference - dialog WA_DeleteOnClose access
+- ef68b4c Fix TODO.md: add trailing newline
+- 3d586a3 Add TODO.md with circuit breaker pattern suggestion for future improvements
+- 805d07d Improve error handling: Add logging, exponential backoff, and enhanced error context
+- f4e668d Fix bug in device.py, add type hints, add __all__ exports, add pyqt6-stubs
+- 4cd31a5 expand dbus_client tests to 100% coverage (by big-pickle/OpenCode)
+- 3ce112f refactor release.py for testability, add comprehensive tests (by big-pickle/OpenCode)
+- 81a1213 make CLAUDE.md a redirect to AGENTS.md
+
 ## 0.0.9 — 2026-04-05
 
 ### Changes since v0.0.8
