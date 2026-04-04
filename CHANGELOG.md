@@ -1,3 +1,10 @@
+## 0.0.5 — 2026-04-04
+
+### Changes since v0.0.4
+
+- 96bdf78 app: use usbguard_gui theme icon with fallback
+- 8c2b9d7 Start 0.0.5-dev
+
 ## 0.0.4 — 2026-04-04
 
 ### Changes since v0.0.3
