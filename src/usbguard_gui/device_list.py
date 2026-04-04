@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtGui import QAction, QColor, QPoint
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -157,7 +157,7 @@ class DeviceListWindow(QMainWindow):
         permanent_allow_hashes = _permanent_allow_hashes(self._client.list_rules())
         self._model.set_devices(devices, permanent_allow_hashes)
 
-    def showEvent(self, event) -> None:
+    def showEvent(self, event: object) -> None:
         super().showEvent(event)
         self.refresh()
 
@@ -167,7 +167,7 @@ class DeviceListWindow(QMainWindow):
             return None
         return self._model.device_at(indexes[0].row())
 
-    def _show_context_menu(self, pos) -> None:
+    def _show_context_menu(self, pos: QPoint) -> None:
         device = self._selected_device()
         if not device:
             return

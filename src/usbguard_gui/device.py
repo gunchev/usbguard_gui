@@ -157,7 +157,7 @@ def _extract_interfaces(rule: str) -> list[str]:
     return []
 
 
-def parse_device_rule(rule_string: str) -> dict:
+def parse_device_rule(rule_string: str) -> dict[str, str | list[str]]:
     """Parse a USBGuard rule string into a dict suitable for Device construction.
 
     Example rule:
@@ -172,7 +172,7 @@ def parse_device_rule(rule_string: str) -> dict:
 
     return {
         "rule": rule_target,
-        "id": _extract_field(rest, "id") or _extract_field(rest, "id"),
+        "id": _extract_field(rest, "id"),
         "serial": _extract_field(rest, "serial"),
         "name": _extract_field(rest, "name"),
         "hash": _extract_field(rest, "hash"),

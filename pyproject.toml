@@ -42,6 +42,7 @@ dev = [
     "pytest-cov",
     "tox",
     "ruff",
+    "pyqt6-stubs>=20250824",
 ]
 
 [project.scripts]
