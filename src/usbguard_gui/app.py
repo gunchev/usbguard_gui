@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QAction, QIcon
@@ -17,6 +18,24 @@ from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
 
 log = logging.getLogger(__name__)
+
+# SVG bundled in the source tree for dev-mode runs (make run).
+_DEV_SVG = Path(__file__).parent.parent.parent / "rpm" / "usbguard_gui.svg"
+
+
+def _app_icon() -> QIcon:
+    """Return the application icon.
+
+    Installed: picked up from the hicolor theme (put there by the RPM).
+    Dev (make run): loaded directly from rpm/usbguard_gui.svg in the source tree.
+    Fallback: generic drive-removable-media theme icon.
+    """
+    icon = QIcon.fromTheme("usbguard_gui")
+    if not icon.isNull():
+        return icon
+    if _DEV_SVG.exists():
+        return QIcon(str(_DEV_SVG))
+    return QIcon.fromTheme("drive-removable-media")
 
 # Seconds to wait before locking the screen for HID devices
 HID_LOCK_DELAY = 3
@@ -44,10 +63,7 @@ class USBGuardTrayApp:
         self._connect_signals()
 
     def _setup_tray(self) -> None:
-        self._tray = QSystemTrayIcon(
-            QIcon.fromTheme("usbguard_gui", QIcon.fromTheme("drive-removable-media")),
-            self._app,
-        )
+        self._tray = QSystemTrayIcon(_app_icon(), self._app)
         self._tray.setToolTip("USBGuard GUI — connecting...")
 
         menu = QMenu()
