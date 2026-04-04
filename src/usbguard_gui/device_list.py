@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 COLUMNS = ["#", "Status", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type", "Connection"]
 
 _STATUS_COLORS = {
-    "allow": QColor(200, 255, 200),
-    "block": QColor(255, 220, 200),
-    "reject": QColor(255, 180, 180),
+    "allow": QColor(0, 80, 0),
+    "block": QColor(80, 40, 0),
+    "reject": QColor(80, 0, 0),
 }
 
 
@@ -71,6 +71,8 @@ class DeviceTableModel(QAbstractTableModel):
             return self._display_data(device, col)
         if role == Qt.ItemDataRole.BackgroundRole:
             return _STATUS_COLORS.get(device.rule.lower())
+        if role == Qt.ItemDataRole.ForegroundRole and device.rule.lower() in _STATUS_COLORS:
+            return QColor(Qt.GlobalColor.white)
         return None
 
     @staticmethod
