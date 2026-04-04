@@ -67,6 +67,7 @@ class USBGuardTrayApp:
 
     def _connect_signals(self) -> None:
         self._client.device_presence_changed.connect(self._on_device_presence_changed)
+        self._client.device_policy_changed.connect(self._on_device_policy_changed)
         self._client.connection_changed.connect(self._on_connection_changed)
         self._screensaver.active_changed.connect(self._on_screensaver_changed)
 
@@ -138,6 +139,24 @@ class USBGuardTrayApp:
             return
 
         self._show_device_dialog(device)
+
+    def _on_device_policy_changed(
+        self, device_id: int, target_old: int, target_new: int, device_rule: str, rule_id: int, attributes: dict
+    ) -> None:
+        log.debug(
+            "DevicePolicyChanged: id=%d %s->%s",
+            device_id,
+            DeviceTarget(target_old).name if target_old in DeviceTarget._value2member_map_ else target_old,
+            DeviceTarget(target_new).name if target_new in DeviceTarget._value2member_map_ else target_new,
+        )
+        if target_new == int(DeviceTarget.ALLOW):
+            # Device was allowed by a permanent rule after the initial block —
+            # dismiss any dialog that opened on the INSERT event.
+            dialog = self._open_dialogs.pop(device_id, None)
+            if dialog:
+                log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
+                dialog.close()
+            self._screensaver_pending_devices.discard(device_id)
 
     def _handle_hid_device(self, device: Device) -> None:
         """Handle HID device insertion: warn user and lock screen."""
