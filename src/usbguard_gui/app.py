@@ -100,13 +100,15 @@ class USBGuardTrayApp:
                 dialog.close()
             return
 
-        if event not in (PresenceEvent.INSERT, PresenceEvent.PRESENT, PresenceEvent.UPDATE):
+        # Only react to new insertions — PRESENT fires for devices already
+        # connected at daemon start, UPDATE fires on policy changes; neither
+        # should spawn a dialog.
+        if event != PresenceEvent.INSERT:
             return
 
-        device = Device.from_dbus(device_id, device_rule)
-
-        # Only prompt for blocked devices
-        if device.is_allowed():
+        # Use the target from the signal directly — more reliable than
+        # parsing the rule string, which may not reflect the applied target.
+        if target == int(DeviceTarget.ALLOW):
             return
 
         # If screensaver is active, defer
@@ -114,6 +116,8 @@ class USBGuardTrayApp:
             self._screensaver_pending_devices.add(device_id)
             log.info("Device %d inserted while screen locked, deferring", device_id)
             return
+
+        device = Device.from_dbus(device_id, device_rule)
 
         # HID security: lock screen first, then allow after authentication
         if device.is_hid():
