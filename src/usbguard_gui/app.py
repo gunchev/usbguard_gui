@@ -93,6 +93,17 @@ class USBGuardTrayApp:
     def _on_device_presence_changed(
         self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
     ) -> None:
+        log.debug(
+            "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
+            device_id,
+            event,
+            PresenceEvent(event).name if event in PresenceEvent._value2member_map_ else "?",
+            target,
+            DeviceTarget(target).name if target in DeviceTarget._value2member_map_ else "?",
+            device_rule,
+            attributes,
+        )
+
         if event == PresenceEvent.REMOVE:
             # Close any open dialog for this device
             dialog = self._open_dialogs.pop(device_id, None)
@@ -104,11 +115,13 @@ class USBGuardTrayApp:
         # connected at daemon start, UPDATE fires on policy changes; neither
         # should spawn a dialog.
         if event != PresenceEvent.INSERT:
+            log.debug("DevicePresenceChanged: id=%d skipped (not INSERT)", device_id)
             return
 
         # Use the target from the signal directly — more reliable than
         # parsing the rule string, which may not reflect the applied target.
         if target == int(DeviceTarget.ALLOW):
+            log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device_id)
             return
 
         # If screensaver is active, defer
