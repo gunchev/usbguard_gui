@@ -48,6 +48,7 @@ make run           # sync dev deps and run app
 - **Charset**: UTF-8
 - **Trailing whitespace**: trimmed
 - **Final newline**: required
+- **EditorConfig**: Check `.editorconfig` for additional editor-specific settings
 
 ### Ruff Configuration (pyproject.toml)
 ```toml
