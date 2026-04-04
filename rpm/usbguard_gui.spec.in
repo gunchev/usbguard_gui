@@ -72,7 +72,11 @@ install -Dm 644 %{SOURCE3} \
 
 
 %post
-%systemd_post usbguard-dbus.service
+# Enable usbguard-dbus on fresh install regardless of its preset (disabled by
+# default upstream) because this GUI cannot function without the D-Bus service.
+if [ $1 -eq 1 ] ; then
+    systemctl enable usbguard-dbus.service >/dev/null 2>&1 || :
+fi
 
 
 %preun
