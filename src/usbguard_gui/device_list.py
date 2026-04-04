@@ -182,6 +182,7 @@ class DeviceListWindow(QMainWindow):
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
         self._client.apply_device_policy(device.number, target, permanent)
+        self.refresh()
 
 
 def _permanent_allow_hashes(rules: list[tuple[int, str]]) -> set[str]:
