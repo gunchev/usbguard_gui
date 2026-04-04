@@ -1,3 +1,12 @@
+## 0.0.8 — 2026-04-05
+
+### Changes since v0.0.7
+
+- 6ac501c release.py: remove automatic dev version bump after release (by big-pickle/OpenCode)
+- ad32718 release.py: fix version mismatch after release, format fixes, add AGENTS.md
+- 797fb54 README: add credits section
+- 69be8be Start 0.0.8-dev
+
 ## 0.0.7 — 2026-04-04
 
 ### Changes since v0.0.6
