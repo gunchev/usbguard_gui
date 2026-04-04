@@ -214,10 +214,7 @@ class USBGuardTrayApp:
             # Allow the HID device temporarily after a delay so the user can
             # unlock the screen with it, then lock.
             device_number = device.number
-            QTimer.singleShot(
-                HID_LOCK_DELAY * 1000,
-                lambda: self._allow_hid_and_lock(device_number),
-            )
+            QTimer.singleShot(HID_LOCK_DELAY * 1000, lambda: self._allow_hid_and_lock(device_number))
         except Exception as e:
             log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
 
@@ -243,10 +240,7 @@ class USBGuardTrayApp:
         count = len(pending_devices)
         names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
         self._tray.showMessage(
-            f"{count} USB device(s) connected during absence",
-            names,
-            QSystemTrayIcon.MessageIcon.Information,
-            10000,
+            f"{count} USB device(s) connected during absence", names, QSystemTrayIcon.MessageIcon.Information, 10000
         )
 
         # Show dialogs for each pending device
@@ -303,8 +297,7 @@ def main() -> None:
     """Entry point for the usbguard_gui application."""
     log_level = os.environ.get("USBGUARD_GUI_LOG", "INFO").upper()
     logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        level=getattr(logging, log_level, logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
 
     # Allow Ctrl+C to work

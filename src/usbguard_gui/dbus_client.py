@@ -94,12 +94,7 @@ class USBGuardClient(QObject):
             log.debug("Failed to unsubscribe from signals: %s", e)
 
     def _on_device_presence_changed(
-        self,
-        device_id: int,
-        event: int,
-        target: int,
-        device_rule: str,
-        attributes: dict[str, str],
+        self, device_id: int, event: int, target: int, device_rule: str, attributes: dict[str, str]
     ) -> None:
         log.debug("DevicePresenceChanged: id=%d event=%d target=%d", device_id, event, target)
         self.device_presence_changed.emit(device_id, event, target, device_rule, attributes)

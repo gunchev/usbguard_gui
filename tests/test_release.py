@@ -232,11 +232,7 @@ __license__ = "GPL-2.0-or-later"
         release.release.__globals__["subprocess"].run = mock_run
         try:
             release.release(
-                "1.0.0",
-                top=mock_env,
-                git_run=MagicMock(),
-                git=MagicMock(return_value=""),
-                build_impl=MagicMock(),
+                "1.0.0", top=mock_env, git_run=MagicMock(), git=MagicMock(return_value=""), build_impl=MagicMock()
             )
         finally:
             release.release.__globals__["subprocess"].run = original_run
@@ -254,11 +250,7 @@ __license__ = "GPL-2.0-or-later"
         try:
             mock_git_run = MagicMock()
             release.release(
-                "1.0.0",
-                top=mock_env,
-                git_run=mock_git_run,
-                git=MagicMock(return_value=""),
-                build_impl=MagicMock(),
+                "1.0.0", top=mock_env, git_run=mock_git_run, git=MagicMock(return_value=""), build_impl=MagicMock()
             )
 
             calls = [str(c) for c in mock_git_run.call_args_list]
@@ -274,11 +266,7 @@ __license__ = "GPL-2.0-or-later"
         try:
             mock_build = MagicMock()
             release.release(
-                "1.0.0",
-                top=mock_env,
-                git_run=MagicMock(),
-                git=MagicMock(return_value=""),
-                build_impl=mock_build,
+                "1.0.0", top=mock_env, git_run=MagicMock(), git=MagicMock(return_value=""), build_impl=mock_build
             )
 
             mock_build.assert_called_once()
@@ -298,11 +286,7 @@ __license__ = "GPL-2.0-or-later"
 
         try:
             release.release(
-                "1.0.0",
-                top=mock_env,
-                git_run=MagicMock(),
-                git=MagicMock(return_value=""),
-                build_impl=MagicMock(),
+                "1.0.0", top=mock_env, git_run=MagicMock(), git=MagicMock(return_value=""), build_impl=MagicMock()
             )
 
             changelog = (mock_env / "CHANGELOG.md").read_text()

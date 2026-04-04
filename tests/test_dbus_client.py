@@ -188,10 +188,7 @@ class TestUSBGuardClient:
         mock_bus.get_proxy.side_effect = [devices_proxy, policy_proxy]
         client.connect()
 
-        policy_proxy.listRules.return_value = [
-            (1, "allow id 1d6b:0002"),
-            (2, "block id 04f2:b2ea"),
-        ]
+        policy_proxy.listRules.return_value = [(1, "allow id 1d6b:0002"), (2, "block id 04f2:b2ea")]
         rules = client.list_rules()
         assert len(rules) == 2
         assert rules[0] == (1, "allow id 1d6b:0002")

@@ -6,9 +6,4 @@ __license__ = "GPL-2.0-or-later"
 
 from usbguard_gui.device import Device, DeviceTarget, PresenceEvent, parse_device_rule
 
-__all__ = [
-    "Device",
-    "DeviceTarget",
-    "PresenceEvent",
-    "parse_device_rule",
-]
+__all__ = ["Device", "DeviceTarget", "PresenceEvent", "parse_device_rule"]

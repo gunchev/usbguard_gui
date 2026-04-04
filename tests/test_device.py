@@ -1,11 +1,6 @@
 """Tests for the device model and rule parser."""
 
-from usbguard_gui.device import (
-    Device,
-    DeviceTarget,
-    interface_class,
-    parse_device_rule,
-)
+from usbguard_gui.device import Device, DeviceTarget, interface_class, parse_device_rule
 
 
 class TestParseDeviceRule:
