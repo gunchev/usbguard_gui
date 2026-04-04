@@ -12,7 +12,6 @@ Source3:        70-usbguard-gui.rules
 
 BuildArch:      noarch
 BuildRequires:  python3-devel
-BuildRequires:  systemd-rpm-macros
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  desktop-file-utils
 BuildRequires:  python3dist(pyqt6) >= 6.5
@@ -24,7 +23,6 @@ Requires:       python3dist(dasbus) >= 1.7
 Requires:       python3dist(pygobject) >= 3.42
 Requires:       usbguard
 Requires:       usbguard-dbus
-%{?systemd_requires}
 
 %description
 usbguard-gui is a KDE/Qt system tray application for USBGuard.  It monitors
@@ -80,11 +78,10 @@ fi
 
 
 %preun
-%systemd_preun usbguard-dbus.service
-
-
-%postun
-%systemd_postun_with_restart usbguard-dbus.service
+# Mirror %post: disable and stop usbguard-dbus on package removal.
+if [ $1 -eq 0 ] ; then
+    systemctl disable --now usbguard-dbus.service >/dev/null 2>&1 || :
+fi
 
 
 %files -f %{pyproject_files}
