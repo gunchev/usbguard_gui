@@ -18,6 +18,6 @@ jobs:
       run: |
         sudo apt-get update && sudo apt-get install -y podman
         podman run --rm -v "$PWD:/work" -w "/work" fedorapython/fedora-python-tox bash -c '
-          dnf -y install make uv python3-cairo
+          dnf -y install make uv python3-cairo cairo-gobject-devel cairo-devel
           make test
         '
