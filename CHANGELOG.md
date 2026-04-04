@@ -1,3 +1,12 @@
+## 0.0.3 — 2026-04-04
+
+### Changes since v0.0.2
+
+- 49c55d1 device_list: use dark row colors with white text
+- ff03739 rpm: require usbguard-dbus, enable its service on install
+- 552a629 Fix duplicate signals, auth errors, add polkit rule
+- 58e907d Start 0.0.3-dev
+
 ## 0.0.2 — 2026-04-04
 
 ### Changes since v0.0.1
