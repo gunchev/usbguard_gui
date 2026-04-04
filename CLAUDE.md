@@ -1,11 +1,11 @@
-# usbguard-gui
+# usbguard_gui
 
 KDE/Qt system tray GUI for USBGuard.
 
 ## Build & Run
 
 ```bash
-uv run usbguard-gui          # run the app
+uv run usbguard_gui          # run the app
 uv run python -m usbguard_gui  # alternative
 ```
 

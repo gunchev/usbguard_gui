@@ -1,1 +1,1 @@
-"""Shared test fixtures for usbguard-gui."""
+"""Shared test fixtures for usbguard_gui."""

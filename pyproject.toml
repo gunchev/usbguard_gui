@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "usbguard-gui"
+name = "usbguard_gui"
 version = "0.1.0"
 description = "KDE/Qt system tray GUI for USBGuard — respond to USB device insertions with Allow, Block, or Reject."
 readme = "README.md"
@@ -45,11 +45,11 @@ dev = [
 ]
 
 [project.scripts]
-usbguard-gui = "usbguard_gui.app:main"
+usbguard_gui = "usbguard_gui.app:main"
 
 [project.urls]
-Homepage = "https://github.com/gunchev/usbguard-gui"
-Repository = "https://github.com/gunchev/usbguard-gui"
+Homepage = "https://github.com/gunchev/usbguard_gui"
+Repository = "https://github.com/gunchev/usbguard_gui"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/usbguard_gui"]

@@ -1,4 +1,4 @@
-# usbguard-gui
+# usbguard_gui
 
 KDE/Qt system tray GUI for [USBGuard](https://usbguard.github.io/).
 
@@ -20,7 +20,7 @@ uv tool install .
 ## Usage
 
 ```bash
-usbguard-gui
+usbguard_gui
 ```
 
 The application runs as a system tray icon. When a new USB device is blocked

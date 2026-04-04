@@ -210,7 +210,7 @@ class USBGuardTrayApp:
 
 
 def main() -> None:
-    """Entry point for the usbguard-gui application."""
+    """Entry point for the usbguard_gui application."""
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -220,7 +220,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("usbguard-gui")
+    app.setApplicationName("usbguard_gui")
     app.setQuitOnLastWindowClosed(False)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
