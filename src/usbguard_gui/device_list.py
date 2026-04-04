@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PyQt6.QtGui import QAction, QColor, QPoint
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QPoint, Qt, QTimer
+from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -69,12 +69,12 @@ class DeviceTableModel(QAbstractTableModel):
     def columnCount(self, parent: QModelIndex | None = None) -> int:
         return len(COLUMNS)
 
-    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
             return COLUMNS[section]
         return None
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid():
             return None
         device = self._devices[index.row()]
@@ -147,15 +147,24 @@ class DeviceListWindow(QMainWindow):
         layout.addWidget(self._view)
         self.setCentralWidget(central)
 
-        # Connect D-Bus signals for live updates
-        self._client.device_presence_changed.connect(lambda *_: self.refresh())
-        self._client.device_policy_changed.connect(lambda *_: self.refresh())
+        # Connect D-Bus signals for live updates (debounced to avoid excessive refreshes)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(500)
+        self._refresh_timer.timeout.connect(self.refresh)
+
+        self._client.device_presence_changed.connect(self._schedule_refresh)
+        self._client.device_policy_changed.connect(self._schedule_refresh)
 
     def refresh(self) -> None:
         """Reload the device list from USBGuard."""
         devices = self._client.list_devices()
         permanent_allow_hashes = _permanent_allow_hashes(self._client.list_rules())
         self._model.set_devices(devices, permanent_allow_hashes)
+
+    def _schedule_refresh(self) -> None:
+        """Debounce refresh calls to avoid excessive D-Bus traffic."""
+        self._refresh_timer.start()
 
     def showEvent(self, event: object) -> None:
         super().showEvent(event)

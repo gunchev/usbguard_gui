@@ -110,7 +110,7 @@ class Device:
     @property
     def vendor_id(self) -> str | None:
         parts = self.id.split(":")
-        return parts[0] if len(parts) >= 1 else None
+        return parts[0] if parts[0] else None
 
     @property
     def product_id(self) -> str | None:
@@ -120,7 +120,12 @@ class Device:
 
 def interface_class(interface_str: str) -> int:
     """Extract the base class byte from an interface string like '03:00:01'."""
-    return int(interface_str[:2], 16)
+    if len(interface_str) < 2:
+        return 0
+    try:
+        return int(interface_str[:2], 16)
+    except ValueError:
+        return 0
 
 
 # Regex patterns for parsing USBGuard rule strings.

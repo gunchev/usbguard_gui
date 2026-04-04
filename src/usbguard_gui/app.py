@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -292,8 +293,9 @@ class USBGuardTrayApp:
 
 def main() -> None:
     """Entry point for the usbguard_gui application."""
+    log_level = os.environ.get("USBGUARD_GUI_LOG", "INFO").upper()
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=getattr(logging, log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 

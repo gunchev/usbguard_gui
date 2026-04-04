@@ -51,8 +51,8 @@ class USBGuardClient(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._bus = SystemMessageBus()
-        self._devices_proxy = None
-        self._policy_proxy = None
+        self._devices_proxy: object | None = None
+        self._policy_proxy: object | None = None
         self._connected = False
 
     @property
