@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=USBGuard GUI
+GenericName=USB Device Manager
+Comment=Manage USB device authorization via USBGuard
+Exec=usbguard_gui
+Icon=usbguard_gui
+Terminal=false
+Categories=System;Security;Qt;
+Keywords=usb;usbguard;security;tray;
+StartupNotify=false

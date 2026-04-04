@@ -1,0 +1,76 @@
+Name:           usbguard_gui
+Version:        0.0.0
+Release:        0%{?dist}
+Summary:        KDE/Qt system tray GUI for USBGuard
+
+License:        GPL-2.0-or-later
+URL:            https://github.com/gunchev/usbguard_gui
+Source0:        %{name}-%{version}.tar.gz
+Source1:        %{name}.desktop
+Source2:        %{name}.svg
+
+BuildArch:      noarch
+BuildRequires:  python3-devel
+BuildRequires:  pyproject-rpm-macros
+BuildRequires:  desktop-file-utils
+BuildRequires:  python3dist(pyqt6) >= 6.5
+BuildRequires:  python3dist(dasbus) >= 1.7
+BuildRequires:  python3dist(pygobject) >= 3.42
+
+Requires:       python3dist(pyqt6) >= 6.5
+Requires:       python3dist(dasbus) >= 1.7
+Requires:       python3dist(pygobject) >= 3.42
+Requires:       usbguard
+
+%description
+usbguard-gui is a KDE/Qt system tray application for USBGuard.  It monitors
+USB device insertions via D-Bus and presents Allow, Block, or Reject dialogs
+so the user can control device authorization without touching the command line.
+
+Features:
+- System tray icon with a device list window
+- Per-device popup dialogs (Allow permanently/temporarily, Block, Reject)
+- HID security: locks the screen when a new keyboard is plugged in
+- Screensaver-aware: defers prompts while the screen is locked and shows a
+  summary on unlock
+- Auto-reconnects to the USBGuard daemon
+
+
+%prep
+%autosetup
+
+
+%generate_buildrequires
+%pyproject_buildrequires
+
+
+%build
+%pyproject_wheel
+
+
+%install
+%pyproject_install
+%pyproject_save_files -l usbguard_gui
+
+desktop-file-install \
+    --dir=%{buildroot}%{_datadir}/applications \
+    %{SOURCE1}
+
+install -Dm 644 %{SOURCE2} \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
+
+
+%check
+%pyproject_check_import
+
+
+%files -f %{pyproject_files}
+%doc README.md CHANGELOG.md
+%{_bindir}/usbguard_gui
+%{_datadir}/applications/%{name}.desktop
+%{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
+
+
+%changelog
+* Sat Apr 04 2026 Doncho N. Gunchev <dgunchev@gmail.com> - 0.0.1-0
+- Initial RPM package

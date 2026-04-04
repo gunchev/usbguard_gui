@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- USB connector body -->
+  <rect x="18" y="28" width="12" height="16" rx="2" fill="#1e1e33" stroke="#4466cc" stroke-width="1.5"/>
+  <!-- USB connector plug tip -->
+  <rect x="20" y="24" width="8" height="6" rx="1" fill="#3d5bbf"/>
+  <!-- USB contacts -->
+  <rect x="21" y="30" width="2" height="6" rx="0.5" fill="#8899dd"/>
+  <rect x="25" y="30" width="2" height="6" rx="0.5" fill="#8899dd"/>
+  <!-- USB cable -->
+  <rect x="22" y="40" width="4" height="6" rx="1" fill="#333355"/>
+  <!-- Shield — security overlay, top-center -->
+  <path d="M 24 2 L 36 7 L 36 17 Q 36 26 24 30 Q 12 26 12 17 L 12 7 Z"
+        fill="#2255aa" stroke="#4488ff" stroke-width="1.2"/>
+  <!-- Lock icon inside shield -->
+  <rect x="20" y="17" width="8" height="6" rx="1" fill="#aaccff"/>
+  <path d="M 21 17 Q 21 13 24 13 Q 27 13 27 17" fill="none" stroke="#aaccff" stroke-width="1.8"/>
+  <circle cx="24" cy="20" r="1.2" fill="#1e1e33"/>
+</svg>
