@@ -4,6 +4,7 @@
 Usage:
     python3 release.py X.Y.Z
 """
+
 from __future__ import annotations
 
 import datetime
@@ -33,9 +34,7 @@ def main() -> None:
     if not re.fullmatch(r"\d+\.\d+\.\d+", v):
         _fail(f"'{v}' is not a valid version (expected X.Y.Z)")
 
-    if subprocess.run(
-        ["git", "-C", str(TOP), "diff", "--quiet", "HEAD"], check=False
-    ).returncode != 0:
+    if subprocess.run(["git", "-C", str(TOP), "diff", "--quiet", "HEAD"], check=False).returncode != 0:
         _fail("uncommitted changes — commit or stash first")
 
     if f"v{v}" in _git("tag").splitlines():
@@ -51,9 +50,8 @@ def main() -> None:
     # Bump version strings
     print(f"▶ Bumping version to {v} ...")
     for path, pattern, replacement in [
-        (pyproject,                   r'^version = ".*"',       f'version = "{v}"'),
-        (TOP / "src" / name / "__init__.py",
-                                      r'^__version__ = ".*"', f'__version__ = "{v}"'),
+        (pyproject, r'^version = ".*"', f'version = "{v}"'),
+        (TOP / "src" / name / "__init__.py", r'^__version__ = ".*"', f'__version__ = "{v}"'),
     ]:
         text = path.read_text()
         path.write_text(re.sub(pattern, replacement, text, flags=re.MULTILINE))
@@ -80,8 +78,7 @@ def main() -> None:
     # Commit and tag
     print(f"▶ Committing and tagging v{v} ...")
     subprocess.run(
-        ["git", "-C", str(TOP), "add",
-         "pyproject.toml", f"src/{name}/__init__.py", "CHANGELOG.md"],
+        ["git", "-C", str(TOP), "add", "pyproject.toml", f"src/{name}/__init__.py", "CHANGELOG.md"],
         check=True,
     )
     subprocess.run(["git", "-C", str(TOP), "commit", "-m", f"Release {v}"], check=True)
@@ -99,10 +96,13 @@ def main() -> None:
     dev_v = f"{major}.{minor}.{patch + 1}-dev"
     print(f"▶ Bumping to {dev_v} ...")
     init = TOP / "src" / name / "__init__.py"
-    init.write_text(re.sub(r'^__version__ = ".*"', f'__version__ = "{dev_v}"',
-                           init.read_text(), flags=re.MULTILINE))
+    for path, pattern, replacement in [
+        (pyproject, r'^version = ".*"', f'version = "{dev_v}"'),
+        (init, r'^__version__ = ".*"', f'__version__ = "{dev_v}"'),
+    ]:
+        path.write_text(re.sub(pattern, replacement, path.read_text(), flags=re.MULTILINE))
     subprocess.run(
-        ["git", "-C", str(TOP), "add", f"src/{name}/__init__.py"],
+        ["git", "-C", str(TOP), "add", "pyproject.toml", f"src/{name}/__init__.py"],
         check=True,
     )
     subprocess.run(

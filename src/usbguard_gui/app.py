@@ -37,6 +37,7 @@ def _app_icon() -> QIcon:
         return QIcon(str(_DEV_SVG))
     return QIcon.fromTheme("drive-removable-media")
 
+
 # Seconds to wait before locking the screen for HID devices
 HID_LOCK_DELAY = 3
 # Seconds between reconnection attempts
