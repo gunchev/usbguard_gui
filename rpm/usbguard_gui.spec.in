@@ -9,6 +9,7 @@ Source0:        %{name}-%{version}.tar.gz
 Source1:        %{name}.desktop
 Source2:        %{name}.svg
 Source3:        70-usbguard-gui.rules
+Source4:        %{name}-autostart.desktop
 
 BuildArch:      noarch
 BuildRequires:  python3-devel
@@ -64,6 +65,9 @@ install -Dm 644 %{SOURCE2} \
 install -Dm 644 %{SOURCE3} \
     %{buildroot}%{_datadir}/polkit-1/rules.d/70-usbguard-gui.rules
 
+install -Dm 644 %{SOURCE4} \
+    %{buildroot}%{_sysconfdir}/xdg/autostart/%{name}.desktop
+
 
 %check
 %pyproject_check_import
@@ -90,6 +94,7 @@ fi
 %{_datadir}/applications/%{name}.desktop
 %{_datadir}/icons/hicolor/scalable/apps/%{name}.svg
 %{_datadir}/polkit-1/rules.d/70-usbguard-gui.rules
+%{_sysconfdir}/xdg/autostart/%{name}.desktop
 
 
 %changelog

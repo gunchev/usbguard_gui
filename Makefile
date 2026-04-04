@@ -81,7 +81,7 @@ rpmprep:
 	rm -rf ~/rpmbuild/RPMS/noarch/"$(name)"*.rpm ~/rpmbuild/SRPMS/"$(name)"*.src.rpm
 	uv build --sdist
 	mkdir -p ~/rpmbuild/SOURCES
-	cp dist/$(name)-$(RPM_VER).tar.gz rpm/$(name).desktop rpm/$(name).svg rpm/70-usbguard-gui.rules ~/rpmbuild/SOURCES/
+	cp dist/$(name)-$(RPM_VER).tar.gz rpm/$(name).desktop rpm/$(name).svg rpm/70-usbguard-gui.rules rpm/$(name)-autostart.desktop ~/rpmbuild/SOURCES/
 
 
 .PHONY: rpm

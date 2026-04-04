@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=USBGuard GUI
+Comment=USB device authorization tray applet
+Exec=usbguard_gui
+Icon=usbguard_gui
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
