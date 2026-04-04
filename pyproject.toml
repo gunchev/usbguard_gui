@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "usbguard-gui"
+version = "0.1.0"
+description = "KDE/Qt system tray GUI for USBGuard — respond to USB device insertions with Allow, Block, or Reject."
+readme = "README.md"
+license = "GPL-2.0-or-later"
+requires-python = ">=3.10"
+authors = [
+    { name = "Doncho Nikolaev Gunchev" },
+]
+keywords = ["usbguard", "usb", "security", "kde", "qt", "system-tray"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: System :: Hardware :: Universal Serial Bus (USB)",
+    "Typing :: Typed",
+]
+dependencies = [
+    "PyQt6>=6.5",
+    "dasbus>=1.7",
+    "PyGObject>=3.42",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "pytest-cov",
+    "tox",
+    "ruff",
+]
+
+[project.scripts]
+usbguard-gui = "usbguard_gui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/gunchev/usbguard-gui"
+Repository = "https://github.com/gunchev/usbguard-gui"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/usbguard_gui"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

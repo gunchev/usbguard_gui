@@ -1,0 +1,168 @@
+"""Main window showing a table of all connected USB devices."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QMainWindow,
+    QMenu,
+    QTableView,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from usbguard_gui.device import Device, DeviceTarget
+
+if TYPE_CHECKING:
+    from usbguard_gui.dbus_client import USBGuardClient
+
+COLUMNS = ["#", "Status", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type", "Connection"]
+
+_STATUS_COLORS = {
+    "allow": QColor(200, 255, 200),
+    "block": QColor(255, 220, 200),
+    "reject": QColor(255, 180, 180),
+}
+
+
+class DeviceTableModel(QAbstractTableModel):
+    """Table model backed by a list of Device objects."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._devices: list[Device] = []
+
+    def set_devices(self, devices: list[Device]) -> None:
+        self.beginResetModel()
+        self._devices = list(devices)
+        self.endResetModel()
+
+    def device_at(self, row: int) -> Device | None:
+        if 0 <= row < len(self._devices):
+            return self._devices[row]
+        return None
+
+    # --- QAbstractTableModel interface ---
+
+    def rowCount(self, parent: QModelIndex | None = None) -> int:
+        return len(self._devices)
+
+    def columnCount(self, parent: QModelIndex | None = None) -> int:
+        return len(COLUMNS)
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            return COLUMNS[section]
+        return None
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        device = self._devices[index.row()]
+        col = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._display_data(device, col)
+        if role == Qt.ItemDataRole.BackgroundRole:
+            return _STATUS_COLORS.get(device.rule.lower())
+        return None
+
+    @staticmethod
+    def _display_data(device: Device, col: int) -> str:
+        if col == 0:
+            return str(device.number)
+        if col == 1:
+            return device.rule.capitalize()
+        if col == 2:
+            return device.id
+        if col == 3:
+            return device.name
+        if col == 4:
+            return device.serial
+        if col == 5:
+            return device.via_port
+        if col == 6:
+            return " ".join(device.with_interface)
+        if col == 7:
+            return device.class_description_string()
+        if col == 8:
+            return device.with_connect_type
+        return ""
+
+
+class DeviceListWindow(QMainWindow):
+    """Window displaying all USB devices with context-menu actions."""
+
+    def __init__(self, client: USBGuardClient, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._client = client
+        self.setWindowTitle("USBGuard — Devices")
+        self.setMinimumSize(900, 400)
+
+        # Model & view
+        self._model = DeviceTableModel(self)
+        self._view = QTableView()
+        self._view.setModel(self._model)
+        self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._show_context_menu)
+        self._view.horizontalHeader().setStretchLastSection(True)
+        self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._view.verticalHeader().setVisible(False)
+
+        # Toolbar
+        toolbar = QToolBar("Actions")
+        toolbar.setMovable(False)
+        refresh_action = QAction("Refresh", self)
+        refresh_action.triggered.connect(self.refresh)
+        toolbar.addAction(refresh_action)
+        self.addToolBar(toolbar)
+
+        # Central widget
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._view)
+        self.setCentralWidget(central)
+
+        # Connect D-Bus signals for live updates
+        self._client.device_presence_changed.connect(lambda *_: self.refresh())
+        self._client.device_policy_changed.connect(lambda *_: self.refresh())
+
+    def refresh(self) -> None:
+        """Reload the device list from USBGuard."""
+        devices = self._client.list_devices()
+        self._model.set_devices(devices)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh()
+
+    def _selected_device(self) -> Device | None:
+        indexes = self._view.selectionModel().selectedRows()
+        if not indexes:
+            return None
+        return self._model.device_at(indexes[0].row())
+
+    def _show_context_menu(self, pos) -> None:
+        device = self._selected_device()
+        if not device:
+            return
+
+        menu = QMenu(self)
+        menu.addAction("Allow (Permanent)", lambda: self._apply(device, DeviceTarget.ALLOW, permanent=True))
+        menu.addAction("Allow (Temporary)", lambda: self._apply(device, DeviceTarget.ALLOW, permanent=False))
+        menu.addSeparator()
+        menu.addAction("Block", lambda: self._apply(device, DeviceTarget.BLOCK, permanent=False))
+        menu.addAction("Reject", lambda: self._apply(device, DeviceTarget.REJECT, permanent=False))
+        menu.exec(self._view.viewport().mapToGlobal(pos))
+
+    def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
+        self._client.apply_device_policy(device.number, target, permanent)

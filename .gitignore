@@ -1,0 +1,31 @@
+/dist/
+/build/
+/htmlcov/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+.tox/
+.pytest_cache/
+.coverage
+*.py,cover
+site.py
+__pypackages__/
+
+# uv
+/.venv/
+/uv.lock
+
+# Local wheels cache
+/whl_local/
+
+# Packaging
+/*.spec
+/VERSION
+
+# Editor
+/.idea/
+/.vscode/
+*.swp
+*~
