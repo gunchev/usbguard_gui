@@ -158,6 +158,22 @@ class USBGuardClient(QObject):
                 self._handle_disconnect()
             return []
 
+    def remove_rule(self, rule_id: int) -> bool:
+        """Remove a policy rule by ID. Returns True on success."""
+        if not self._policy_proxy:
+            return False
+        try:
+            self._policy_proxy.removeRule(rule_id)
+            log.info("Removed rule %d", rule_id)
+            return True
+        except DBusError as e:
+            if _is_permission_error(e):
+                log.error("Not authorized to remove rule %d", rule_id)
+            else:
+                log.error("Failed to remove rule %d: %s", rule_id, e)
+                self._handle_disconnect()
+            return False
+
     def _handle_disconnect(self) -> None:
         """Handle a D-Bus disconnection."""
         if self._connected:

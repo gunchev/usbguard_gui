@@ -181,6 +181,13 @@ class DeviceListWindow(QMainWindow):
         menu.exec(self._view.viewport().mapToGlobal(pos))
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
+        if target == DeviceTarget.ALLOW and not permanent and device.hash:
+            # Remove any permanent allow rule for this device so it is not
+            # re-allowed automatically on the next plug-in.
+            for rule_id, rule_str in self._client.list_rules():
+                parsed = parse_device_rule(rule_str)
+                if parsed["rule"] == "allow" and parsed["hash"] == device.hash:
+                    self._client.remove_rule(rule_id)
         self._client.apply_device_policy(device.number, target, permanent)
         self.refresh()
 
