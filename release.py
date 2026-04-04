@@ -91,26 +91,7 @@ def main() -> None:
     print("▶ Building distribution ...")
     subprocess.run(["python3", "-m", "build"], check=True, cwd=str(TOP))
 
-    # Bump to next dev version so the repo never sits on a release version
-    major, minor, patch = (int(x) for x in v.split("."))
-    dev_v = f"{major}.{minor}.{patch + 1}-dev"
-    print(f"▶ Bumping to {dev_v} ...")
-    init = TOP / "src" / name / "__init__.py"
-    for path, pattern, replacement in [
-        (pyproject, r'^version = ".*"', f'version = "{dev_v}"'),
-        (init, r'^__version__ = ".*"', f'__version__ = "{dev_v}"'),
-    ]:
-        path.write_text(re.sub(pattern, replacement, path.read_text(), flags=re.MULTILINE))
-    subprocess.run(
-        ["git", "-C", str(TOP), "add", "pyproject.toml", f"src/{name}/__init__.py"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(TOP), "commit", "-m", f"Start {dev_v}"],
-        check=True,
-    )
-
-    print(f"\n✓ Released v{v}, repo now at {dev_v}.  Push with:")
+    print(f"\n✓ Released v{v}.  Push with:")
     print("      git push && git push --tags")
 
 
