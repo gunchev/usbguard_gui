@@ -118,8 +118,9 @@ def release(
 
     print("▶ Building distribution ...")
     if build_impl is None:
-        build_impl = _default_build_impl(top)
-    build_impl()
+        _default_build_impl(top)
+    else:
+        build_impl()
 
     print(f"\n✓ Released v{version}.  Push with:")
     print("      git push && git push --tags")

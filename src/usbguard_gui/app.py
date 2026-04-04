@@ -204,15 +204,18 @@ class USBGuardTrayApp:
             )
             # Allow the HID device temporarily after a delay so the user can
             # unlock the screen with it, then lock.
+            device_number = device.number
             QTimer.singleShot(
                 HID_LOCK_DELAY * 1000,
-                lambda: self._allow_hid_and_lock(device),
+                lambda: self._allow_hid_and_lock(device_number),
             )
         except Exception as e:
             log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
 
-    def _allow_hid_and_lock(self, device: Device) -> None:
-        self._client.apply_device_policy(device.number, DeviceTarget.ALLOW, permanent=False)
+    def _allow_hid_and_lock(self, device_number: int) -> None:
+        devices = self._client.list_devices()
+        if any(d.number == device_number for d in devices):
+            self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
         self._screensaver.lock()
 
     def _on_screensaver_changed(self, active: bool) -> None:
@@ -257,10 +260,12 @@ class USBGuardTrayApp:
         dialog = DeviceActionDialog(device)
         self._open_dialogs[device.number] = dialog
 
-        def on_finished(result: int) -> None:
-            self._open_dialogs.pop(device.number, None)
-            if dialog.result_target is not None:
-                self._client.apply_device_policy(device.number, dialog.result_target, dialog.permanent)
+        def on_finished(result: int, device_number: int = device.number) -> None:
+            target = dialog.result_target
+            permanent = dialog.permanent
+            self._open_dialogs.pop(device_number, None)
+            if target is not None:
+                self._client.apply_device_policy(device_number, target, permanent)
 
         dialog.finished.connect(on_finished)
         dialog.show()
