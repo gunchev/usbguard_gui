@@ -1,6 +1,6 @@
 # usbguard_gui
 
-KDE/Qt system tray GUI for [USBGuard](https://usbguard.github.io/).
+A vibe coded KDE/Qt system tray GUI for [USBGuard](https://usbguard.github.io/).
 
 Monitors USB device insertions and lets you Allow, Block, or Reject devices
 through desktop notifications and a device management window.
@@ -18,8 +18,19 @@ through desktop notifications and a device management window.
 On Fedora installing the RPM package will start the app on session start in KDE.
 
 ```bash
+# USB Guard itself, install and enable
+sudo dnf -y install usbguard usbguard-dbus
+systemctl enable --now usbguard.service usbguard-dbus.service
+
+# Development tools
+sudo dnf -y install usbguard usbguard-dbus rpmdevtools make uv
+rpmdev-setuptree
+
+# Build and install the RPM package
 make rpm
+sudo dnf install -y ~/rpmbuild/RPMS/noarch/usbguard_gui-*.noarch.rpm
 ```
+At this point either run `usbguard_gui` or logout and login to get it.
 
 ### Generic
 
@@ -56,6 +67,7 @@ uv run ruff format src/ tests/ # format
 - Inspired by [usbguard-gnome](https://github.com/6E006B/usbguard-gnome) — a GNOME tray applet for USBGuard that pioneered several UX ideas adopted here (HID lock-screen behaviour, screensaver awareness, device dialog flow).
 - Planned with [Claude Opus](https://claude.ai/claude-code) (Anthropic).
 - Implemented with [Claude Sonnet](https://claude.ai/claude-code) (Anthropic).
+- Infrastructure improvements by [big-pickle/OpenCode](https://opencode.ai) (Anthropic).
 
 ## License
 

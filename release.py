@@ -47,14 +47,12 @@ def main() -> None:
         _fail("cannot read name from pyproject.toml")
     name = m.group(1)
 
-    # Bump version strings
+    # Bump version string in __init__.py
     print(f"▶ Bumping version to {v} ...")
-    for path, pattern, replacement in [
-        (pyproject, r'^version = ".*"', f'version = "{v}"'),
-        (TOP / "src" / name / "__init__.py", r'^__version__ = ".*"', f'__version__ = "{v}"'),
-    ]:
-        text = path.read_text()
-        path.write_text(re.sub(pattern, replacement, text, flags=re.MULTILINE))
+    init_file = TOP / "src" / name / "__init__.py"
+    init_file.write_text(
+        re.sub(r'^__version__ = ".*"', f'__version__ = "{v}"', init_file.read_text(), flags=re.MULTILINE)
+    )
 
     # Build CHANGELOG section from commits since the last tag
     print("▶ Updating CHANGELOG.md ...")
@@ -78,7 +76,7 @@ def main() -> None:
     # Commit and tag
     print(f"▶ Committing and tagging v{v} ...")
     subprocess.run(
-        ["git", "-C", str(TOP), "add", "pyproject.toml", f"src/{name}/__init__.py", "CHANGELOG.md"],
+        ["git", "-C", str(TOP), "add", f"src/{name}/__init__.py", "CHANGELOG.md"],
         check=True,
     )
     subprocess.run(["git", "-C", str(TOP), "commit", "-m", f"Release {v}"], check=True)
