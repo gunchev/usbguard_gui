@@ -90,8 +90,8 @@ class USBGuardClient(QObject):
         try:
             self._devices_proxy.DevicePresenceChanged.disconnect(self._on_device_presence_changed)
             self._devices_proxy.DevicePolicyChanged.disconnect(self._on_device_policy_changed)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Failed to unsubscribe from signals: %s", e)
 
     def _on_device_presence_changed(
         self,
@@ -124,7 +124,7 @@ class USBGuardClient(QObject):
             raw = self._devices_proxy.listDevices(query)
             return [Device.from_dbus(int(dev_id), str(rule_str)) for dev_id, rule_str in raw]
         except DBusError as e:
-            log.error("Failed to list devices: %s", e)
+            log.error("Failed to list devices (query=%s): %s", query, e)
             if not _is_permission_error(e):
                 self._handle_disconnect()
             return []
@@ -139,9 +139,20 @@ class USBGuardClient(QObject):
             return int(rule_id)
         except DBusError as e:
             if _is_permission_error(e):
-                log.error("Not authorized to apply policy to device %d — install polkit rule", device_id)
+                log.error(
+                    "Not authorized to apply policy to device %d (target=%s, permanent=%s) — install polkit rule",
+                    device_id,
+                    target.name,
+                    permanent,
+                )
             else:
-                log.error("Failed to apply policy to device %d: %s", device_id, e)
+                log.error(
+                    "Failed to apply policy to device %d (target=%s, permanent=%s): %s",
+                    device_id,
+                    target.name,
+                    permanent,
+                    e,
+                )
                 self._handle_disconnect()
             return None
 
@@ -153,7 +164,7 @@ class USBGuardClient(QObject):
             raw = self._policy_proxy.listRules(label)
             return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw]
         except DBusError as e:
-            log.error("Failed to list rules: %s", e)
+            log.error("Failed to list rules (label='%s'): %s", label, e)
             if not _is_permission_error(e):
                 self._handle_disconnect()
             return []

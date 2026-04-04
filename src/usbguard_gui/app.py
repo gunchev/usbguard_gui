@@ -40,8 +40,10 @@ def _app_icon() -> QIcon:
 
 # Seconds to wait before locking the screen for HID devices
 HID_LOCK_DELAY = 3
-# Seconds between reconnection attempts
-RECONNECT_INTERVAL = 5
+# Base seconds between reconnection attempts (will be exponentially increased)
+RECONNECT_BASE_INTERVAL = 5
+# Maximum seconds between reconnection attempts
+RECONNECT_MAX_INTERVAL = 60
 
 
 class USBGuardTrayApp:
@@ -55,10 +57,11 @@ class USBGuardTrayApp:
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
 
-        # Reconnect timer
+        # Reconnect timer with exponential backoff
         self._reconnect_timer = QTimer()
-        self._reconnect_timer.setInterval(RECONNECT_INTERVAL * 1000)
+        self._reconnect_timer.setInterval(RECONNECT_BASE_INTERVAL * 1000)
         self._reconnect_timer.timeout.connect(self._try_connect)
+        self._reconnect_attempts = 0
 
         self._setup_tray()
         self._connect_signals()
@@ -98,11 +101,19 @@ class USBGuardTrayApp:
     def _try_connect(self) -> None:
         if self._client.connect():
             self._reconnect_timer.stop()
+            self._reconnect_attempts = 0  # Reset on successful connection
+        else:
+            # Exponential backoff: increase interval up to maximum
+            self._reconnect_attempts += 1
+            backoff = min(RECONNECT_BASE_INTERVAL * (2 ** (self._reconnect_attempts - 1)), RECONNECT_MAX_INTERVAL)
+            self._reconnect_timer.setInterval(backoff * 1000)
+            log.debug("Connection attempt %d failed, retrying in %d seconds", self._reconnect_attempts, backoff)
 
     def _on_connection_changed(self, connected: bool) -> None:
         if connected:
             self._tray.setToolTip("USBGuard GUI — connected")
             self._reconnect_timer.stop()
+            self._reconnect_attempts = 0  # Reset on successful connection
         else:
             self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
             if not self._reconnect_timer.isActive():
@@ -111,85 +122,94 @@ class USBGuardTrayApp:
     def _on_device_presence_changed(
         self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
     ) -> None:
-        log.debug(
-            "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
-            device_id,
-            event,
-            PresenceEvent(event).name if event in PresenceEvent._value2member_map_ else "?",
-            target,
-            DeviceTarget(target).name if target in DeviceTarget._value2member_map_ else "?",
-            device_rule,
-            attributes,
-        )
+        try:
+            log.debug(
+                "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
+                device_id,
+                event,
+                PresenceEvent(event).name if event in PresenceEvent._value2member_map_ else "?",
+                target,
+                DeviceTarget(target).name if target in DeviceTarget._value2member_map_ else "?",
+                device_rule,
+                attributes,
+            )
 
-        if event == PresenceEvent.REMOVE:
-            # Close any open dialog for this device
-            dialog = self._open_dialogs.pop(device_id, None)
-            if dialog:
-                dialog.close()
-            return
+            if event == PresenceEvent.REMOVE:
+                # Close any open dialog for this device
+                dialog = self._open_dialogs.pop(device_id, None)
+                if dialog:
+                    dialog.close()
+                return
 
-        # Only react to new insertions — PRESENT fires for devices already
-        # connected at daemon start, UPDATE fires on policy changes; neither
-        # should spawn a dialog.
-        if event != PresenceEvent.INSERT:
-            log.debug("DevicePresenceChanged: id=%d skipped (not INSERT)", device_id)
-            return
+            # Only react to new insertions — PRESENT fires for devices already
+            # connected at daemon start, UPDATE fires on policy changes; neither
+            # should spawn a dialog.
+            if event != PresenceEvent.INSERT:
+                log.debug("DevicePresenceChanged: id=%d skipped (not INSERT)", device_id)
+                return
 
-        # Use the target from the signal directly — more reliable than
-        # parsing the rule string, which may not reflect the applied target.
-        if target == int(DeviceTarget.ALLOW):
-            log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device_id)
-            return
+            # Use the target from the signal directly — more reliable than
+            # parsing the rule string, which may not reflect the applied target.
+            if target == int(DeviceTarget.ALLOW):
+                log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device_id)
+                return
 
-        # If screensaver is active, defer
-        if self._screensaver.active:
-            self._screensaver_pending_devices.add(device_id)
-            log.info("Device %d inserted while screen locked, deferring", device_id)
-            return
+            # If screensaver is active, defer
+            if self._screensaver.active:
+                self._screensaver_pending_devices.add(device_id)
+                log.info("Device %d inserted while screen locked, deferring", device_id)
+                return
 
-        device = Device.from_dbus(device_id, device_rule)
+            device = Device.from_dbus(device_id, device_rule)
 
-        # HID security: lock screen first, then allow after authentication
-        if device.is_hid():
-            self._handle_hid_device(device)
-            return
+            # HID security: lock screen first, then allow after authentication
+            if device.is_hid():
+                self._handle_hid_device(device)
+                return
 
-        self._show_device_dialog(device)
+            self._show_device_dialog(device)
+        except Exception as e:
+            log.exception("Error in _on_device_presence_changed for device %d: %s", device_id, e)
 
     def _on_device_policy_changed(
         self, device_id: int, target_old: int, target_new: int, device_rule: str, rule_id: int, attributes: dict
     ) -> None:
-        log.debug(
-            "DevicePolicyChanged: id=%d %s->%s",
-            device_id,
-            DeviceTarget(target_old).name if target_old in DeviceTarget._value2member_map_ else target_old,
-            DeviceTarget(target_new).name if target_new in DeviceTarget._value2member_map_ else target_new,
-        )
-        if target_new == int(DeviceTarget.ALLOW):
-            # Device was allowed by a permanent rule after the initial block —
-            # dismiss any dialog that opened on the INSERT event.
-            dialog = self._open_dialogs.pop(device_id, None)
-            if dialog:
-                log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
-                dialog.close()
-            self._screensaver_pending_devices.discard(device_id)
+        try:
+            log.debug(
+                "DevicePolicyChanged: id=%d %s->%s",
+                device_id,
+                DeviceTarget(target_old).name if target_old in DeviceTarget._value2member_map_ else target_old,
+                DeviceTarget(target_new).name if target_new in DeviceTarget._value2member_map_ else target_new,
+            )
+            if target_new == int(DeviceTarget.ALLOW):
+                # Device was allowed by a permanent rule after the initial block —
+                # dismiss any dialog that opened on the INSERT event.
+                dialog = self._open_dialogs.pop(device_id, None)
+                if dialog:
+                    log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
+                    dialog.close()
+                self._screensaver_pending_devices.discard(device_id)
+        except Exception as e:
+            log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
 
     def _handle_hid_device(self, device: Device) -> None:
         """Handle HID device insertion: warn user and lock screen."""
-        self._tray.showMessage(
-            "New keyboard/HID attached",
-            "Locking screen. Enter your password to activate the device. "
-            "If you did not attach a keyboard, check for malicious devices.",
-            QSystemTrayIcon.MessageIcon.Warning,
-            5000,
-        )
-        # Allow the HID device temporarily after a delay so the user can
-        # unlock the screen with it, then lock.
-        QTimer.singleShot(
-            HID_LOCK_DELAY * 1000,
-            lambda: self._allow_hid_and_lock(device),
-        )
+        try:
+            self._tray.showMessage(
+                "New keyboard/HID attached",
+                "Locking screen. Enter your password to activate the device. "
+                "If you did not attach a keyboard, check for malicious devices.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
+            )
+            # Allow the HID device temporarily after a delay so the user can
+            # unlock the screen with it, then lock.
+            QTimer.singleShot(
+                HID_LOCK_DELAY * 1000,
+                lambda: self._allow_hid_and_lock(device),
+            )
+        except Exception as e:
+            log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
 
     def _allow_hid_and_lock(self, device: Device) -> None:
         self._client.apply_device_policy(device.number, DeviceTarget.ALLOW, permanent=False)
