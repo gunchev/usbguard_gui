@@ -117,6 +117,7 @@ class DeviceListWindow(QMainWindow):
         self._client = client
         self._pending_apply: tuple[Device, DeviceTarget, bool] | None = None
         self._refresh_pending = False
+        self._pending_devices: list[Device] = []
         self.setWindowTitle("USBGuard — Devices")
         self.setMinimumSize(900, 400)
 
@@ -163,22 +164,21 @@ class DeviceListWindow(QMainWindow):
         self._do_refresh()
 
     def _do_refresh(self) -> None:
+        self._pending_devices = []
         self._client.list_devices()
 
     def _on_list_devices_result(self, devices: list[Device]) -> None:
+        self._pending_devices = devices
         self._client.list_rules()
 
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
-        self._client.list_devices_result.disconnect(self._on_list_devices_result)
-        self._client.list_rules_result.disconnect(self._on_list_rules_result)
         if self._pending_apply:
             device, target, permanent = self._pending_apply
             self._pending_apply = None
             self._do_apply_with_rules(device, target, permanent, rules)
         elif self._refresh_pending:
             self._refresh_pending = False
-            devices = self._last_devices if hasattr(self, "_last_devices") else []
-            self._model.set_devices(devices, _permanent_allow_hashes(rules))
+            self._model.set_devices(self._pending_devices, _permanent_allow_hashes(rules))
 
     def showEvent(self, event: QPoint) -> None:
         super().showEvent(event)
