@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QTableView,
     QToolBar,
     QVBoxLayout,
@@ -61,8 +60,6 @@ class DeviceTableModel(QAbstractTableModel):
         if rule == "reject":
             return _COLOR_REJECT
         return None
-
-    # --- QAbstractTableModel interface ---
 
     def rowCount(self, parent: QModelIndex | None = None) -> int:
         return len(self._devices)
@@ -118,10 +115,11 @@ class DeviceListWindow(QMainWindow):
     def __init__(self, client: USBGuardClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._client = client
+        self._pending_apply: tuple[Device, DeviceTarget, bool] | None = None
+        self._refresh_pending = False
         self.setWindowTitle("USBGuard — Devices")
         self.setMinimumSize(900, 400)
 
-        # Model & view
         self._model = DeviceTableModel(self)
         self._view = QTableView()
         self._view.setModel(self._model)
@@ -133,43 +131,58 @@ class DeviceListWindow(QMainWindow):
         self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._view.verticalHeader().setVisible(False)
 
-        # Toolbar
         toolbar = QToolBar("Actions")
         toolbar.setMovable(False)
         refresh_action = QAction("Refresh", self)
-        refresh_action.triggered.connect(self.refresh)
+        refresh_action.triggered.connect(self._request_refresh)
         toolbar.addAction(refresh_action)
         self.addToolBar(toolbar)
 
-        # Central widget
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._view)
         self.setCentralWidget(central)
 
-        # Connect D-Bus signals for live updates (debounced to avoid excessive refreshes)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(500)
-        self._refresh_timer.timeout.connect(self.refresh)
+        self._refresh_timer.timeout.connect(self._do_refresh)
 
         self._client.device_presence_changed.connect(self._schedule_refresh)
         self._client.device_policy_changed.connect(self._schedule_refresh)
-
-    def refresh(self) -> None:
-        """Reload the device list from USBGuard."""
-        devices = self._client.list_devices()
-        permanent_allow_hashes = _permanent_allow_hashes(self._client.list_rules())
-        self._model.set_devices(devices, permanent_allow_hashes)
+        self._client.list_devices_result.connect(self._on_list_devices_result)
+        self._client.list_rules_result.connect(self._on_list_rules_result)
 
     def _schedule_refresh(self) -> None:
-        """Debounce refresh calls to avoid excessive D-Bus traffic."""
+        self._refresh_pending = True
         self._refresh_timer.start()
 
-    def showEvent(self, event: object) -> None:
+    def _request_refresh(self) -> None:
+        self._refresh_pending = True
+        self._do_refresh()
+
+    def _do_refresh(self) -> None:
+        self._client.list_devices()
+
+    def _on_list_devices_result(self, devices: list[Device]) -> None:
+        self._client.list_rules()
+
+    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
+        self._client.list_devices_result.disconnect(self._on_list_devices_result)
+        self._client.list_rules_result.disconnect(self._on_list_rules_result)
+        if self._pending_apply:
+            device, target, permanent = self._pending_apply
+            self._pending_apply = None
+            self._do_apply_with_rules(device, target, permanent, rules)
+        elif self._refresh_pending:
+            self._refresh_pending = False
+            devices = self._last_devices if hasattr(self, "_last_devices") else []
+            self._model.set_devices(devices, _permanent_allow_hashes(rules))
+
+    def showEvent(self, event: QPoint) -> None:
         super().showEvent(event)
-        self.refresh()
+        self._request_refresh()
 
     def _selected_device(self) -> Device | None:
         indexes = self._view.selectionModel().selectedRows()
@@ -191,27 +204,19 @@ class DeviceListWindow(QMainWindow):
         menu.exec(self._view.viewport().mapToGlobal(pos))
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
+        self._pending_apply = (device, target, permanent)
+        self._client.list_rules()
+
+    def _do_apply_with_rules(
+        self, device: Device, target: DeviceTarget, permanent: bool, rules: list[tuple[int, str]]
+    ) -> None:
         if target == DeviceTarget.ALLOW and not permanent and device.hash:
-            for rule_id, rule_str in self._client.list_rules():
+            for rule_id, rule_str in rules:
                 parsed = parse_device_rule(rule_str)
-                if (
-                    parsed["rule"] == "allow"
-                    and parsed["hash"] == device.hash
-                    and not self._client.remove_rule(rule_id)
-                ):
-                    QMessageBox.warning(
-                        self,
-                        "Failed to Remove Rule",
-                        f"Could not remove permanent allow rule for {device.name or device.id}.",
-                    )
-                    return
-        if not self._client.apply_device_policy(device.number, target, permanent):
-            QMessageBox.warning(
-                self,
-                "Failed to Apply Policy",
-                f"Could not apply {target.name.lower()} policy to {device.name or device.id}.",
-            )
-        self.refresh()
+                if parsed["rule"] == "allow" and parsed["hash"] == device.hash:
+                    self._client.remove_rule(rule_id)
+        self._client.apply_device_policy(device.number, target, permanent)
+        self._request_refresh()
 
 
 def _permanent_allow_hashes(rules: list[tuple[int, str]]) -> set[str]:

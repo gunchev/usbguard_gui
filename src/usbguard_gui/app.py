@@ -65,6 +65,8 @@ class USBGuardTrayApp:
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
+        self._hid_pending_device: int | None = None
+        self._screensaver_pending_ids: list[int] | None = None
 
         # Reconnect timer with exponential backoff
         self._reconnect_timer = QTimer()
@@ -74,6 +76,7 @@ class USBGuardTrayApp:
 
         self._setup_tray()
         self._connect_signals()
+        self._connect_client_signals()
 
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(_app_icon(), self._app)
@@ -99,6 +102,36 @@ class USBGuardTrayApp:
         self._client.device_policy_changed.connect(self._on_device_policy_changed)
         self._client.connection_changed.connect(self._on_connection_changed)
         self._screensaver.active_changed.connect(self._on_screensaver_changed)
+
+    def _connect_client_signals(self) -> None:
+        self._client.list_devices_result.connect(self._on_list_devices_result)
+
+    def _on_list_devices_result(self, devices: list[Device]) -> None:
+        if self._hid_pending_device is not None:
+            device_number = self._hid_pending_device
+            self._hid_pending_device = None
+            if any(d.number == device_number for d in devices):
+                self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
+            self._screensaver.lock()
+        elif self._screensaver_pending_ids is not None:
+            pending_ids = self._screensaver_pending_ids
+            self._screensaver_pending_ids = None
+            pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
+
+            if not pending_devices:
+                return
+
+            count = len(pending_devices)
+            names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
+            self._tray.showMessage(
+                f"{count} USB device(s) connected during absence",
+                names,
+                QSystemTrayIcon.MessageIcon.Information,
+                10000,
+            )
+
+            for device in pending_devices:
+                self._show_device_dialog(device)
 
     def start(self) -> None:
         """Initialize D-Bus connections and start the application."""
@@ -219,33 +252,16 @@ class USBGuardTrayApp:
             log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
 
     def _allow_hid_and_lock(self, device_number: int) -> None:
-        devices = self._client.list_devices()
-        if any(d.number == device_number for d in devices):
-            self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
-        self._screensaver.lock()
+        self._hid_pending_device = device_number
+        self._client.list_devices()
 
     def _on_screensaver_changed(self, active: bool) -> None:
         if active or not self._screensaver_pending_devices:
             return
 
-        # Screen unlocked — show summary of devices inserted while locked
-        pending_ids = list(self._screensaver_pending_devices)
+        self._screensaver_pending_ids = list(self._screensaver_pending_devices)
         self._screensaver_pending_devices.clear()
-        devices = self._client.list_devices()
-        pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
-
-        if not pending_devices:
-            return
-
-        count = len(pending_devices)
-        names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
-        self._tray.showMessage(
-            f"{count} USB device(s) connected during absence", names, QSystemTrayIcon.MessageIcon.Information, 10000
-        )
-
-        # Show dialogs for each pending device
-        for device in pending_devices:
-            self._show_device_dialog(device)
+        self._client.list_devices()
 
     def _show_device_dialog(self, device: Device) -> None:
         # Don't open duplicate dialogs
