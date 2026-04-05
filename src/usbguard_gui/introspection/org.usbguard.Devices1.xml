@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<node name="/org/usbguard1/Devices">
+  <interface name="org.usbguard.Devices1">
+    <method name="listDevices">
+      <arg name="query" type="s" direction="in"/>
+      <arg name="devices" type="a(is)" direction="out"/>
+    </method>
+    <method name="applyDevicePolicy">
+      <arg name="device_id" type="u" direction="in"/>
+      <arg name="target" type="u" direction="in"/>
+      <arg name="permanent" type="b" direction="in"/>
+      <arg name="rule_id" type="u" direction="out"/>
+    </method>
+    <signal name="DevicePresenceChanged">
+      <arg name="device_id" type="u"/>
+      <arg name="event" type="u"/>
+      <arg name="target" type="u"/>
+      <arg name="device_rule" type="s"/>
+      <arg name="attributes" type="a{ss}"/>
+    </signal>
+    <signal name="DevicePolicyChanged">
+      <arg name="device_id" type="u"/>
+      <arg name="target_old" type="u"/>
+      <arg name="target_new" type="u"/>
+      <arg name="device_rule" type="s"/>
+      <arg name="rule_id" type="u"/>
+      <arg name="attributes" type="a{ss}"/>
+    </signal>
+  </interface>
+</node>
