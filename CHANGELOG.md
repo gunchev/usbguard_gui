@@ -1,3 +1,16 @@
+## 0.0.11 — 2026-04-05
+
+### Changes since v0.0.10
+
+- 0d5f69e Fix device list never populated due to two independent bugs
+- 2d15e00 Fix device list refresh by using refresh ID for signal correlation
+- 7f02094 Fix device list not updating due to missing pending_devices storage
+- b835a3a Add tests for async signal-based API
+- 520b74b Fix app.py and device_list.py for async API
+- dbf08f2 Add DESIGN.md documenting the PyGObject replacement approaches
+- 3f83c62 Replace PyGObject dependency with dbus-fast (QThread+asyncio)
+- db4f6db Update GitHub Actions workflow to use Podman
+
 ## 0.0.10 — 2026-04-05
 
 ### Changes since v0.0.9
