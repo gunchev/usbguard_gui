@@ -1,5 +1,7 @@
 """Tests for the D-Bus client (mocked)."""
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +12,7 @@ from usbguard_gui.device import DeviceTarget
 
 @pytest.fixture()
 def mock_bus():
-    with patch("usbguard_gui.dbus_client.SystemMessageBus") as mock_cls:
+    with patch("usbguard_gui.dbus_client.MessageBus") as mock_cls:
         bus_instance = MagicMock()
         mock_cls.return_value = bus_instance
         yield bus_instance
@@ -23,74 +25,76 @@ def client(mock_bus):
 
 @pytest.fixture()
 def connected_client(client, mock_bus):
-    devices_proxy = MagicMock()
-    policy_proxy = MagicMock()
-    mock_bus.get_proxy.side_effect = [devices_proxy, policy_proxy]
+    devices_obj = MagicMock()
+    policy_obj = MagicMock()
+    devices_iface = MagicMock()
+    policy_iface = MagicMock()
+    devices_obj.get_interface.return_value = devices_iface
+    policy_obj.get_interface.return_value = policy_iface
+    mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
     client.connect()
-    return client, devices_proxy, policy_proxy
+    return client, devices_iface, policy_iface
 
 
 class TestIsPermissionError:
     """Test _is_permission_error function."""
 
     def test_access_denied_error_name(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        e = DBusError("test")
-        e.error_name = "org.freedesktop.DBus.Error.AccessDenied"
+        e = DBusError(ErrorType.ACCESS_DENIED, "test")
         assert _is_permission_error(e) is True
 
     def test_policykit_error_name(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError
 
-        e = DBusError("test")
-        e.error_name = "org.freedesktop.PolicyKit1.Error.NotAuthorized"
+        e = DBusError("org.freedesktop.PolicyKit1.Error.NotAuthorized", "test")
         assert _is_permission_error(e) is True
 
     def test_usbguard_permission_error_name(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError
 
-        e = DBusError("test")
-        e.error_name = "org.usbguard.Error.PermissionDenied"
+        e = DBusError("org.usbguard.Error.PermissionDenied", "test")
         assert _is_permission_error(e) is True
 
     def test_not_authorized_in_message(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError
 
-        e = DBusError("Not authorized to perform action")
-        e.error_name = ""
+        e = DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "Not authorized to perform action")
         assert _is_permission_error(e) is True
 
     def test_access_denied_in_message(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError
 
-        e = DBusError("AccessDenied error")
-        e.error_name = ""
+        e = DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "AccessDenied error")
         assert _is_permission_error(e) is True
 
     def test_not_permission_error(self):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        e = DBusError("Service unavailable")
-        e.error_name = "org.freedesktop.DBus.Error.ServiceUnknown"
+        e = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
         assert _is_permission_error(e) is False
 
 
 class TestUSBGuardClient:
     def test_connect_success(self, client, mock_bus):
-        mock_bus.get_proxy.return_value = MagicMock()
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
         assert client.connect() is True
         assert client.connected is True
 
     def test_connect_failure(self, client, mock_bus):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        mock_bus.get_proxy.side_effect = DBusError("not available")
+        mock_bus.connect.side_effect = DBusError(ErrorType.SERVICE_UNKNOWN, "not available")
         assert client.connect() is False
         assert client.connected is False
 
     def test_connect_emits_signal(self, client, mock_bus):
-        mock_bus.get_proxy.return_value = MagicMock()
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
         emitted = []
 
         def capture(value):
@@ -101,12 +105,15 @@ class TestUSBGuardClient:
         assert emitted == [True]
 
     def test_list_devices(self, client, mock_bus):
-        devices_proxy = MagicMock()
-        policy_proxy = MagicMock()
-        mock_bus.get_proxy.side_effect = [devices_proxy, policy_proxy]
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        devices_iface = MagicMock()
+        devices_obj.get_interface.return_value = devices_iface
+        policy_obj.get_interface.return_value = MagicMock()
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
         client.connect()
 
-        devices_proxy.listDevices.return_value = [
+        devices_iface.call_list_devices.return_value = [
             (1, 'allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI" with-interface 09:00:00'),
             (2, 'block id 04f2:b2ea name "Camera" with-interface 0e:01:00'),
         ]
@@ -118,77 +125,81 @@ class TestUSBGuardClient:
         assert devices[1].is_blocked()
 
     def test_list_devices_with_custom_query(self, connected_client):
-        client, devices_proxy, _ = connected_client
-        devices_proxy.listDevices.return_value = [(1, "allow id 1d6b:0002")]
+        client, devices_iface, _ = connected_client
+        devices_iface.call_list_devices.return_value = [(1, "allow id 1d6b:0002")]
 
         devices = client.list_devices(query="match blocked")
-        devices_proxy.listDevices.assert_called_with("match blocked")
+        devices_iface.call_list_devices.assert_called_with("match blocked")
         assert len(devices) == 1
 
     def test_list_devices_dbus_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, devices_proxy, _ = connected_client
-        devices_proxy.listDevices.side_effect = DBusError("Service unavailable")
+        client, devices_iface, _ = connected_client
+        devices_iface.call_list_devices.side_effect = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
 
         result = client.list_devices()
         assert result == []
 
     def test_list_devices_permission_error_no_disconnect(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, devices_proxy, _ = connected_client
-        e = DBusError("Not authorized")
-        e.error_name = "org.freedesktop.DBus.Error.AccessDenied"
-        devices_proxy.listDevices.side_effect = e
+        client, devices_iface, _ = connected_client
+        e = DBusError(ErrorType.ACCESS_DENIED, "Not authorized")
+        devices_iface.call_list_devices.side_effect = e
 
         result = client.list_devices()
         assert result == []
         assert client.connected is True
 
     def test_apply_device_policy(self, client, mock_bus):
-        devices_proxy = MagicMock()
-        policy_proxy = MagicMock()
-        mock_bus.get_proxy.side_effect = [devices_proxy, policy_proxy]
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        devices_iface = MagicMock()
+        devices_obj.get_interface.return_value = devices_iface
+        policy_obj.get_interface.return_value = MagicMock()
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
         client.connect()
 
-        devices_proxy.applyDevicePolicy.return_value = 42
+        devices_iface.call_apply_device_policy.return_value = 42
         result = client.apply_device_policy(1, DeviceTarget.ALLOW, permanent=True)
         assert result == 42
-        devices_proxy.applyDevicePolicy.assert_called_once_with(1, 0, True)
+        devices_iface.call_apply_device_policy.assert_called_once_with(1, 0, True)
 
     def test_apply_device_policy_not_connected(self, client):
         assert client.apply_device_policy(1, DeviceTarget.ALLOW) is None
 
     def test_apply_device_policy_dbus_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, devices_proxy, _ = connected_client
-        devices_proxy.applyDevicePolicy.side_effect = DBusError("Service unavailable")
+        client, devices_iface, _ = connected_client
+        devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
 
         result = client.apply_device_policy(1, DeviceTarget.ALLOW)
         assert result is None
         assert client.connected is False
 
     def test_apply_device_policy_permission_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, devices_proxy, _ = connected_client
-        e = DBusError("Not authorized")
-        e.error_name = "org.freedesktop.DBus.Error.AccessDenied"
-        devices_proxy.applyDevicePolicy.side_effect = e
+        client, devices_iface, _ = connected_client
+        e = DBusError(ErrorType.ACCESS_DENIED, "Not authorized")
+        devices_iface.call_apply_device_policy.side_effect = e
 
         result = client.apply_device_policy(1, DeviceTarget.ALLOW)
         assert result is None
         assert client.connected is True
 
     def test_list_rules(self, client, mock_bus):
-        devices_proxy = MagicMock()
-        policy_proxy = MagicMock()
-        mock_bus.get_proxy.side_effect = [devices_proxy, policy_proxy]
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        devices_obj.get_interface.return_value = MagicMock()
+        policy_iface = MagicMock()
+        policy_obj.get_interface.return_value = policy_iface
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
         client.connect()
 
-        policy_proxy.listRules.return_value = [(1, "allow id 1d6b:0002"), (2, "block id 04f2:b2ea")]
+        policy_iface.call_list_rules.return_value = [(1, "allow id 1d6b:0002"), (2, "block id 04f2:b2ea")]
         rules = client.list_rules()
         assert len(rules) == 2
         assert rules[0] == (1, "allow id 1d6b:0002")
@@ -197,51 +208,50 @@ class TestUSBGuardClient:
         assert client.list_rules() == []
 
     def test_list_rules_with_label(self, connected_client):
-        client, _, policy_proxy = connected_client
-        policy_proxy.listRules.return_value = [(1, "allow id 1d6b:0002")]
+        client, _, policy_iface = connected_client
+        policy_iface.call_list_rules.return_value = [(1, "allow id 1d6b:0002")]
 
         rules = client.list_rules(label="my-label")
-        policy_proxy.listRules.assert_called_with("my-label")
+        policy_iface.call_list_rules.assert_called_with("my-label")
         assert len(rules) == 1
 
     def test_list_rules_dbus_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, _, policy_proxy = connected_client
-        policy_proxy.listRules.side_effect = DBusError("Service unavailable")
+        client, _, policy_iface = connected_client
+        policy_iface.call_list_rules.side_effect = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
 
         result = client.list_rules()
         assert result == []
         assert client.connected is False
 
     def test_remove_rule(self, connected_client):
-        client, _, policy_proxy = connected_client
-        policy_proxy.removeRule.return_value = None
+        client, _, policy_iface = connected_client
+        policy_iface.call_remove_rule.return_value = None
 
         result = client.remove_rule(1)
         assert result is True
-        policy_proxy.removeRule.assert_called_once_with(1)
+        policy_iface.call_remove_rule.assert_called_once_with(1)
 
     def test_remove_rule_not_connected(self, client):
         assert client.remove_rule(1) is False
 
     def test_remove_rule_dbus_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, _, policy_proxy = connected_client
-        policy_proxy.removeRule.side_effect = DBusError("Service unavailable")
+        client, _, policy_iface = connected_client
+        policy_iface.call_remove_rule.side_effect = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
 
         result = client.remove_rule(1)
         assert result is False
         assert client.connected is False
 
     def test_remove_rule_permission_error(self, connected_client):
-        from dasbus.error import DBusError
+        from dbus_fast import DBusError, ErrorType
 
-        client, _, policy_proxy = connected_client
-        e = DBusError("Not authorized")
-        e.error_name = "org.freedesktop.DBus.Error.AccessDenied"
-        policy_proxy.removeRule.side_effect = e
+        client, _, policy_iface = connected_client
+        e = DBusError(ErrorType.ACCESS_DENIED, "Not authorized")
+        policy_iface.call_remove_rule.side_effect = e
 
         result = client.remove_rule(1)
         assert result is False
@@ -297,27 +307,32 @@ class TestUSBGuardClient:
         assert emitted == [(1, 2, 3, "rule", 4, {"key": "value"})]
 
     def test_subscribe_signals(self, connected_client):
-        _, devices_proxy, _ = connected_client
-        assert devices_proxy.DevicePresenceChanged.connect.called
-        assert devices_proxy.DevicePolicyChanged.connect.called
+        _, devices_iface, _ = connected_client
+        assert devices_iface.on_device_presence_changed.called
+        assert devices_iface.on_device_policy_changed.called
 
     def test_unsubscribe_signals_on_reconnect(self, connected_client):
-        client, devices_proxy, _ = connected_client
-        devices_proxy.DevicePresenceChanged.reset_mock()
-        devices_proxy.DevicePolicyChanged.reset_mock()
+        client, devices_iface, _ = connected_client
+        devices_iface.off_device_presence_changed.reset_mock()
+        devices_iface.off_device_policy_changed.reset_mock()
 
         mock_bus = client._bus
-        mock_bus.get_proxy.side_effect = [MagicMock(), MagicMock()]
+        devices_obj = MagicMock()
+        policy_obj = MagicMock()
+        devices_obj.get_interface.return_value = devices_iface
+        policy_obj.get_interface.return_value = MagicMock()
+        mock_bus.get_proxy_object.side_effect = [devices_obj, policy_obj]
 
         client.connect()
-        assert devices_proxy.DevicePresenceChanged.disconnect.called
-        assert devices_proxy.DevicePolicyChanged.disconnect.called
+        assert devices_iface.off_device_presence_changed.called
+        assert devices_iface.off_device_policy_changed.called
 
     def test_subscribe_signals_no_proxy(self, client):
-        client._devices_proxy = None
-        client._subscribe_signals()
+        client._devices_iface = None
+        client._disconnect()
 
     def test_unsubscribe_signals_exception(self, connected_client):
-        client, devices_proxy, _ = connected_client
-        devices_proxy.DevicePresenceChanged.disconnect.side_effect = Exception("fail")
-        client._unsubscribe_signals()
+        client, devices_iface, _ = connected_client
+        devices_iface.off_device_presence_changed.side_effect = Exception("fail")
+        devices_iface.off_device_policy_changed.side_effect = Exception("fail")
+        client._disconnect()

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<node name="/org/freedesktop/ScreenSaver">
+  <interface name="org.freedesktop.ScreenSaver">
+    <method name="Lock"/>
+    <signal name="ActiveChanged">
+      <arg name="active" type="b"/>
+    </signal>
+  </interface>
+</node>

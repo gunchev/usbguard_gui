@@ -1,11 +1,14 @@
-"""USBGuard D-Bus client using dasbus."""
+"""USBGuard D-Bus client using dbus-fast."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 
-from dasbus.connection import SystemMessageBus
-from dasbus.error import DBusError
+from dbus_fast import BusType, DBusError
+from dbus_fast.glib import MessageBus
+from dbus_fast.glib.proxy_object import ProxyInterface, ProxyObject
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.device import Device, DeviceTarget
@@ -18,7 +21,6 @@ USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
 USBGUARD_DEVICES_IFACE = "org.usbguard.Devices1"
 USBGUARD_POLICY_IFACE = "org.usbguard.Policy1"
 
-# D-Bus error names that indicate a permission problem, not a lost connection.
 _PERMISSION_ERRORS = frozenset(
     [
         "org.freedesktop.DBus.Error.AccessDenied",
@@ -29,9 +31,18 @@ _PERMISSION_ERRORS = frozenset(
 
 
 def _is_permission_error(e: DBusError) -> bool:
-    name = getattr(e, "error_name", "") or ""
+    error_name = getattr(e, "type", "") or ""
+    if error_name in _PERMISSION_ERRORS:
+        return True
     msg = str(e)
-    return name in _PERMISSION_ERRORS or "Not authorized" in msg or "AccessDenied" in msg
+    return "Not authorized" in msg or "AccessDenied" in msg
+
+
+def _get_introspection(filename: str) -> str:
+    module_dir = os.path.dirname(__file__)
+    path = os.path.join(module_dir, "introspection", filename)
+    with open(path) as f:
+        return f.read()
 
 
 class USBGuardClient(QObject):
@@ -41,19 +52,18 @@ class USBGuardClient(QObject):
     without direct D-Bus coupling.
     """
 
-    # Signal: (device_id, event, target, device_rule, attributes)
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
-    # Signal: (device_id, target_old, target_new, device_rule, rule_id, attributes)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-    # Signal: emitted when connection to daemon is lost or restored
     connection_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._bus = SystemMessageBus()
-        self._devices_proxy: object | None = None
-        self._policy_proxy: object | None = None
+        self._bus: MessageBus | None = None
+        self._devices_iface: ProxyInterface | None = None
+        self._policy_iface: ProxyInterface | None = None
         self._connected = False
+        self._devices_obj: ProxyObject | None = None
+        self._policy_obj: ProxyObject | None = None
 
     @property
     def connected(self) -> bool:
@@ -61,40 +71,64 @@ class USBGuardClient(QObject):
 
     def connect(self) -> bool:
         """Connect to the USBGuard D-Bus service. Returns True on success."""
-        self._unsubscribe_signals()
+        self._disconnect()
         try:
-            self._devices_proxy = self._bus.get_proxy(USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH)
-            self._policy_proxy = self._bus.get_proxy(USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH)
-            self._subscribe_signals()
-            self._connected = True
-            self.connection_changed.emit(True)
-            log.info("Connected to USBGuard D-Bus service")
-            return True
-        except DBusError as e:
-            log.error("Failed to connect to USBGuard: %s", e)
+            self._bus = MessageBus(bus_type=BusType.SYSTEM)
+            self._bus.connect()
+        except Exception as e:
+            log.error("Failed to connect to system D-Bus: %s", e)
             self._connected = False
             self.connection_changed.emit(False)
             return False
 
-    def _subscribe_signals(self) -> None:
-        """Subscribe to D-Bus signals from the Devices interface."""
-        if self._devices_proxy is None:
-            return
-        self._devices_proxy.DevicePresenceChanged.connect(self._on_device_presence_changed)
-        self._devices_proxy.DevicePolicyChanged.connect(self._on_device_policy_changed)
-
-    def _unsubscribe_signals(self) -> None:
-        """Unsubscribe from D-Bus signals on the current proxy, if any."""
-        if self._devices_proxy is None:
-            return
         try:
-            self._devices_proxy.DevicePresenceChanged.disconnect(self._on_device_presence_changed)
-            self._devices_proxy.DevicePolicyChanged.disconnect(self._on_device_policy_changed)
+            devices_introspection = _get_introspection("org.usbguard.Devices1.xml")
+            self._devices_obj = self._bus.get_proxy_object(
+                USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, devices_introspection
+            )
+            self._devices_iface = self._devices_obj.get_interface(USBGUARD_DEVICES_IFACE)
+
+            policy_introspection = _get_introspection("org.usbguard.Policy1.xml")
+            self._policy_obj = self._bus.get_proxy_object(USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH, policy_introspection)
+            self._policy_iface = self._policy_obj.get_interface(USBGUARD_POLICY_IFACE)
+
+            self._devices_iface.on_device_presence_changed(self._on_device_presence_changed)
+            self._devices_iface.on_device_policy_changed(self._on_device_policy_changed)
+
+            self._connected = True
+            self.connection_changed.emit(True)
+            log.info("Connected to USBGuard D-Bus service")
+            return True
+
+        except DBusError as e:
+            log.error("Failed to connect to USBGuard: %s", e)
+            self._disconnect()
+            self.connection_changed.emit(False)
+            return False
         except Exception as e:
-            log.debug("Failed to unsubscribe from signals: %s", e)
+            log.error("Unexpected error connecting to USBGuard: %s", e)
+            self._disconnect()
+            self.connection_changed.emit(False)
+            return False
+
+    def _disconnect(self) -> None:
+        if self._devices_iface:
+            try:
+                self._devices_iface.off_device_presence_changed(self._on_device_presence_changed)
+                self._devices_iface.off_device_policy_changed(self._on_device_policy_changed)
+            except Exception as e:
+                log.debug("Failed to unsubscribe from signals: %s", e)
+        self._devices_iface = None
+        self._policy_iface = None
+        self._devices_obj = None
+        self._policy_obj = None
+        if self._bus:
+            with contextlib.suppress(Exception):
+                self._bus.disconnect()
+            self._bus = None
 
     def _on_device_presence_changed(
-        self, device_id: int, event: int, target: int, device_rule: str, attributes: dict[str, str]
+        self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
     ) -> None:
         log.debug("DevicePresenceChanged: id=%d event=%d target=%d", device_id, event, target)
         self.device_presence_changed.emit(device_id, event, target, device_rule, attributes)
@@ -106,17 +140,17 @@ class USBGuardClient(QObject):
         target_new: int,
         device_rule: str,
         rule_id: int,
-        attributes: dict[str, str],
+        attributes: dict,
     ) -> None:
         log.debug("DevicePolicyChanged: id=%d %d->%d", device_id, target_old, target_new)
         self.device_policy_changed.emit(device_id, target_old, target_new, device_rule, rule_id, attributes)
 
     def list_devices(self, query: str = "match") -> list[Device]:
         """List devices matching the given query."""
-        if not self._devices_proxy:
+        if not self._devices_iface:
             return []
         try:
-            raw = self._devices_proxy.listDevices(query)
+            raw = self._devices_iface.call_list_devices(query)
             return [Device.from_dbus(int(dev_id), str(rule_str)) for dev_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list devices (query=%s): %s", query, e)
@@ -126,10 +160,10 @@ class USBGuardClient(QObject):
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> int | None:
         """Apply an authorization policy to a device. Returns rule_id or None on error."""
-        if not self._devices_proxy:
+        if not self._devices_iface:
             return None
         try:
-            rule_id = self._devices_proxy.applyDevicePolicy(device_id, int(target), permanent)
+            rule_id = self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
             log.info("Applied %s to device %d (permanent=%s) → rule %d", target.name, device_id, permanent, rule_id)
             return int(rule_id)
         except DBusError as e:
@@ -153,10 +187,10 @@ class USBGuardClient(QObject):
 
     def list_rules(self, label: str = "") -> list[tuple[int, str]]:
         """List policy rules."""
-        if not self._policy_proxy:
+        if not self._policy_iface:
             return []
         try:
-            raw = self._policy_proxy.listRules(label)
+            raw = self._policy_iface.call_list_rules(label)
             return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list rules (label='%s'): %s", label, e)
@@ -166,10 +200,10 @@ class USBGuardClient(QObject):
 
     def remove_rule(self, rule_id: int) -> bool:
         """Remove a policy rule by ID. Returns True on success."""
-        if not self._policy_proxy:
+        if not self._policy_iface:
             return False
         try:
-            self._policy_proxy.removeRule(rule_id)
+            self._policy_iface.call_remove_rule(rule_id)
             log.info("Removed rule %d", rule_id)
             return True
         except DBusError as e:
