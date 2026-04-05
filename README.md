@@ -54,6 +54,49 @@ by USBGuard, a popup dialog appears with options to:
 
 Click the tray icon to open the device list showing all connected USB devices.
 
+## How It Works
+
+### Startup
+On launch, the application connects to the USBGuard daemon via D-Bus and monitors the desktop screensaver state via session D-Bus. The app runs as a system tray icon with tooltip showing connection status.
+
+### Device Detection Flow
+1. USBGuard daemon blocks an unknown USB device
+2. App receives a `device_presence_changed` signal from D-Bus
+3. A popup dialog appears with options:
+   - **Allow (Permanent)** — allow device and create persistent rule
+   - **Allow (Temporary)** — allow device until it's disconnected
+   - **Block** — keep device blocked
+   - **Reject** — electrically disconnect the device
+
+### HID Devices
+Human Interface Devices (keyboards, mice, etc.) are handled specially:
+- When the screen is locked and an HID device connects, it's automatically allowed temporarily
+- When the screen unlocks, the device is allowed and the screen locks again automatically
+
+### Screensaver Integration
+- When the screen locks: the app tracks all device insertions that occur while locked
+- When the screen unlocks: displays a notification listing all devices that connected during absence
+- Opens an action dialog for each pending device so you can decide what to do
+
+### Device List Window
+- Shows all currently connected USB devices with their status
+- Displays device name, ID, hash, and class
+- Live updates via D-Bus signals (refreshes on device events)
+- Supports applying policy actions directly
+- Indicates which devices have permanent allow rules
+
+## Architecture
+
+- **UI Framework**: PyQt6
+- **D-Bus Integration**: dbus-fast with QThread-based asyncio event loop
+- **Communication Pattern**: Asynchronous operations return results via Qt signals
+- **Key Components**:
+  - `app.py` — Main tray application and signal handlers
+  - `dbus_client.py` — USBGuard daemon communication
+  - `screensaver.py` — Screensaver state monitoring
+  - `device_list.py` — Device management window
+  - `device_dialog.py` — Device action dialog
+
 ## Development
 
 ```bash
