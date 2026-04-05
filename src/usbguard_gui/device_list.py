@@ -165,6 +165,7 @@ class DeviceListWindow(QMainWindow):
     def _do_refresh(self) -> None:
         self._refresh_id += 1
         refresh_id = self._refresh_id
+        self._refresh_pending = True
         self._pending_devices = []
         self._client.list_devices_result.connect(lambda d: self._on_list_devices_result(d, refresh_id))
         self._client.list_rules_result.connect(lambda r: self._on_list_rules_result(r, refresh_id))

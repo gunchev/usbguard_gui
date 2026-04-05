@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import queue
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
@@ -64,7 +63,6 @@ class _DBusThread(QThread):
         self._policy_iface = None
         self._running = True
         self._connected = False
-        self._command_queue: queue.Queue = queue.Queue()
 
     @property
     def is_connected(self) -> bool:
@@ -75,6 +73,11 @@ class _DBusThread(QThread):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._main())
+        except RuntimeError as e:
+            # "Event loop stopped before Future completed" is expected when stop() calls loop.stop()
+            if "Event loop stopped" not in str(e):
+                log.error("DBus thread error: %s", e)
+                self.error_occurred.emit(str(e))
         except Exception as e:
             log.error("DBus thread error: %s", e)
             self.error_occurred.emit(str(e))
@@ -112,13 +115,7 @@ class _DBusThread(QThread):
             return
 
         while self._running:
-            try:
-                cmd = self._command_queue.get(timeout=0.1)
-                await cmd()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                log.error("Error processing command: %s", e)
+            await asyncio.sleep(0.1)
 
         if self._bus:
             self._bus.disconnect()

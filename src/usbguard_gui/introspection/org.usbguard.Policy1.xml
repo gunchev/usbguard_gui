@@ -3,7 +3,7 @@
   <interface name="org.usbguard.Policy1">
     <method name="listRules">
       <arg name="label" type="s" direction="in"/>
-      <arg name="rules" type="a(is)" direction="out"/>
+      <arg name="rules" type="a(us)" direction="out"/>
     </method>
     <method name="removeRule">
       <arg name="id" type="u" direction="in"/>

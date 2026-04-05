@@ -297,3 +297,34 @@ class TestDBusThread:
         coro = MagicMock()
         thread._schedule(coro)
         thread._loop.call_soon_threadsafe.assert_called_once()
+
+    def test_no_command_queue(self):
+        """_DBusThread must not have a blocking command queue — it caused the event loop to deadlock."""
+        thread = _DBusThread()
+        assert not hasattr(thread, "_command_queue")
+
+    def test_event_loop_runs_scheduled_coroutines(self):
+        """_schedule() coroutines must actually execute (i.e. the event loop is not blocked)."""
+        import asyncio
+
+        results: list[str] = []
+
+        async def run_with_schedule():
+            loop = asyncio.get_event_loop()
+            thread = _DBusThread()
+            thread._loop = loop
+            thread._running = True
+
+            async def work():
+                results.append("ran")
+                thread._running = False  # stop the keep-alive loop
+
+            thread._schedule(work())
+            # Simulate the keep-alive loop for a few iterations
+            for _ in range(10):
+                await asyncio.sleep(0)
+                if not thread._running:
+                    break
+
+        asyncio.run(run_with_schedule())
+        assert results == ["ran"], "Scheduled coroutine was never executed — event loop was blocked"
