@@ -8,10 +8,10 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QObject, pyqtSignal  # noqa: E402
+from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.device import Device  # noqa: E402
-from usbguard_gui.device_list import DeviceListWindow  # noqa: E402
+from usbguard_gui.device import Device
+from usbguard_gui.device_list import DeviceListWindow
 
 
 class _FakeClient(QObject):
@@ -97,7 +97,6 @@ class TestRefreshFlow:
         rules: list[tuple[int, str]] = []
 
         window._request_refresh()
-        refresh_id = window._refresh_id
 
         # Simulate async results arriving
         client.list_devices_result.emit(devices)
@@ -127,7 +126,6 @@ class TestRefreshFlow:
         # Simulate timer firing directly
         window._do_refresh()
 
-        refresh_id = window._refresh_id
         client.list_devices_result.emit(devices)
         client.list_rules_result.emit([])
 
