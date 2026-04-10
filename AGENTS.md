@@ -22,7 +22,7 @@ uv run pytest tests/test_file.py                    # run single test file
 uv run pytest -k test_name                          # run single test by name
 uv run pytest -v --cov . --cov-report=term-missing  # coverage
 uv run ruff check src/ tests/                       # lint
-uv run ruff format src/ tests/                      # format
+uv run autopep8 --in-place --recursive src/ tests/  # format
 uv run tox                                          # test across Python versions
 ```
 
@@ -30,8 +30,8 @@ uv run tox                                          # test across Python version
 ```bash
 make test          # run all tests (uv run pytest -v)
 make check         # lint + test
-make lint          # ruff check + format check
-make format        # auto-format with ruff
+make lint          # ruff check + autopep8 format check
+make format        # auto-format with autopep8
 make coverage      # test with coverage report
 make build         # build wheel package
 make clean         # clean build artifacts
@@ -44,20 +44,23 @@ make run           # sync dev deps and run app
 - **Line length**: 120 characters maximum
 - **Indentation**: 4 spaces for Python files
 - **Line endings**: LF
-- **Formatter**: ruff
+- **Formatter**: autopep8
 - **Charset**: UTF-8
 - **Trailing whitespace**: trimmed
 - **Final newline**: required
 - **EditorConfig**: Check `.editorconfig` for additional editor-specific settings
 
-### Ruff Configuration (pyproject.toml)
+### Linter/Formatter Configuration (pyproject.toml)
 ```toml
 [tool.ruff]
 line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "W", "UP", "B", "SIM", "RUF"]
+
+[tool.autopep8]
+max_line_length = 120
 ```
 
 ### Imports

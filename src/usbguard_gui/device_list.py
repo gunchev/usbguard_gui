@@ -4,27 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import (
-    QAbstractTableModel,
-    QByteArray,
-    QModelIndex,
-    QPoint,
-    QSettings,
-    QSortFilterProxyModel,
-    Qt,
-    QTimer,
-)
+from PyQt6.QtCore import QAbstractTableModel, QByteArray, QModelIndex, QPoint, QSettings, QSortFilterProxyModel, Qt, \
+    QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QColor
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QHeaderView,
-    QMainWindow,
-    QMenu,
-    QTableView,
-    QToolBar,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, QTableView, QToolBar, QVBoxLayout, \
+    QWidget
 
 from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
 

@@ -17,7 +17,7 @@ help:
 	@echo "    coverage:           run all tests and collect code coverage"
 	@echo "    lint:               run linters"
 	@echo
-	@echo "    format:             auto-format code with ruff"
+	@echo "    format:             auto-format code with autopep8"
 	@echo
 	@echo "    build:              build the source and whl package, look for */dist/*.whl"
 	@echo
@@ -47,12 +47,12 @@ coverage:
 .PHONY: lint
 lint:
 	uv run ruff check src/ tests/
-	uv run ruff format --check src/ tests/
+	uv run autopep8 --check --recursive src/ tests/
 
 
 .PHONY: format
 format:
-	uv run ruff format src/ tests/
+	uv run autopep8 --in-place --recursive src/ tests/
 	uv run ruff check --fix src/ tests/
 
 

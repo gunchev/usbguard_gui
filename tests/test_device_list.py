@@ -1,17 +1,15 @@
 """Tests for DeviceListWindow refresh logic."""
 
 from __future__ import annotations
+from usbguard_gui.device_list import DeviceListWindow
+from usbguard_gui.device import Device
+from PyQt6.QtCore import QObject, pyqtSignal
 
 import os
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PyQt6.QtCore import QObject, pyqtSignal
-
-from usbguard_gui.device import Device
-from usbguard_gui.device_list import DeviceListWindow
 
 
 class _FakeClient(QObject):
