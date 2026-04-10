@@ -1,3 +1,9 @@
+## 0.0.13 — 2026-04-10
+
+### Changes since v0.0.12
+
+- dff22be Fix clean exit and persist device list window state
+
 ## 0.0.12 — 2026-04-10
 
 ### Changes since v0.0.11
