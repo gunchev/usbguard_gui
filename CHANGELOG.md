@@ -1,3 +1,14 @@
+## 0.1.0 — 2026-04-10
+
+### Changes since v0.0.13
+
+- e00caa3 feat: Toggle device list visibility on tray icon click
+- 91f6cd9 OpenCode is no Anthropic ;-)
+- ebaf3ac CI: add libglvnd-egl for libEGL.so.1 required by PyQt6
+- 0c2d19c Return some needed deps.
+- 4fad4fa Fix tox: add pytest-qt, tox-uv; run all Pythons in CI via Fedora packages
+- 567e4da fix: Fix ImportError: libGL.so.1, CI
+
 ## 0.0.13 — 2026-04-10
 
 ### Changes since v0.0.12
