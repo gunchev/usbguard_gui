@@ -1,3 +1,12 @@
+## 0.0.12 — 2026-04-10
+
+### Changes since v0.0.11
+
+- bc80337 Enforce single application instance using QLockFile
+- 34bedf1 Improve devices dialog: sortable, resizable, and reorderable columns
+- 2cfd0f5 Add documentation on how the application works and its architecture
+- cda1066 Clean up test_device_list.py: remove unused variables and noqa comments
+
 ## 0.0.11 — 2026-04-05
 
 ### Changes since v0.0.10
