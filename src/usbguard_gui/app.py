@@ -17,6 +17,7 @@ from usbguard_gui.device import Device, DeviceTarget, PresenceEvent
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
+from usbguard_gui.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class USBGuardTrayApp:
         self._app = app
         self._client = USBGuardClient()
         self._screensaver = ScreensaverMonitor()
+        self._settings = Settings()
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
@@ -89,6 +91,14 @@ class USBGuardTrayApp:
 
         menu.addSeparator()
 
+        self._action_disable_hid = QAction("Disable special HID device treatment")
+        self._action_disable_hid.setCheckable(True)
+        self._action_disable_hid.setChecked(self._settings.disable_hid_treatment())
+        self._action_disable_hid.toggled.connect(self._on_disable_hid_toggled)
+        menu.addAction(self._action_disable_hid)
+
+        menu.addSeparator()
+
         self._action_quit = QAction("Quit")
         self._action_quit.triggered.connect(self._quit)
         menu.addAction(self._action_quit)
@@ -96,6 +106,9 @@ class USBGuardTrayApp:
         self._tray.setContextMenu(menu)
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
+
+    def _on_disable_hid_toggled(self, checked: bool) -> None:
+        self._settings.set_disable_hid_treatment(checked)
 
     def _connect_signals(self) -> None:
         self._client.device_presence_changed.connect(self._on_device_presence_changed)
@@ -202,7 +215,7 @@ class USBGuardTrayApp:
             # newly-attached keyboard can be used to unlock the screen.
             # has_hid_interface() catches composite devices (e.g. HID + MSC)
             # too — any HID interface can send keystrokes.
-            if device.has_hid_interface():
+            if device.has_hid_interface() and not self._settings.disable_hid_treatment():
                 if self._screensaver.active:
                     log.info(
                         "HID device %d inserted while screen locked, allowing temporarily so it can unlock",
