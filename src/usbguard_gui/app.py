@@ -298,7 +298,10 @@ class USBGuardTrayApp:
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self._show_device_list()
+            if self._device_list_window is not None and self._device_list_window.isVisible():
+                self._device_list_window.hide()
+            else:
+                self._show_device_list()
 
     def _quit(self) -> None:
         self._reconnect_timer.stop()
