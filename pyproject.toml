@@ -40,6 +40,7 @@ dev = [
     "pytest-mock",
     "pytest-cov",
     "tox",
+    "tox-uv",
     "ruff",
     "pyqt6-stubs>=20250824",
     "pytest-qt>=4.5.0",
