@@ -123,7 +123,6 @@ class DeviceListWindow(QMainWindow):
         self._pending_apply: tuple[Device, DeviceTarget, bool] | None = None
         self._refresh_pending = False
         self._pending_devices: list[Device] = []
-        self._refresh_id = 0
         self.setWindowTitle("USBGuard — Devices")
         self.setMinimumSize(900, 500)
 
@@ -174,6 +173,10 @@ class DeviceListWindow(QMainWindow):
 
         self._client.device_presence_changed.connect(self._schedule_refresh)
         self._client.device_policy_changed.connect(self._schedule_refresh)
+        # Connect result signals once — previously _do_refresh() added a fresh
+        # lambda per call, leaking one connection per refresh.
+        self._client.list_devices_result.connect(self._on_list_devices_result)
+        self._client.list_rules_result.connect(self._on_list_rules_result)
 
     def _schedule_refresh(self) -> None:
         self._refresh_pending = True
@@ -184,23 +187,17 @@ class DeviceListWindow(QMainWindow):
         self._do_refresh()
 
     def _do_refresh(self) -> None:
-        self._refresh_id += 1
-        refresh_id = self._refresh_id
         self._refresh_pending = True
         self._pending_devices = []
-        self._client.list_devices_result.connect(lambda d: self._on_list_devices_result(d, refresh_id))
-        self._client.list_rules_result.connect(lambda r: self._on_list_rules_result(r, refresh_id))
         self._client.list_devices()
 
-    def _on_list_devices_result(self, devices: list[Device], refresh_id: int) -> None:
-        if refresh_id != self._refresh_id:
+    def _on_list_devices_result(self, devices: list[Device]) -> None:
+        if not self._refresh_pending:
             return
         self._pending_devices = devices
         self._client.list_rules()
 
-    def _on_list_rules_result(self, rules: list[tuple[int, str]], refresh_id: int) -> None:
-        if refresh_id != self._refresh_id:
-            return
+    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
         if self._pending_apply:
             device, target, permanent = self._pending_apply
             self._pending_apply = None

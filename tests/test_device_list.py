@@ -76,11 +76,6 @@ class TestDoRefreshSetsFlag:
         window._do_refresh()
         assert window._refresh_pending is True
 
-    def test_increments_refresh_id(self, window):
-        before = window._refresh_id
-        window._do_refresh()
-        assert window._refresh_id == before + 1
-
     def test_calls_list_devices(self, window, client):
         before = client.list_devices_calls
         window._do_refresh()
@@ -129,25 +124,33 @@ class TestRefreshFlow:
 
         assert window._model.rowCount() == 1
 
-    def test_stale_refresh_id_is_ignored(self, window, client):
-        """Results from old refreshes must not update the model."""
+    def test_rapid_refreshes_still_update_model(self, window, client):
+        """Repeated _do_refresh() calls must still update the model when results arrive."""
         window._request_refresh()
-        old_id = window._refresh_id
+        window._do_refresh()  # superseding refresh
 
-        # Start a new refresh, making old_id stale
-        window._do_refresh()
-        new_id = window._refresh_id
-        assert new_id == old_id + 1
-
-        # Emit the OLD result (old_id lambda still fires but should be ignored)
-        # The new refresh lambda captures new_id; old one captures old_id.
-        # Both lambdas fire: old returns early, new processes.
         devices = [_make_device(99)]
         client.list_devices_result.emit(devices)
         client.list_rules_result.emit([])
 
-        # Model updated via new refresh's lambda
         assert window._model.rowCount() == 1
+
+    def test_do_refresh_does_not_leak_signal_connections(self, window, client):
+        """Repeated refreshes must not add new signal connections.
+
+        Previously each _do_refresh() connected a fresh lambda to
+        list_devices_result / list_rules_result and never disconnected it,
+        leaking one connection per refresh. Connections should be made once
+        in __init__ and stay at 1 no matter how many times we refresh.
+        """
+        before_devices = client.receivers(client.list_devices_result)
+        before_rules = client.receivers(client.list_rules_result)
+
+        for _ in range(5):
+            window._do_refresh()
+
+        assert client.receivers(client.list_devices_result) == before_devices
+        assert client.receivers(client.list_rules_result) == before_rules
 
     def test_pending_apply_takes_priority_over_refresh(self, window, client):
         """When _pending_apply is set, list_rules_result handles apply not refresh."""

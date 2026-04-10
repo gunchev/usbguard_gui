@@ -41,7 +41,7 @@ help:
 .PHONY: lint
 lint:
 	uv run ruff check src/ tests/
-	uv run autopep8 --check --recursive src/ tests/
+	uv run autopep8 --diff --recursive src/ tests/
 
 
 .PHONY: test

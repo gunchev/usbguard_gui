@@ -44,6 +44,12 @@ def _get_introspection(filename: str) -> str:
         return f.read()
 
 
+# Pre-load introspection XML at import time so the async event loop never
+# blocks on file I/O.
+_DEVICES_INTROSPECTION = _get_introspection("org.usbguard.Devices1.xml")
+_POLICY_INTROSPECTION = _get_introspection("org.usbguard.Policy1.xml")
+
+
 class _DBusThread(QThread):
     finished = pyqtSignal()
     connection_changed = pyqtSignal(bool)
@@ -73,11 +79,6 @@ class _DBusThread(QThread):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._main())
-        except RuntimeError as e:
-            # "Event loop stopped before Future completed" is expected when stop() calls loop.stop()
-            if "Event loop stopped" not in str(e):
-                log.error("DBus thread error: %s", e)
-                self.error_occurred.emit(str(e))
         except Exception as e:
             log.error("DBus thread error: %s", e)
             self.error_occurred.emit(str(e))
@@ -94,12 +95,14 @@ class _DBusThread(QThread):
             return
 
         try:
-            devices_introspection = _get_introspection("org.usbguard.Devices1.xml")
-            devices_obj = self._bus.get_proxy_object(USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, devices_introspection)
+            devices_obj = self._bus.get_proxy_object(
+                USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, _DEVICES_INTROSPECTION
+            )
             self._devices_iface = devices_obj.get_interface(USBGUARD_DEVICES_IFACE)
 
-            policy_introspection = _get_introspection("org.usbguard.Policy1.xml")
-            policy_obj = self._bus.get_proxy_object(USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH, policy_introspection)
+            policy_obj = self._bus.get_proxy_object(
+                USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH, _POLICY_INTROSPECTION
+            )
             self._policy_iface = policy_obj.get_interface(USBGUARD_POLICY_IFACE)
 
             self._devices_iface.on_device_presence_changed(self._on_device_presence_changed)
@@ -141,9 +144,10 @@ class _DBusThread(QThread):
             self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
 
     def stop(self) -> None:
+        # Flip the flag and let _main()'s keep-alive loop exit on its next
+        # iteration so the trailing bus.disconnect() can run. Do NOT call
+        # loop.stop() here — that kills the loop mid-await and skips cleanup.
         self._running = False
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
 
     async def _do_list_devices(self, query: str) -> None:
         try:

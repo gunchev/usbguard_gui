@@ -64,21 +64,33 @@ Click the tray icon to open the device list showing all connected USB devices. C
 
 ### Device Detection Flow
 
-1. USBGuard daemon blocks an unknown USB device
-2. App receives a `device_presence_changed` signal from D-Bus
-3. A popup dialog appears with options:
-    - **Allow (Permanent)** — allow device and create persistent rule.
-    - **Allow (Temporary)** — allow device until it's disconnected.
-    - **Block** — keep device blocked.
-    - **Reject** — electrically disconnect the device.
+1. USBGuard daemon blocks an unknown USB device.
+2. App receives a `device_presence_changed` signal from D-Bus.
+3. Handling depends on the situation:
+    - **Device is already allowed** by an existing rule — no UI, nothing to do.
+    - **Screen is locked** — the device is deferred (see *Screensaver Integration* below).
+    - **Device has at least one HID interface** — see *HID Devices* below.
+    - **Anything else** — a popup dialog appears with options:
+        - **Allow (Permanent)** — allow device and create persistent rule.
+        - **Allow (Temporary)** — allow device until it's disconnected.
+        - **Block** — keep device blocked.
+        - **Reject** — electrically disconnect the device.
 
 ### HID Devices
 
-Human Interface Devices (keyboards, mice, etc.) are handled specially:
+Any device that exposes at least one HID interface — a pure keyboard/mouse **or** a composite
+device such as HID + Mass Storage — is handled specially to defend against "BadUSB"-style
+keystroke-injection attacks:
 
-- When the screen is unlocked, a warning is displayed, the screen is locked, the device is temporarily allowed so you
-  can enter your password.
-- When the screen is locked and an HID device connects, it's automatically allowed temporarily.
+1. A tray warning appears: *"New keyboard/HID attached"*.
+2. After a short delay (3 seconds) the device is temporarily allowed and the screen is locked.
+3. You must enter your password with the newly-attached device to unlock it, which prevents
+   an unattended unlocked machine from being hijacked by an injected keystroke device.
+
+This flow only triggers for devices inserted while the screen is *unlocked*. An HID device
+plugged in while the screen is already **locked** is instead temporarily allowed immediately —
+without the warning/delay/lock dance — so you can use a newly-attached keyboard to unlock the
+machine. The temporary allow lasts only until the device is unplugged.
 
 ### Screensaver Integration
 

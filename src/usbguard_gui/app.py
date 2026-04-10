@@ -196,19 +196,27 @@ class USBGuardTrayApp:
                 log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device_id)
                 return
 
-            # If screensaver is active, defer
+            device = Device.from_dbus(device_id, device_rule)
+
+            # HID devices are handled before the screensaver check so that a
+            # newly-attached keyboard can be used to unlock the screen.
+            # has_hid_interface() catches composite devices (e.g. HID + MSC)
+            # too — any HID interface can send keystrokes.
+            if device.has_hid_interface():
+                if self._screensaver.active:
+                    log.info(
+                        "HID device %d inserted while screen locked, allowing temporarily so it can unlock",
+                        device_id,
+                    )
+                    self._client.apply_device_policy(device_id, DeviceTarget.ALLOW, permanent=False)
+                    return
+                self._handle_hid_device(device)
+                return
+
+            # Non-HID device: defer while screen is locked, otherwise prompt.
             if self._screensaver.active:
                 self._screensaver_pending_devices.add(device_id)
                 log.info("Device %d inserted while screen locked, deferring", device_id)
-                return
-
-            device = Device.from_dbus(device_id, device_rule)
-
-            # HID security: lock screen first, then allow after authentication.
-            # Use has_hid_interface() so composite devices (e.g. HID + MSC) are
-            # also caught — any HID interface can send keystrokes.
-            if device.has_hid_interface():
-                self._handle_hid_device(device)
                 return
 
             self._show_device_dialog(device)

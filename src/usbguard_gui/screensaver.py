@@ -24,6 +24,11 @@ def _get_introspection(filename: str) -> str:
         return f.read()
 
 
+# Pre-load introspection XML at import time so the async event loop never
+# blocks on file I/O.
+_SCREENSAVER_INTROSPECTION = _get_introspection("org.freedesktop.ScreenSaver.xml")
+
+
 class _ScreensaverThread(QThread):
     finished = pyqtSignal()
     connected = pyqtSignal(bool)
@@ -62,8 +67,9 @@ class _ScreensaverThread(QThread):
             return
 
         try:
-            introspection = _get_introspection("org.freedesktop.ScreenSaver.xml")
-            proxy_obj = self._bus.get_proxy_object(SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, introspection)
+            proxy_obj = self._bus.get_proxy_object(
+                SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION
+            )
             self._proxy = proxy_obj.get_interface(SCREENSAVER_IFACE)
             self._proxy.on_active_changed(self._on_active_changed)
             self.connected.emit(True)
@@ -91,9 +97,10 @@ class _ScreensaverThread(QThread):
             self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
 
     def stop(self) -> None:
+        # Flip the flag and let _main()'s keep-alive loop exit on its next
+        # iteration so the trailing bus.disconnect() can run. Do NOT call
+        # loop.stop() here — that kills the loop mid-await and skips cleanup.
         self._running = False
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
 
     async def _do_lock(self) -> None:
         if not self._proxy:
