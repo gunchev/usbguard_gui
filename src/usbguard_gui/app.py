@@ -8,7 +8,7 @@ import signal
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QLockFile, QStandardPaths, QTimer
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
@@ -322,6 +322,14 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("usbguard_gui")
     app.setQuitOnLastWindowClosed(False)
+
+    runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation)
+    if not runtime_dir:
+        runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
+    _lock = QLockFile(f"{runtime_dir}/usbguard_gui.lock")
+    if not _lock.tryLock():
+        QMessageBox.warning(None, "USBGuard GUI", "Another instance is already running.")
+        sys.exit(0)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, "USBGuard GUI", "System tray is not available.")
