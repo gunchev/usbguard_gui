@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QPoint, Qt, QTimer
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -28,6 +28,18 @@ _COLOR_ALLOW_PERMANENT = QColor(0, 80, 0)
 _COLOR_ALLOW_TEMPORARY = QColor(0, 50, 100)
 _COLOR_BLOCK = QColor(80, 40, 0)
 _COLOR_REJECT = QColor(80, 0, 0)
+
+
+class DeviceSortProxyModel(QSortFilterProxyModel):
+    """QSortFilterProxyModel with numeric comparison for the '#' column."""
+
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        if left.column() == 0:
+            try:
+                return int(left.data() or 0) < int(right.data() or 0)
+            except (ValueError, TypeError):
+                pass
+        return super().lessThan(left, right)
 
 
 class DeviceTableModel(QAbstractTableModel):
@@ -120,17 +132,24 @@ class DeviceListWindow(QMainWindow):
         self._pending_devices: list[Device] = []
         self._refresh_id = 0
         self.setWindowTitle("USBGuard — Devices")
-        self.setMinimumSize(900, 400)
+        self.setMinimumSize(900, 500)
 
         self._model = DeviceTableModel(self)
+        self._proxy = DeviceSortProxyModel(self)
+        self._proxy.setSourceModel(self._model)
+        self._columns_sized = False
+
         self._view = QTableView()
-        self._view.setModel(self._model)
+        self._view.setModel(self._proxy)
+        self._view.setSortingEnabled(True)
         self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._show_context_menu)
         self._view.horizontalHeader().setStretchLastSection(True)
-        self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._view.horizontalHeader().setSectionsMovable(True)
+        self._view.horizontalHeader().sectionMoved.connect(self._on_section_moved)
         self._view.verticalHeader().setVisible(False)
 
         toolbar = QToolBar("Actions")
@@ -187,6 +206,9 @@ class DeviceListWindow(QMainWindow):
         elif self._refresh_pending:
             self._refresh_pending = False
             self._model.set_devices(self._pending_devices, _permanent_allow_hashes(rules))
+            if not self._columns_sized:
+                self._view.resizeColumnsToContents()
+                self._columns_sized = True
 
     def showEvent(self, event: QPoint) -> None:
         super().showEvent(event)
@@ -196,7 +218,16 @@ class DeviceListWindow(QMainWindow):
         indexes = self._view.selectionModel().selectedRows()
         if not indexes:
             return None
-        return self._model.device_at(indexes[0].row())
+        source_index = self._proxy.mapToSource(indexes[0])
+        return self._model.device_at(source_index.row())
+
+    def _on_section_moved(self, logical: int, old_visual: int, new_visual: int) -> None:
+        """Keep the '#' column (logical 0) anchored at visual position 0."""
+        header = self._view.horizontalHeader()
+        if header.visualIndex(0) != 0:
+            header.blockSignals(True)
+            header.moveSection(header.visualIndex(0), 0)
+            header.blockSignals(False)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         device = self._selected_device()
