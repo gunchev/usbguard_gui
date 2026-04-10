@@ -110,7 +110,7 @@ uv run ruff format src/ tests/ # format
 - Inspired by [usbguard-gnome](https://github.com/6E006B/usbguard-gnome) — a GNOME tray applet for USBGuard that pioneered several UX ideas adopted here (HID lock-screen behaviour, screensaver awareness, device dialog flow).
 - Planned with [Claude Opus](https://claude.ai/claude-code) (Anthropic).
 - Implemented with [Claude Sonnet](https://claude.ai/claude-code) (Anthropic).
-- Infrastructure improvements by [big-pickle/OpenCode](https://opencode.ai) (Anthropic).
+- Infrastructure improvements by [big-pickle/OpenCode](https://opencode.ai).
 
 ## License
 
