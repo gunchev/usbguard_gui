@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import queue
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
@@ -37,7 +36,6 @@ class _ScreensaverThread(QThread):
         self._bus: MessageBus | None = None
         self._proxy = None
         self._running = True
-        self._command_queue: queue.Queue = queue.Queue()
 
     @property
     def active(self) -> bool:
@@ -76,12 +74,10 @@ class _ScreensaverThread(QThread):
             self.connected.emit(False)
             return
 
+        # Keep the event loop alive and yielding so that call_soon_threadsafe
+        # callbacks (e.g. screen-lock requests) are processed promptly.
         while self._running:
-            try:
-                cmd = self._command_queue.get(timeout=0.1)
-                await cmd()
-            except queue.Empty:
-                continue
+            await asyncio.sleep(0.1)
 
         if self._bus:
             self._bus.disconnect()
