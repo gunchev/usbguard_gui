@@ -301,11 +301,14 @@ class USBGuardTrayApp:
             self._show_device_list()
 
     def _quit(self) -> None:
+        self._reconnect_timer.stop()
         if self._device_list_window:
             self._device_list_window.close()
         for dialog in list(self._open_dialogs.values()):
             dialog.close()
         self._tray.hide()
+        self._client.stop()
+        self._screensaver.stop()
         self._app.quit()
 
 

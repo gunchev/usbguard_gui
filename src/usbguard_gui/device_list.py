@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor
+from PyQt6.QtCore import (
+    QAbstractTableModel,
+    QByteArray,
+    QModelIndex,
+    QPoint,
+    QSettings,
+    QSortFilterProxyModel,
+    Qt,
+    QTimer,
+)
+from PyQt6.QtGui import QAction, QCloseEvent, QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -152,6 +161,15 @@ class DeviceListWindow(QMainWindow):
         self._view.horizontalHeader().sectionMoved.connect(self._on_section_moved)
         self._view.verticalHeader().setVisible(False)
 
+        self._settings = QSettings("usbguard_gui", "DeviceList")
+        saved_geometry = self._settings.value("geometry")
+        if isinstance(saved_geometry, QByteArray) and not saved_geometry.isEmpty():
+            self.restoreGeometry(saved_geometry)
+        saved_state = self._settings.value("header_state")
+        header = self._view.horizontalHeader()
+        if isinstance(saved_state, QByteArray) and not saved_state.isEmpty() and header.restoreState(saved_state):
+            self._columns_sized = True
+
         toolbar = QToolBar("Actions")
         toolbar.setMovable(False)
         refresh_action = QAction("Refresh", self)
@@ -213,6 +231,11 @@ class DeviceListWindow(QMainWindow):
     def showEvent(self, event: QPoint) -> None:
         super().showEvent(event)
         self._request_refresh()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._settings.setValue("geometry", self.saveGeometry())
+        self._settings.setValue("header_state", self._view.horizontalHeader().saveState())
+        super().closeEvent(event)
 
     def _selected_device(self) -> Device | None:
         indexes = self._view.selectionModel().selectedRows()
