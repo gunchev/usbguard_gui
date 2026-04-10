@@ -1,3 +1,9 @@
+## 0.2.2 — 2026-04-11
+
+### Changes since v0.2.1
+
+- d527c45 Add upgrade restart mechanism with SIGUSR1
+
 ## 0.2.1 — 2026-04-11
 
 ### Changes since v0.2.0
