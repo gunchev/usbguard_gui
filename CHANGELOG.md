@@ -2,6 +2,18 @@
 
 ### Changes since v0.1.0
 
+- 0aa9fd7 Release 0.2.0
+- f5ed81f Add option to disable special HID device treatment
+- cd2c7d5 Claude Opus fixes.
+- 89d6b07 Cleanup.
+- 5508d9b fix: Screen lock not triggered on HID device insertion
+- f947d8a fix: Treat composite HID devices with the same security path as pure HID
+- 3179df3 chore: Replace ruff format with autopep8 for formatting
+
+## 0.2.0 — 2026-04-11
+
+### Changes since v0.1.0
+
 - f5ed81f Add option to disable special HID device treatment
 - cd2c7d5 Claude Opus fixes.
 - 89d6b07 Cleanup.
