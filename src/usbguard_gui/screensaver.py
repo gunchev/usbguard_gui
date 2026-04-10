@@ -44,7 +44,7 @@ class ScreensaverMonitor(QObject):
         """Connect to the screensaver D-Bus service. Returns True on success."""
         try:
             self._bus = MessageBus(bus_type=BusType.SESSION)
-            self._bus.connect()
+            self._bus.connect_sync()
 
             introspection = _get_introspection("org.freedesktop.ScreenSaver.xml")
             self._proxy_obj = self._bus.get_proxy_object(SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, introspection)
@@ -65,7 +65,7 @@ class ScreensaverMonitor(QObject):
             log.warning("Cannot lock screen: screensaver proxy not available")
             return
         try:
-            self._proxy.call_lock()
+            self._proxy.call_lock_sync()
         except DBusError as e:
             log.warning("Failed to lock screen: %s", e)
 

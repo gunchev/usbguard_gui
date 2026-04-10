@@ -3,7 +3,7 @@
   <interface name="org.usbguard.Devices1">
     <method name="listDevices">
       <arg name="query" type="s" direction="in"/>
-      <arg name="devices" type="a(is)" direction="out"/>
+      <arg name="devices" type="a(us)" direction="out"/>
     </method>
     <method name="applyDevicePolicy">
       <arg name="device_id" type="u" direction="in"/>

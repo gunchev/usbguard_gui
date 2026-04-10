@@ -74,7 +74,7 @@ class USBGuardClient(QObject):
         self._disconnect()
         try:
             self._bus = MessageBus(bus_type=BusType.SYSTEM)
-            self._bus.connect()
+            self._bus.connect_sync()
         except Exception as e:
             log.error("Failed to connect to system D-Bus: %s", e)
             self._connected = False
@@ -150,7 +150,7 @@ class USBGuardClient(QObject):
         if not self._devices_iface:
             return []
         try:
-            raw = self._devices_iface.call_list_devices(query)
+            raw = self._devices_iface.call_list_devices_sync(query)
             return [Device.from_dbus(int(dev_id), str(rule_str)) for dev_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list devices (query=%s): %s", query, e)
@@ -163,7 +163,7 @@ class USBGuardClient(QObject):
         if not self._devices_iface:
             return None
         try:
-            rule_id = self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
+            rule_id = self._devices_iface.call_apply_device_policy_sync(device_id, int(target), permanent)
             log.info("Applied %s to device %d (permanent=%s) → rule %d", target.name, device_id, permanent, rule_id)
             return int(rule_id)
         except DBusError as e:
@@ -190,7 +190,7 @@ class USBGuardClient(QObject):
         if not self._policy_iface:
             return []
         try:
-            raw = self._policy_iface.call_list_rules(label)
+            raw = self._policy_iface.call_list_rules_sync(label)
             return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw]
         except DBusError as e:
             log.error("Failed to list rules (label='%s'): %s", label, e)
@@ -203,7 +203,7 @@ class USBGuardClient(QObject):
         if not self._policy_iface:
             return False
         try:
-            self._policy_iface.call_remove_rule(rule_id)
+            self._policy_iface.call_remove_rule_sync(rule_id)
             log.info("Removed rule %d", rule_id)
             return True
         except DBusError as e:

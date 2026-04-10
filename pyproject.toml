@@ -32,6 +32,7 @@ classifiers = [
 dependencies = [
     "PyQt6>=6.5",
     "dbus-fast>=1.0",
+    "pygobject>=3.42",
 ]
 
 [dependency-groups]
