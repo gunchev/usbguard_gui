@@ -129,7 +129,7 @@ clean:
 
 .PHONY: distclean
 distclean: clean
-	rm -rf whl_local/* .venv .ruff_cache dist .tox build .pytest_cache uv.lock
+	rm -rf .venv .ruff_cache dist .tox .pytest_cache build whl_local/* uv.lock
 
 
 .PHONY: dc
