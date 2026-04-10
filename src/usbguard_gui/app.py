@@ -204,8 +204,10 @@ class USBGuardTrayApp:
 
             device = Device.from_dbus(device_id, device_rule)
 
-            # HID security: lock screen first, then allow after authentication
-            if device.is_hid():
+            # HID security: lock screen first, then allow after authentication.
+            # Use has_hid_interface() so composite devices (e.g. HID + MSC) are
+            # also caught — any HID interface can send keystrokes.
+            if device.has_hid_interface():
                 self._handle_hid_device(device)
                 return
 

@@ -102,6 +102,23 @@ class TestDevice:
         device = self._make_device(interfaces=[])
         assert not device.is_hid()
 
+    def test_has_hid_interface_pure_hid(self):
+        device = self._make_device(interfaces=["03:00:01"])
+        assert device.has_hid_interface()
+
+    def test_has_hid_interface_composite_hid_msc(self):
+        # Composite device: HID + Mass Storage — must trigger HID security path
+        device = self._make_device(interfaces=["03:00:01", "08:06:50"])
+        assert device.has_hid_interface()
+
+    def test_has_hid_interface_non_hid(self):
+        device = self._make_device(interfaces=["08:06:50"])
+        assert not device.has_hid_interface()
+
+    def test_has_hid_interface_no_interfaces(self):
+        device = self._make_device(interfaces=[])
+        assert not device.has_hid_interface()
+
     def test_class_descriptions(self):
         device = self._make_device(interfaces=["03:00:01", "08:06:50"])
         descs = device.class_descriptions()

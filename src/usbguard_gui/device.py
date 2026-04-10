@@ -96,6 +96,14 @@ class Device:
             return False
         return all(interface_class(iface) == 0x03 for iface in self.with_interface)
 
+    def has_hid_interface(self) -> bool:
+        """Return True if any interface is HID (class 0x03).
+
+        Use this for security decisions: a composite device (e.g. HID + MSC)
+        can send keystrokes and must be treated as a HID device.
+        """
+        return any(interface_class(iface) == 0x03 for iface in self.with_interface)
+
     def class_descriptions(self) -> set[str]:
         """Return human-readable descriptions for all interface classes."""
         descriptions = set()
