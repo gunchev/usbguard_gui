@@ -73,6 +73,13 @@ install -Dm 644 %{SOURCE4} \
 %pyproject_check_import
 
 
+%posttrans
+# After an upgrade, tell any running instance to re-exec itself so it picks up
+# the new code without the user having to restart it manually.
+# SIGUSR1 triggers os.execv() inside the Qt event loop (safe, non-disruptive).
+pkill -USR1 -x usbguard_gui 2>/dev/null || true
+
+
 %post
 # Enable usbguard-dbus on fresh install regardless of its preset (disabled by
 # default upstream) because this GUI cannot function without the D-Bus service.

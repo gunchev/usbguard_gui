@@ -348,6 +348,14 @@ def main() -> None:
     # Allow Ctrl+C to work
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
+    # SIGUSR1: re-exec ourselves — sent by the RPM %posttrans scriptlet after an update
+    # so the running instance picks up the new code without user intervention.
+    def _restart() -> None:
+        log.info("Received SIGUSR1 — restarting to apply package update")
+        os.execv(sys.argv[0], sys.argv)
+
+    signal.signal(signal.SIGUSR1, lambda *_: QTimer.singleShot(0, _restart))
+
     app = QApplication(sys.argv)
     app.setApplicationName("usbguard_gui")
     app.setQuitOnLastWindowClosed(False)
