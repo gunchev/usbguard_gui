@@ -1,3 +1,9 @@
+## 0.2.1 — 2026-04-11
+
+### Changes since v0.2.0
+
+- 5a70f2d Fedora COPR Makefile integration?
+
 ## 0.2.0 — 2026-04-11
 
 ### Changes since v0.1.0
