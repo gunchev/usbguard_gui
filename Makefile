@@ -4,8 +4,9 @@ name:=$(shell basename "$(TOP)")
 export PIP_FIND_LINKS:=$(abspath $(TOP)/whl_local/)
 export PYTHONPATH:=$(TOP)/src
 RPM_VER ?= $$( \
-	{ git tag --sort=-version:refname 2>/dev/null | grep -E '^v?[0-9]' | head -1 | sed 's/^v//'; } \
-	|| grep -m1 '__version__' src/usbguard_gui/__init__.py | cut -d'"' -f2 \
+	{ ver=$$(git tag --sort=-version:refname 2>/dev/null | grep -E '^v?[0-9]' | head -1 | sed 's/^v//'); \
+	  [ -n "$$ver" ] || ver=$$(grep -m1 '__version__' src/usbguard_gui/__init__.py | cut -d'"' -f2); \
+	  echo "$$ver"; } \
 )
 RPM_REV ?= 0
 outdir ?= dist
@@ -37,8 +38,8 @@ help:
 	@echo "    clean:              clean the build tree"
 	@echo "    distclean (dc):     clean everything (even the virtual environment)"
 	@echo
-	@printf "Makefile debug info:\n\t- name=%q\n\t- PYTHONPATH=%q\n\t- PIP_FIND_LINKS=%q\n\n" \
-		"$(name)" "$(PYTHONPATH)" "$(PIP_FIND_LINKS)"
+	@printf "Makefile debug info:\n\t- name=%q\n\t- PYTHONPATH=%q\n\t- PIP_FIND_LINKS=%q\n\tRPM_VER=%q\n\n" \
+		"$(name)" "$(PYTHONPATH)" "$(PIP_FIND_LINKS)" "$(RPM_VER)"
 
 
 .PHONY: lint
