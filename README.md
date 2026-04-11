@@ -1,5 +1,7 @@
 # USBGuard GUI
 
+[![Copr build status](https://copr.fedorainfracloud.org/coprs/dgunchev/usbguard_gui/package/usbguard_gui/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/dgunchev/usbguard_gui/package/usbguard_gui/)
+
 A vibe coded KDE/Qt system tray GUI for [USBGuard](https://usbguard.github.io/).
 
 Monitors USB device insertions and lets you Allow, Block or Reject devices
