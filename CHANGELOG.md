@@ -1,3 +1,14 @@
+## 0.3.1 — 2026-04-11
+
+### Changes since v0.3.0
+
+- dd7565d Try integrating tags with COPR builds.
+- 004266e COPR take 3.
+- 393d0bf Fix spec file version sed-s.
+- 2acf64f Makefile: fix RPM_VER fallback for empty git output
+- d884b58 Makefile: fallback RPM_VER from __version__ if git fails
+- 05617c2 Fedora COPR Makefile integration take 2.
+
 ## 0.3.0 — 2026-04-11
 
 ### Changes since v0.2.3
