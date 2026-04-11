@@ -124,6 +124,7 @@ class TestSignalHandlers:
 # Helpers for HID tests
 # ---------------------------------------------------------------------------
 
+
 class _FakeClient(QObject):
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
@@ -181,7 +182,7 @@ class _FakeScreensaver(QObject):
 
 def _make_hid_device(number: int = 1) -> Device:
     rule_str = (
-        f'block id 1234:abcd serial "" name "Test Keyboard" '
+        'block id 1234:abcd serial "" name "Test Keyboard" '
         'hash "abc123" parent-hash "" via-port "1-1" '
         "with-interface 03:00:00 with-connect-type hotplug"
     )
@@ -216,6 +217,7 @@ def tray_app(qapp, fake_client, fake_screensaver, qtbot):
 # ---------------------------------------------------------------------------
 # HID lock-on-removal tests
 # ---------------------------------------------------------------------------
+
 
 class TestHIDLockOnDeviceRemoval:
     """Screen must not lock when the triggering HID device was unplugged before the delay expired."""
