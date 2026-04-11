@@ -104,6 +104,12 @@ At this point either run `usbguard_gui` or logout and login to get it (KDE only)
 Should work in other desktops with system tray support too.
 Contributions are welcome.
 
+### Fedora Auto-Update
+
+On new GitHub release tag, Fedora COPR rebuilds the package and the desktop will notify you about the update.
+Uppon RPM update the USBGuard GUI application will detect the package update and relaunch itself with the new version —
+the tray icon will briefly disappear and reappear with the updated code.
+
 ### Generic
 
 Install USBGuard, configure it and start the main and dbus services.
