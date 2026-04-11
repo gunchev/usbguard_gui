@@ -34,6 +34,8 @@ help:
 	@echo "    rpmmock:            build RPM package using mock (recommended)"
 	@echo
 	@echo "    release:            tag a new release (required: V=X.Y.Z), e.g. make V=1.0.0 release"
+	@echo "    test_upload:        upload to test.pypi.org"
+	@echo "    upload:             upload to pypi.org"
 	@echo
 	@echo "    clean:              clean the build tree"
 	@echo "    distclean (dc):     clean everything (even the virtual environment)"
@@ -138,3 +140,16 @@ distclean: clean
 
 .PHONY: dc
 dc: distclean
+
+
+# https://packaging.python.org/en/latest/guides/using-testpypi/
+# Upload to https://test.pypi.org/
+.PHONY: test_upload
+test_upload:
+	twine upload --repository testpypi dist/"$(name)"-*.whl dist/"$(name)"-*.tar.gz
+
+
+# Upload to https://pypi.org/
+.PHONY: upload
+upload:
+	twine upload dist/"$(name)"-*.whl dist/"$(name)"-*.tar.gz
