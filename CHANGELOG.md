@@ -89,7 +89,8 @@
 - 059df0f Remove empty file.
 - 7af2f9c Fix medium-priority issues: (by Qwen3.6 Plus Free)
 - 025d8a1 Fix high-priority issues: (by Qwen3.6 Plus Free)
-- 2d8f605 Fix critical bugs: by Qwen3.6 Plus Free - release.py build_impl crash - HID stale device reference - dialog WA_DeleteOnClose access
+- 2d8f605 Fix critical bugs: by Qwen3.6 Plus Free - release.py build_impl crash - HID stale device reference - dialog
+  WA_DeleteOnClose access
 - ef68b4c Fix TODO.md: add trailing newline
 - 3d586a3 Add TODO.md with circuit breaker pattern suggestion for future improvements
 - 805d07d Improve error handling: Add logging, exponential backoff, and enhanced error context

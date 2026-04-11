@@ -215,7 +215,25 @@ class USBGuardTrayApp:
             # newly-attached keyboard can be used to unlock the screen.
             # has_hid_interface() catches composite devices (e.g. HID + MSC)
             # too — any HID interface can send keystrokes.
-            if device.has_hid_interface() and not self._settings.disable_hid_treatment():
+            #
+            # The special-treatment path (auto-allow then lock) is skipped
+            # entirely when the user has disabled it in settings OR when
+            # screen locking is currently inhibited by a logind idle/block
+            # inhibitor (dnf/rpm transaction, GNOME/KDE "Prevent screen
+            # lock", systemd-inhibit --what=idle, ...). Auto-allowing a HID
+            # device while lock is inhibited would hand an attached-keyboard
+            # attacker typed input with no password prompt to gate it.
+            is_hid = device.has_hid_interface()
+            hid_treatment_enabled = not self._settings.disable_hid_treatment()
+            lock_inhibited = self._screensaver.inhibited
+            hid_special_treatment = is_hid and hid_treatment_enabled and not lock_inhibited
+            if is_hid and hid_treatment_enabled and lock_inhibited:
+                log.info(
+                    "HID device %d inserted while screen locking is inhibited — "
+                    "falling back to prompt (will not auto-allow)",
+                    device_id,
+                )
+            if hid_special_treatment:
                 if self._screensaver.active:
                     log.info(
                         "HID device %d inserted while screen locked, allowing temporarily so it can unlock",

@@ -9,7 +9,6 @@ through desktop notifications and a device management window.
 
 ![screenshot](screenshot_20260411_091821.png)
 
-
 ## How It Works
 
 ### Startup
@@ -24,14 +23,14 @@ Click the tray icon to open the device list showing all connected USB devices. C
 1. USBGuard daemon blocks an unknown USB device.
 2. App receives a `device_presence_changed` signal from D-Bus.
 3. Handling depends on the situation:
-    - **Device is already allowed** by an existing rule — no UI, nothing to do.
-    - **Device has at least one HID interface** — see *HID Devices* below.
-    - **Screen is locked** (non-HID device) — the device is deferred (see *Screensaver Integration* below).
-    - **Anything else** — a popup dialog appears with options:
-        - **Allow (Permanent)** — allow device and create persistent rule.
-        - **Allow (Temporary)** — allow device until it's disconnected.
-        - **Block** — keep device blocked.
-        - **Reject** — electrically disconnect the device.
+  - **Device is already allowed** by an existing rule — no UI, nothing to do.
+  - **Device has at least one HID interface** — see *HID Devices* below.
+  - **Screen is locked** (non-HID device) — the device is deferred (see *Screensaver Integration* below).
+  - **Anything else** — a popup dialog appears with options:
+    - **Allow (Permanent)** — allow device and create persistent rule.
+    - **Allow (Temporary)** — allow device until it's disconnected.
+    - **Block** — keep device blocked.
+    - **Reject** — electrically disconnect the device.
 
 ### HID Devices
 
@@ -132,11 +131,11 @@ usbguard_gui
 - **D-Bus Integration**: dbus-fast with QThread-based asyncio event loop
 - **Communication Pattern**: Asynchronous operations return results via Qt signals
 - **Key Components**:
-    - `app.py` — Main tray application and signal handlers.
-    - `dbus_client.py` — USBGuard daemon communication.
-    - `screensaver.py` — Screensaver state monitoring.
-    - `device_list.py` — Device management window.
-    - `device_dialog.py` — Device action dialog.
+  - `app.py` — Main tray application and signal handlers.
+  - `dbus_client.py` — USBGuard daemon communication.
+  - `screensaver.py` — Screensaver state monitoring.
+  - `device_list.py` — Device management window.
+  - `device_dialog.py` — Device action dialog.
 
 ## Development
 

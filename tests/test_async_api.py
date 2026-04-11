@@ -122,3 +122,100 @@ class TestScreensaverMonitorAsyncAPI:
 
         monitor = ScreensaverMonitor()
         assert hasattr(monitor, "active_changed")
+
+    def test_has_inhibit_changed_signal(self):
+        """Monitor must expose an inhibit_changed signal so the app can react to it."""
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        assert hasattr(monitor, "inhibit_changed")
+
+    def test_inhibited_property_defaults_false(self):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        assert monitor.inhibited is False
+
+    def test_inhibited_property_follows_thread_signal(self):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        with patch("usbguard_gui.screensaver._ScreensaverThread") as mock_cls:
+            from PyQt6.QtCore import QObject, pyqtSignal
+
+            class MockThread(QObject):
+                connected = pyqtSignal(bool)
+                active_changed = pyqtSignal(bool)
+                inhibit_changed = pyqtSignal(bool)
+
+                def start(self):
+                    pass
+
+                def stop(self):
+                    pass
+
+                def wait(self):
+                    pass
+
+                def lock(self):
+                    pass
+
+            mock_cls.return_value = MockThread()
+            monitor = ScreensaverMonitor()
+            monitor.connect()
+
+            assert monitor.inhibited is False
+            mock_cls.return_value.inhibit_changed.emit(True)
+            assert monitor.inhibited is True
+            mock_cls.return_value.inhibit_changed.emit(False)
+            assert monitor.inhibited is False
+
+
+class TestHasIdleBlockInhibitor:
+    """Unit tests for the logind inhibitor filter."""
+
+    def _f(self, inhibitors):
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        return _ScreensaverThread._has_idle_block_inhibitor(inhibitors)
+
+    def test_empty_list(self):
+        assert self._f([]) is False
+
+    def test_none_input(self):
+        assert self._f(None) is False
+
+    def test_single_idle_block(self):
+        assert self._f([("idle", "dnf", "updating system", "block", 0, 1234)]) is True
+
+    def test_single_idle_delay(self):
+        """delay mode does not hard-block, so should be ignored."""
+        assert self._f([("idle", "gnome-session", "reason", "delay", 1000, 4321)]) is False
+
+    def test_sleep_block_without_idle(self):
+        assert self._f([("sleep:shutdown", "packagekit", "txn", "block", 0, 100)]) is False
+
+    def test_composite_what_with_idle(self):
+        assert self._f([("idle:sleep:shutdown", "dnf", "txn", "block", 0, 1)]) is True
+
+    def test_multiple_inhibitors_one_matches(self):
+        rows = [
+            ("sleep", "who1", "w1", "block", 0, 1),
+            ("handle-lid-switch", "who2", "w2", "block", 0, 2),
+            ("idle", "who3", "w3", "block", 0, 3),
+        ]
+        assert self._f(rows) is True
+
+    def test_multiple_inhibitors_none_match(self):
+        rows = [
+            ("sleep", "who1", "w1", "block", 0, 1),
+            ("handle-lid-switch", "who2", "w2", "delay", 0, 2),
+            ("shutdown", "who3", "w3", "block", 0, 3),
+        ]
+        assert self._f(rows) is False
+
+    def test_malformed_row_skipped(self):
+        rows = [
+            (),  # too short
+            ("idle", "ok", "ok", "block", 0, 1),
+        ]
+        assert self._f(rows) is True

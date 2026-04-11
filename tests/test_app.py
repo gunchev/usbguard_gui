@@ -160,15 +160,21 @@ class _FakeClient(QObject):
 
 class _FakeScreensaver(QObject):
     active_changed = pyqtSignal(bool)
+    inhibit_changed = pyqtSignal(bool)
 
     def __init__(self) -> None:
         super().__init__()
         self.lock_calls: int = 0
         self._active: bool = False
+        self._inhibited: bool = False
 
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def inhibited(self) -> bool:
+        return self._inhibited
 
     def connect(self) -> bool:  # type: ignore[override]
         return True
@@ -253,3 +259,74 @@ class TestHIDLockOnDeviceRemoval:
         fake_client.list_devices_result.emit([other_device])
         assert fake_screensaver.lock_calls == 0
         assert fake_client.apply_policy_calls == []
+
+
+# ---------------------------------------------------------------------------
+# HID handling when screen lock is inhibited
+# ---------------------------------------------------------------------------
+
+
+class TestHIDWhenLockInhibited:
+    """When a logind idle/block inhibitor is active, HID devices must not get
+    auto-allow+lock treatment — doing so would hand an attached-keyboard
+    attacker typed input with no password prompt to gate it. Instead the
+    device must go through the same prompt path as the 'Disable special HID
+    device treatment' setting."""
+
+    def test_hid_insert_triggers_prompt_when_inhibited(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        fake_screensaver._inhibited = True
+        device = _make_hid_device(1)
+
+        with patch.object(tray_app, "_show_device_dialog") as show_dialog:
+            fake_client.device_presence_changed.emit(
+                1, 1, int(DeviceTarget.BLOCK), device.to_rule() if hasattr(device, "to_rule") else
+                'block id 1234:abcd serial "" name "Test Keyboard" '
+                'hash "abc123" parent-hash "" via-port "1-1" '
+                'with-interface 03:00:00 with-connect-type hotplug',
+                {},
+            )
+
+        show_dialog.assert_called_once()
+        assert fake_client.apply_policy_calls == []
+        assert fake_screensaver.lock_calls == 0
+        assert tray_app._hid_pending_device is None
+
+    def test_hid_insert_auto_allows_when_not_inhibited(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """Regression guard: the inhibit check must not break the default HID path."""
+        fake_screensaver._inhibited = False
+
+        with patch.object(tray_app, "_handle_hid_device") as handle_hid:
+            fake_client.device_presence_changed.emit(
+                1, 1, int(DeviceTarget.BLOCK),
+                'block id 1234:abcd serial "" name "Test Keyboard" '
+                'hash "abc123" parent-hash "" via-port "1-1" '
+                'with-interface 03:00:00 with-connect-type hotplug',
+                {},
+            )
+
+        handle_hid.assert_called_once()
+        assert fake_client.apply_policy_calls == []  # _handle_hid_device is mocked out
+
+    def test_hid_insert_while_locked_and_inhibited_prompts(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """Even with the screen already locked, an inhibit must block the auto-allow."""
+        fake_screensaver._inhibited = True
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        # No auto-allow happened.
+        assert fake_client.apply_policy_calls == []
+        # Screen-locked fallback: device is deferred rather than prompted immediately.
+        assert 1 in tray_app._screensaver_pending_devices

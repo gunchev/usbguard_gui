@@ -156,13 +156,13 @@ from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
 
 
 class TestParseDeviceRule:
-    """Test rule string parsing."""
+  """Test rule string parsing."""
 
-    RULE_ALLOW = 'allow id 1d6b:0002 serial "..." name "..." ...'
+  RULE_ALLOW = 'allow id 1d6b:0002 serial "..." name "..." ...'
 
-    def test_allow_rule(self):
-        result = parse_device_rule(self.RULE_ALLOW)
-        assert result["rule"] == "allow"
+  def test_allow_rule(self):
+    result = parse_device_rule(self.RULE_ALLOW)
+    assert result["rule"] == "allow"
 ```
 
 ## Pre-commit Checklist
