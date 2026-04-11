@@ -33,10 +33,16 @@ so the user can control device authorization without touching the command line.
 Features:
 - System tray icon with a device list window
 - Per-device popup dialogs (Allow permanently/temporarily, Block, Reject)
-- HID security: locks the screen when a new keyboard is plugged in
+- Desktop notifications for device events
+- HID security: locks the screen when a new keyboard is plugged in after a
+  short delay (4 seconds), provided the screen was unlocked at insertion time.
+  HID devices inserted while the screen is already locked are allowed temporarily
+  so you can use them to unlock the machine. Special HID treatment can be disabled
+  via the tray right-click menu.
 - Screensaver-aware: defers prompts while the screen is locked and shows a
-  summary on unlock
+  summary notification on unlock listing all devices that connected during absence
 - Auto-reconnects to the USBGuard daemon
+- Configuration stored in ~/.config/usbguard_gui/
 
 
 %prep
