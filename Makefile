@@ -87,8 +87,8 @@ rpmprep:
 	uv build --sdist
 	cp rpm/* dist/
 	mv "dist/$(name).spec.in" "dist/$(name).spec"
-	sed -i 's|^Version:.*|Version:        $(RPM_VER)|g'           "dist/$(name).spec"
-	sed -i 's|^Release:.*|Release:        $(RPM_REV)%{?dist}|g'   "dist/$(name).spec"
+	sed -i "s|^Version:.*|Version:        $(RPM_VER)|g"           "dist/$(name).spec"
+	sed -i "s|^Release:.*|Release:        $(RPM_REV)%{?dist}|g"   "dist/$(name).spec"
 	rpmbuild --define "_sourcedir $(TOP)/dist" --define "_srcrpmdir $(TOP)/dist" --define "_rpmdir $(TOP)/dist" \
 		-bs "dist/$(name).spec"
 
