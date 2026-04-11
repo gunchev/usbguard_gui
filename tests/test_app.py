@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 from unittest.mock import MagicMock, patch
+
+from PyQt6.QtCore import QObject, pyqtSignal
+
+from usbguard_gui.device import Device, DeviceTarget
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 class TestSignalHandlers:
@@ -111,3 +118,136 @@ class TestSignalHandlers:
             assert len(timer_calls) == 1
             assert timer_calls[0][0] == 0
             assert callable(timer_calls[0][1])
+
+
+# ---------------------------------------------------------------------------
+# Helpers for HID tests
+# ---------------------------------------------------------------------------
+
+class _FakeClient(QObject):
+    device_presence_changed = pyqtSignal(int, int, int, str, dict)
+    device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
+    connection_changed = pyqtSignal(bool)
+    list_devices_result = pyqtSignal(list)
+    apply_policy_result = pyqtSignal(object)
+    list_rules_result = pyqtSignal(list)
+    remove_rule_result = pyqtSignal(bool)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_policy_calls: list[tuple] = []
+        self.list_devices_calls: int = 0
+
+    def list_devices(self, query: str = "match") -> None:
+        self.list_devices_calls += 1
+
+    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+        self.apply_policy_calls.append((device_id, target, permanent))
+
+    def list_rules(self, label: str = "") -> None:
+        pass
+
+    def remove_rule(self, rule_id: int) -> None:
+        pass
+
+    def connect(self) -> bool:  # type: ignore[override]
+        return True
+
+    def stop(self) -> None:
+        pass
+
+
+class _FakeScreensaver(QObject):
+    active_changed = pyqtSignal(bool)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock_calls: int = 0
+        self._active: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def connect(self) -> bool:  # type: ignore[override]
+        return True
+
+    def stop(self) -> None:
+        pass
+
+    def lock(self) -> None:
+        self.lock_calls += 1
+
+
+def _make_hid_device(number: int = 1) -> Device:
+    rule_str = (
+        f'block id 1234:abcd serial "" name "Test Keyboard" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        "with-interface 03:00:00 with-connect-type hotplug"
+    )
+    return Device.from_dbus(number, rule_str)
+
+
+import pytest  # noqa: E402 — after QObject subclasses so pyqtSignal is defined first
+
+
+@pytest.fixture()
+def fake_client(qapp) -> _FakeClient:
+    return _FakeClient()
+
+
+@pytest.fixture()
+def fake_screensaver() -> _FakeScreensaver:
+    return _FakeScreensaver()
+
+
+@pytest.fixture()
+def tray_app(qapp, fake_client, fake_screensaver, qtbot):
+    from usbguard_gui.app import USBGuardTrayApp
+
+    with (
+        patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+        patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+    ):
+        app = USBGuardTrayApp(qapp)
+    return app
+
+
+# ---------------------------------------------------------------------------
+# HID lock-on-removal tests
+# ---------------------------------------------------------------------------
+
+class TestHIDLockOnDeviceRemoval:
+    """Screen must not lock when the triggering HID device was unplugged before the delay expired."""
+
+    def test_locks_and_allows_when_device_still_present(self, tray_app, fake_client, fake_screensaver) -> None:
+        device = _make_hid_device(1)
+        tray_app._hid_pending_device = 1
+        fake_client.list_devices_result.emit([device])
+        assert fake_screensaver.lock_calls == 1
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+
+    def test_no_lock_when_device_removed_before_delay(self, tray_app, fake_client, fake_screensaver) -> None:
+        """Regression: lock() was called unconditionally even when the HID device had been unplugged."""
+        tray_app._hid_pending_device = 1
+        fake_client.list_devices_result.emit([])  # device gone
+        assert fake_screensaver.lock_calls == 0
+
+    def test_no_policy_applied_when_device_removed(self, tray_app, fake_client, fake_screensaver) -> None:
+        tray_app._hid_pending_device = 1
+        fake_client.list_devices_result.emit([])
+        assert fake_client.apply_policy_calls == []
+
+    def test_pending_device_cleared_even_when_removed(self, tray_app, fake_client, fake_screensaver) -> None:
+        """_hid_pending_device must be cleared so the next list_devices result is not mishandled."""
+        tray_app._hid_pending_device = 1
+        fake_client.list_devices_result.emit([])
+        assert tray_app._hid_pending_device is None
+
+    def test_no_lock_when_different_device_present(self, tray_app, fake_client, fake_screensaver) -> None:
+        """Pending device 1 was removed; an unrelated device 2 is in the list — must not lock."""
+        other_device = _make_hid_device(2)
+        tray_app._hid_pending_device = 1
+        fake_client.list_devices_result.emit([other_device])
+        assert fake_screensaver.lock_calls == 0
+        assert fake_client.apply_policy_calls == []

@@ -125,7 +125,7 @@ class USBGuardTrayApp:
             self._hid_pending_device = None
             if any(d.number == device_number for d in devices):
                 self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
-            self._screensaver.lock()
+                self._screensaver.lock()
         elif self._screensaver_pending_ids is not None:
             pending_ids = self._screensaver_pending_ids
             self._screensaver_pending_ids = None
@@ -358,6 +358,7 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setApplicationName("usbguard_gui")
+    app.setWindowIcon(_app_icon())
     app.setQuitOnLastWindowClosed(False)
 
     runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation)

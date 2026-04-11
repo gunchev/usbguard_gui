@@ -13,7 +13,7 @@ class Settings:
     def __new__(cls) -> Settings:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._settings = QSettings("usbguard_gui", "USBGuardTrayApp")
+            cls._instance._settings = QSettings("usbguard_gui", "general")
         return cls._instance
 
     def disable_hid_treatment(self) -> bool:

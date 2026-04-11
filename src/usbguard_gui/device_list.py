@@ -91,11 +91,14 @@ class DeviceTableModel(QAbstractTableModel):
             return QColor(Qt.GlobalColor.white)
         return None
 
-    @staticmethod
-    def _display_data(device: Device, col: int) -> str:
+    def _display_data(self, device: Device, col: int) -> str:
         if col == 0:
             return str(device.number)
         if col == 1:
+            if device.rule.lower() == "allow":
+                if device.hash and device.hash in self._permanent_allow_hashes:
+                    return "Allow"
+                return "Temporary"
             return device.rule.capitalize()
         if col == 2:
             return device.id
@@ -124,7 +127,7 @@ class DeviceListWindow(QMainWindow):
         self._refresh_pending = False
         self._pending_devices: list[Device] = []
         self.setWindowTitle("USBGuard — Devices")
-        self.setMinimumSize(900, 500)
+        self.resize(900, 500)
 
         self._model = DeviceTableModel(self)
         self._proxy = DeviceSortProxyModel(self)
@@ -144,7 +147,7 @@ class DeviceListWindow(QMainWindow):
         self._view.horizontalHeader().sectionMoved.connect(self._on_section_moved)
         self._view.verticalHeader().setVisible(False)
 
-        self._settings = QSettings("usbguard_gui", "DeviceList")
+        self._settings = QSettings("usbguard_gui", "device_list")
         saved_geometry = self._settings.value("geometry")
         if isinstance(saved_geometry, QByteArray) and not saved_geometry.isEmpty():
             self.restoreGeometry(saved_geometry)
