@@ -213,18 +213,30 @@ class _DBusThread(QThread):
             self.remove_rule_result.emit(False)
 
     def list_devices(self, query: str = "match") -> None:
+        if not self._connected:
+            self.list_devices_result.emit([])
+            return
         if self._devices_iface and self._loop:
             self._schedule(self._do_list_devices(query))
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+        if not self._connected:
+            self.apply_policy_result.emit(None)
+            return
         if self._devices_iface and self._loop:
             self._schedule(self._do_apply_policy(device_id, target, permanent))
 
     def list_rules(self, label: str = "") -> None:
+        if not self._connected:
+            self.list_rules_result.emit([])
+            return
         if self._policy_iface and self._loop:
             self._schedule(self._do_list_rules(label))
 
     def remove_rule(self, rule_id: int) -> None:
+        if not self._connected:
+            self.remove_rule_result.emit(False)
+            return
         if self._policy_iface and self._loop:
             self._schedule(self._do_remove_rule(rule_id))
 

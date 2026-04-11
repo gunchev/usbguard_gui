@@ -328,3 +328,130 @@ class TestDBusThread:
 
         asyncio.run(run_with_schedule())
         assert results == ["ran"], "Scheduled coroutine was never executed — event loop was blocked"
+
+
+class TestDBusThreadFastFail:
+    """Fast-fail circuit-breaker behavior: methods must not queue work when _connected is False."""
+
+    def _build_thread(self, connected: bool) -> _DBusThread:
+        thread = _DBusThread()
+        thread._loop = MagicMock()
+        thread._running = True
+        thread._devices_iface = MagicMock()
+        thread._policy_iface = MagicMock()
+        thread._connected = connected
+        return thread
+
+    @staticmethod
+    def _close_captured_coros(mock_loop: MagicMock) -> None:
+        """Close any coroutines captured by the mocked call_soon_threadsafe so they don't leak as RuntimeWarnings."""
+        import inspect
+
+        for call in mock_loop.call_soon_threadsafe.call_args_list:
+            for arg in call.args:
+                if inspect.iscoroutine(arg):
+                    arg.close()
+
+    def test_list_devices_fast_fails_when_disconnected(self):
+        thread = self._build_thread(connected=False)
+        emitted: list[list] = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
+
+        thread.list_devices()
+
+        assert emitted == [[]]
+        thread._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_list_devices_schedules_when_connected(self):
+        thread = self._build_thread(connected=True)
+        emitted: list[list] = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
+
+        thread.list_devices()
+
+        assert emitted == []
+        thread._loop.call_soon_threadsafe.assert_called_once()
+        self._close_captured_coros(thread._loop)
+
+    def test_apply_device_policy_fast_fails_when_disconnected(self):
+        thread = self._build_thread(connected=False)
+        emitted: list = []
+        thread.apply_policy_result.connect(lambda v: emitted.append(v))
+
+        thread.apply_device_policy(1, DeviceTarget.ALLOW)
+
+        assert emitted == [None]
+        thread._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_apply_device_policy_schedules_when_connected(self):
+        thread = self._build_thread(connected=True)
+        emitted: list = []
+        thread.apply_policy_result.connect(lambda v: emitted.append(v))
+
+        thread.apply_device_policy(1, DeviceTarget.ALLOW)
+
+        assert emitted == []
+        thread._loop.call_soon_threadsafe.assert_called_once()
+        self._close_captured_coros(thread._loop)
+
+    def test_list_rules_fast_fails_when_disconnected(self):
+        thread = self._build_thread(connected=False)
+        emitted: list[list] = []
+        thread.list_rules_result.connect(lambda v: emitted.append(v))
+
+        thread.list_rules()
+
+        assert emitted == [[]]
+        thread._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_list_rules_schedules_when_connected(self):
+        thread = self._build_thread(connected=True)
+        emitted: list[list] = []
+        thread.list_rules_result.connect(lambda v: emitted.append(v))
+
+        thread.list_rules()
+
+        assert emitted == []
+        thread._loop.call_soon_threadsafe.assert_called_once()
+        self._close_captured_coros(thread._loop)
+
+    def test_remove_rule_fast_fails_when_disconnected(self):
+        thread = self._build_thread(connected=False)
+        emitted: list[bool] = []
+        thread.remove_rule_result.connect(lambda v: emitted.append(v))
+
+        thread.remove_rule(42)
+
+        assert emitted == [False]
+        thread._loop.call_soon_threadsafe.assert_not_called()
+
+    def test_remove_rule_schedules_when_connected(self):
+        thread = self._build_thread(connected=True)
+        emitted: list[bool] = []
+        thread.remove_rule_result.connect(lambda v: emitted.append(v))
+
+        thread.remove_rule(42)
+
+        assert emitted == []
+        thread._loop.call_soon_threadsafe.assert_called_once()
+        self._close_captured_coros(thread._loop)
+
+    def test_breaker_recloses_on_reconnection(self):
+        """After _connected flips back to True (simulating successful reconnect), calls schedule again."""
+        thread = self._build_thread(connected=False)
+        emitted: list[list] = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
+
+        # Open breaker: fast-fail, no schedule.
+        thread.list_devices()
+        assert emitted == [[]]
+        thread._loop.call_soon_threadsafe.assert_not_called()
+
+        # Simulate successful reconnect (mirrors dbus_client.py:111 in _main()).
+        thread._connected = True
+
+        # Closed breaker: call is scheduled, no synthetic empty emit.
+        thread.list_devices()
+        assert emitted == [[]]  # still just the earlier fast-fail
+        thread._loop.call_soon_threadsafe.assert_called_once()
+        self._close_captured_coros(thread._loop)
