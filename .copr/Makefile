@@ -3,4 +3,6 @@ outdir ?= dist
 
 .PHONY: srpm
 srpm:
-	$(MAKE) -C $(TOP)/.. srpm outdir=$(outdir)
+	dnf -y install uv python3 python3-build python3-hatchling
+	$(MAKE) -C $(TOP)/.. srpm
+	if test -n "$(outdir)"; then cp -a $(TOP)/../dist/*.src.rpm "$(outdir)"; fi

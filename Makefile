@@ -76,7 +76,7 @@ run:
 
 .PHONY: build
 build:
-	uv build
+	uv build || python3 -m build
 	mkdir -p "$(PIP_FIND_LINKS)/"
 	cp dist/*.whl "$(PIP_FIND_LINKS)/"
 
@@ -84,7 +84,7 @@ build:
 .PHONY: rpmprep
 rpmprep:
 	@[ -n "$(RPM_VER)" ] || { echo "Error: RPM_VER could not be determined (no release tags found)."; exit 1; }
-	uv build --sdist
+	uv build --sdist || python3 -m build --sdist
 	cp rpm/* dist/
 	mv "dist/$(name).spec.in" "dist/$(name).spec"
 	sed -i "s|^Version:.*|Version:        $(RPM_VER)|g"           "dist/$(name).spec"
@@ -120,7 +120,7 @@ release:
 
 .PHONY: clean
 clean:
-	-uv run coverage erase
+	# -uv run coverage erase
 	rm -f .coverage
 	rm -rf dist/*
 	find . -depth -type d \( -name '__pycache__' -o -name '*.egg-info' -o -name '*.dist-info' \) \
