@@ -1,3 +1,11 @@
+## 0.3.0 — 2026-04-11
+
+### Changes since v0.2.3
+
+- a047831 Fix ScreenSaver inhibited detection, update dcs.
+- 1b51b2a Fast-fail D-Bus scheduler calls when disconnected
+- 6e1c049 Update the RPM spec file description.
+
 ## 0.2.3 — 2026-04-11
 
 ### Changes since v0.2.2
