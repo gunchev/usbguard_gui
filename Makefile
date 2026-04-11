@@ -3,7 +3,10 @@ export TOP:=$(shell dirname "$(abspath $(lastword $(MAKEFILE_LIST)))")
 name:=$(shell basename "$(TOP)")
 export PIP_FIND_LINKS:=$(abspath $(TOP)/whl_local/)
 export PYTHONPATH:=$(TOP)/src
-RPM_VER ?= $(shell git tag --sort=-version:refname | grep -E '^v?[0-9]' | head -1 | sed 's/^v//')
+RPM_VER ?= $$( \
+	{ git tag --sort=-version:refname 2>/dev/null | grep -E '^v?[0-9]' | head -1 | sed 's/^v//'; } \
+	|| grep -m1 '__version__' src/usbguard_gui/__init__.py | cut -d'"' -f2 \
+)
 RPM_REV ?= 0
 outdir ?= dist
 
