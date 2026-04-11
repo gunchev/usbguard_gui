@@ -1,3 +1,11 @@
+## 0.2.3 — 2026-04-11
+
+### Changes since v0.2.2
+
+- 72264b5 Fix f-string without placeholders in test_app.py and improve AGENTS.md
+- fbd4070 Increase HID lock delay from 3 to 4 seconds
+- bfd0eac Add HID disable option, fix config names, UI polish, and bug fixes
+
 ## 0.2.2 — 2026-04-11
 
 ### Changes since v0.2.1

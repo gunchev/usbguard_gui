@@ -1,6 +1,6 @@
 """usbguard_gui — KDE/Qt system tray GUI for USBGuard."""
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __author__ = "Doncho Nikolaev Gunchev"
 __license__ = "GPL-2.0-or-later"
 
