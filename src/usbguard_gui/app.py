@@ -49,7 +49,7 @@ def _enum_name(enum: type, value: int, fallback: str = "?") -> str:
 
 
 # Seconds to wait before locking the screen for HID devices
-HID_LOCK_DELAY = 3
+HID_LOCK_DELAY = 4
 # Base seconds between reconnection attempts (will be exponentially increased)
 RECONNECT_BASE_INTERVAL = 5
 # Maximum seconds between reconnection attempts

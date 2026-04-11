@@ -40,7 +40,7 @@ device such as HID + Mass Storage — is handled specially to defend against "Ba
 keystroke-injection attacks:
 
 1. A tray warning appears: *"New keyboard/HID attached"*.
-2. After a short delay (3 seconds) the device is temporarily allowed and the screen is locked —
+2. After a short delay (4 seconds) the device is temporarily allowed and the screen is locked —
    provided the device is still connected. If it was unplugged before the delay expired, the
    lock is skipped.
 3. You must enter your password with the newly-attached device to unlock it, which prevents
