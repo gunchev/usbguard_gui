@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+
 from PyQt6.QtCore import QSettings
+
+_instance_lock = threading.Lock()
 
 
 class Settings:
@@ -12,8 +16,10 @@ class Settings:
 
     def __new__(cls) -> Settings:
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._settings = QSettings("usbguard_gui", "general")
+            with _instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._settings = QSettings("usbguard_gui", "general")
         return cls._instance
 
     def disable_hid_treatment(self) -> bool:
