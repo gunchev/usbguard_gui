@@ -1,11 +1,12 @@
-SHELL:=/usr/bin/env bash # Use bash syntax, mitigates dash's printf on Debian
+# Use bash syntax, mitigates dash's printf on Debian
+SHELL:=/usr/bin/env bash
 export TOP:=$(shell dirname "$(abspath $(lastword $(MAKEFILE_LIST)))")
 name:=$(shell basename "$(TOP)")
 export PIP_FIND_LINKS:=$(abspath $(TOP)/whl_local/)
 export PYTHONPATH:=$(TOP)/src
 RPM_VER ?= $$( \
 	{ ver=$$(git tag --sort=-version:refname 2>/dev/null | grep -E '^v?[0-9]' | head -1 | sed 's/^v//'); \
-	  [ -n "$$ver" ] || ver=$$(grep -m1 '__version__' src/usbguard_gui/__init__.py | cut -d'"' -f2); \
+	  [ -n "$$ver" ] || ver=$$(grep -m1 '__version__' src/$(name)/__init__.py | cut -d'"' -f2); \
 	  echo "$$ver"; } \
 )
 RPM_REV ?= 0
@@ -73,7 +74,7 @@ format:
 .PHONY: run
 run:
 	uv sync --group dev
-	uv run python -m usbguard_gui
+	uv run "$(name)"
 
 
 .PHONY: build
@@ -98,7 +99,7 @@ rpmprep:
 .PHONY: srpm
 srpm: rpmprep
 	rm -f "$(outdir)"/*.rpm
-	rpmbuild --define "_sourcedir $(TOP)/dist" --define "_srcrpmdir $(TOP)/$(outdir)" \
+	rpmbuild --define "_sourcedir $(TOP)/dist" --define "_srcrpmdir $(outdir)" \
 		-bs "dist/$(name).spec"
 
 
