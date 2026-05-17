@@ -48,8 +48,6 @@ def _enum_name(enum: type, value: int, fallback: str = "?") -> str:
         return fallback
 
 
-# Seconds to wait before locking the screen for HID devices
-HID_LOCK_DELAY = 4
 # Base seconds between reconnection attempts (will be exponentially increased)
 RECONNECT_BASE_INTERVAL = 5
 # Maximum seconds between reconnection attempts
@@ -67,7 +65,7 @@ class USBGuardTrayApp:
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
-        self._hid_pending_device: int | None = None
+        self._hid_pending_devices: set[int] = set()
         self._screensaver_pending_ids: list[int] | None = None
 
         # Reconnect timer with exponential backoff
@@ -115,17 +113,18 @@ class USBGuardTrayApp:
         self._client.device_policy_changed.connect(self._on_device_policy_changed)
         self._client.connection_changed.connect(self._on_connection_changed)
         self._screensaver.active_changed.connect(self._on_screensaver_changed)
+        self._screensaver.active_changed.connect(self._on_screensaver_active_changed)
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._on_list_devices_result)
 
     def _on_list_devices_result(self, devices: list[Device]) -> None:
-        if self._hid_pending_device is not None:
-            device_number = self._hid_pending_device
-            self._hid_pending_device = None
-            if any(d.number == device_number for d in devices):
-                self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
-                self._screensaver.lock()
+        if self._hid_pending_devices:
+            pending_ids = self._hid_pending_devices
+            self._hid_pending_devices = set()
+            for device_number in pending_ids:
+                if any(d.number == device_number for d in devices):
+                    self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
         elif self._screensaver_pending_ids is not None:
             pending_ids = self._screensaver_pending_ids
             self._screensaver_pending_ids = None
@@ -285,16 +284,10 @@ class USBGuardTrayApp:
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
-            # Allow the HID device temporarily after a delay so the user can
-            # unlock the screen with it, then lock.
-            device_number = device.number
-            QTimer.singleShot(HID_LOCK_DELAY * 1000, lambda: self._allow_hid_and_lock(device_number))
+            self._hid_pending_devices.add(device.number)
+            self._screensaver.lock()
         except Exception as e:
             log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
-
-    def _allow_hid_and_lock(self, device_number: int) -> None:
-        self._hid_pending_device = device_number
-        self._client.list_devices()
 
     def _on_screensaver_changed(self, active: bool) -> None:
         if active or not self._screensaver_pending_devices:
@@ -303,6 +296,15 @@ class USBGuardTrayApp:
         self._screensaver_pending_ids = list(self._screensaver_pending_devices)
         self._screensaver_pending_devices.clear()
         self._client.list_devices()
+
+    def _on_screensaver_active_changed(self, active: bool) -> None:
+        if not active or not self._hid_pending_devices:
+            return
+
+        pending_ids = list(self._hid_pending_devices)
+        self._hid_pending_devices = set()
+        for device_number in pending_ids:
+            self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
 
     def _show_device_dialog(self, device: Device) -> None:
         # Don't open duplicate dialogs

@@ -226,39 +226,78 @@ def tray_app(qapp, fake_client, fake_screensaver, qtbot):
 
 
 class TestHIDLockOnDeviceRemoval:
-    """Screen must not lock when the triggering HID device was unplugged before the delay expired."""
+    """Screen must not lock when the triggering HID device was unplugged before the lock completes."""
 
-    def test_locks_and_allows_when_device_still_present(self, tray_app, fake_client, fake_screensaver) -> None:
+    def test_allows_when_screen_locked_and_device_present(self, tray_app, fake_client, fake_screensaver) -> None:
         device = _make_hid_device(1)
-        tray_app._hid_pending_device = 1
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver._active = True  # Screen is now locked
         fake_client.list_devices_result.emit([device])
-        assert fake_screensaver.lock_calls == 1
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
 
-    def test_no_lock_when_device_removed_before_delay(self, tray_app, fake_client, fake_screensaver) -> None:
-        """Regression: lock() was called unconditionally even when the HID device had been unplugged."""
-        tray_app._hid_pending_device = 1
-        fake_client.list_devices_result.emit([])  # device gone
-        assert fake_screensaver.lock_calls == 0
-
-    def test_no_policy_applied_when_device_removed(self, tray_app, fake_client, fake_screensaver) -> None:
-        tray_app._hid_pending_device = 1
+    def test_no_allow_when_device_removed_before_lock(self, tray_app, fake_client, fake_screensaver) -> None:
+        """If the device is unplugged before the screen locks, do not apply policy."""
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver._active = True  # Screen locked but device gone
         fake_client.list_devices_result.emit([])
         assert fake_client.apply_policy_calls == []
 
-    def test_pending_device_cleared_even_when_removed(self, tray_app, fake_client, fake_screensaver) -> None:
-        """_hid_pending_device must be cleared so the next list_devices result is not mishandled."""
-        tray_app._hid_pending_device = 1
+    def test_pending_devices_cleared_after_lock(self, tray_app, fake_client, fake_screensaver) -> None:
+        """_hid_pending_devices must be cleared after the screen locks."""
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver._active = True
         fake_client.list_devices_result.emit([])
-        assert tray_app._hid_pending_device is None
+        assert tray_app._hid_pending_devices == set()
 
-    def test_no_lock_when_different_device_present(self, tray_app, fake_client, fake_screensaver) -> None:
-        """Pending device 1 was removed; an unrelated device 2 is in the list — must not lock."""
+    def test_no_allow_when_different_device_present(self, tray_app, fake_client, fake_screensaver) -> None:
+        """Pending device 1 was removed; an unrelated device 2 is in the list — no policy applied."""
         other_device = _make_hid_device(2)
-        tray_app._hid_pending_device = 1
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver._active = True  # Screen locked but pending device gone
         fake_client.list_devices_result.emit([other_device])
-        assert fake_screensaver.lock_calls == 0
         assert fake_client.apply_policy_calls == []
+
+
+# ---------------------------------------------------------------------------
+# HID allow on screen lock
+# ---------------------------------------------------------------------------
+
+
+class TestHIDAllowOnScreenLock:
+    """Pending HID devices must be allowed when the screen locks so the user
+    can unlock with the newly-attached keyboard."""
+
+    def test_allows_pending_hid_devices_on_lock(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = {1}
+        tray_app._on_screensaver_active_changed(True)
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+        assert tray_app._hid_pending_devices == set()
+
+    def test_allows_multiple_pending_devices(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = {1, 2, 3}
+        tray_app._on_screensaver_active_changed(True)
+        assert len(fake_client.apply_policy_calls) == 3
+        for device_id in (1, 2, 3):
+            assert (device_id, DeviceTarget.ALLOW, False) in fake_client.apply_policy_calls
+        assert tray_app._hid_pending_devices == set()
+
+    def test_no_pending_no_action(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = set()
+        tray_app._on_screensaver_active_changed(True)
+        assert fake_client.apply_policy_calls == []
+
+    def test_does_not_fire_on_unlock(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = {1}
+        tray_app._on_screensaver_active_changed(False)
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._hid_pending_devices == {1}  # preserved for next lock
+
+    def test_allows_only_matching_device_id(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = {1, 2}
+        tray_app._on_screensaver_active_changed(True)
+        assert len(fake_client.apply_policy_calls) == 2
+        assert all(call[1] == DeviceTarget.ALLOW for call in fake_client.apply_policy_calls)
+        assert all(call[2] is False for call in fake_client.apply_policy_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +330,7 @@ class TestHIDWhenLockInhibited:
         show_dialog.assert_called_once()
         assert fake_client.apply_policy_calls == []
         assert fake_screensaver.lock_calls == 0
-        assert tray_app._hid_pending_device is None
+        assert tray_app._hid_pending_devices == set()
 
     def test_hid_insert_auto_allows_when_not_inhibited(
         self, tray_app, fake_client, fake_screensaver, qtbot
