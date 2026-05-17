@@ -1,3 +1,14 @@
+## 0.4.0 — 2026-05-17
+
+### Changes since v0.3.1
+
+- 17773d9 app: eliminate HID 4-second attack window
+- 634cff1 settings: add thread-safe singleton initialization
+- 8e4e960 screensaver: fix active property always returning False
+- f46873f Makefile generalization.
+- 19adc21 Add test_upload and upload targets to Makefile
+- bd21b7d README: document COPR auto-update with relaunch
+
 ## 0.3.1 — 2026-04-11
 
 ### Changes since v0.3.0
