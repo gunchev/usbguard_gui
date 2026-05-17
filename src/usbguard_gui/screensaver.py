@@ -54,11 +54,12 @@ class _ScreensaverThread(QThread):
         self._proxy = None
         self._logind = None
         self._running = True
+        self._active = False
         self._inhibited = False
 
     @property
     def active(self) -> bool:
-        return False
+        return self._active
 
     def run(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -88,6 +89,7 @@ class _ScreensaverThread(QThread):
             self._proxy.on_active_changed(self._on_active_changed)
             self.connected.emit(True)
             log.info("Connected to freedesktop ScreenSaver D-Bus")
+            await self._sync_active()  # seed the cache from current state
 
         except DBusError as e:
             log.warning("Could not connect to screensaver D-Bus: %s", e)
@@ -169,8 +171,16 @@ class _ScreensaverThread(QThread):
         return False
 
     def _on_active_changed(self, active: bool) -> None:
+        self._active = active
         log.debug("Screensaver active: %s", active)
-        self.active_changed.emit(bool(active))
+        self.active_changed.emit(active)
+
+    async def _sync_active(self) -> None:
+        try:
+            active = await self._proxy.call_get_active()
+            self._on_active_changed(bool(active))
+        except DBusError as e:
+            log.debug("GetActive failed: %s", e)
 
     def _schedule(self, coro: asyncio.coroutine) -> None:
         if self._loop and self._running:

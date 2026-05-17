@@ -2,6 +2,9 @@
 <node name="/org/freedesktop/ScreenSaver">
   <interface name="org.freedesktop.ScreenSaver">
     <method name="Lock"/>
+    <method name="GetActive">
+      <arg name="active" type="b" direction="out"/>
+    </method>
     <signal name="ActiveChanged">
       <arg name="active" type="b"/>
     </signal>
