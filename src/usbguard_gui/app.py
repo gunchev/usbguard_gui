@@ -13,7 +13,7 @@ from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.device import Device, DeviceTarget, PresenceEvent
+from usbguard_gui.device import Device, DeviceTarget, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
@@ -52,6 +52,12 @@ def _enum_name(enum: type, value: int, fallback: str = "?") -> str:
 RECONNECT_BASE_INTERVAL = 5
 # Maximum seconds between reconnection attempts
 RECONNECT_MAX_INTERVAL = 60
+# Milliseconds between the HID warning notification and the actual screen lock.
+# The device stays blocked by USBGuard's default policy during this window (it is
+# only allowed after the screen has locked, in _on_screensaver_active_changed),
+# so this delay does not reopen the keystroke-injection window — it just gives
+# the tray notification time to appear before the screen blanks.
+HID_LOCK_NOTIFY_DELAY_MS = 5000
 
 
 class USBGuardTrayApp:
@@ -67,6 +73,7 @@ class USBGuardTrayApp:
         self._screensaver_pending_devices: set[int] = set()
         self._hid_pending_devices: set[int] = set()
         self._screensaver_pending_ids: list[int] | None = None
+        self._permanent_allow_hashes: set[str] = set()
 
         # Reconnect timer with exponential backoff
         self._reconnect_timer = QTimer()
@@ -117,6 +124,14 @@ class USBGuardTrayApp:
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._on_list_devices_result)
+        self._client.list_rules_result.connect(self._on_list_rules_result)
+
+    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
+        self._permanent_allow_hashes.clear()
+        for _, rule_str in rules:
+            parsed = parse_device_rule(rule_str)
+            if parsed["rule"] == "allow" and parsed["hash"]:
+                self._permanent_allow_hashes.add(str(parsed["hash"]))
 
     def _on_list_devices_result(self, devices: list[Device]) -> None:
         if self._hid_pending_devices:
@@ -135,12 +150,8 @@ class USBGuardTrayApp:
 
             count = len(pending_devices)
             names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
-            self._tray.showMessage(
-                f"{count} USB device(s) connected during absence",
-                names,
-                QSystemTrayIcon.MessageIcon.Information,
-                10000,
-            )
+            info = QSystemTrayIcon.MessageIcon.Information
+            self._tray.showMessage(f"{count} USB device(s) connected during absence", names, info, 10000)
 
             for device in pending_devices:
                 self._show_device_dialog(device)
@@ -168,6 +179,7 @@ class USBGuardTrayApp:
             self._tray.setToolTip("USBGuard GUI — connected")
             self._reconnect_timer.stop()
             self._reconnect_attempts = 0  # Reset on successful connection
+            self._client.list_rules()
         else:
             self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
             if not self._reconnect_timer.isActive():
@@ -240,7 +252,20 @@ class USBGuardTrayApp:
                     )
                     self._client.apply_device_policy(device_id, DeviceTarget.ALLOW, permanent=False)
                     return
-                self._handle_hid_device(device)
+                # Skip HID treatment for devices that are already whitelisted
+                # (matching a permanent allow rule from the daemon's policy).
+                if device.hash and device.hash in self._permanent_allow_hashes:
+                    log.debug("DevicePresenceChanged: id=%d skipped (permanent allow hash match)", device_id)
+                    return
+                self._hid_pending_devices.add(device_id)
+                self._tray.showMessage(
+                    "New keyboard/HID attached",
+                    "Locking screen. Enter your password to activate the device. "
+                    "If you did not attach a keyboard, check for malicious devices.",
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    5000,
+                )
+                QTimer.singleShot(HID_LOCK_NOTIFY_DELAY_MS, self._screensaver.lock)
                 return
 
             # Non-HID device: defer while screen is locked, otherwise prompt.
@@ -271,23 +296,15 @@ class USBGuardTrayApp:
                     log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
                     dialog.close()
                 self._screensaver_pending_devices.discard(device_id)
+                self._hid_pending_devices.discard(device_id)
+                # Seed the permanent-allow cache so future re-insertions skip
+                # HID treatment.
+                if rule_id > 0:
+                    d = Device.from_dbus(device_id, device_rule)
+                    if d.hash:
+                        self._permanent_allow_hashes.add(d.hash)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
-
-    def _handle_hid_device(self, device: Device) -> None:
-        """Handle HID device insertion: warn user and lock screen."""
-        try:
-            self._tray.showMessage(
-                "New keyboard/HID attached",
-                "Locking screen. Enter your password to activate the device. "
-                "If you did not attach a keyboard, check for malicious devices.",
-                QSystemTrayIcon.MessageIcon.Warning,
-                5000,
-            )
-            self._hid_pending_devices.add(device.number)
-            self._screensaver.lock()
-        except Exception as e:
-            log.exception("Error in _handle_hid_device for device %d: %s", device.number, e)
 
     def _on_screensaver_changed(self, active: bool) -> None:
         if active or not self._screensaver_pending_devices:

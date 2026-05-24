@@ -338,17 +338,20 @@ class TestHIDWhenLockInhibited:
         """Regression guard: the inhibit check must not break the default HID path."""
         fake_screensaver._inhibited = False
 
-        with patch.object(tray_app, "_handle_hid_device") as handle_hid:
-            fake_client.device_presence_changed.emit(
-                1, 1, int(DeviceTarget.BLOCK),
-                'block id 1234:abcd serial "" name "Test Keyboard" '
-                'hash "abc123" parent-hash "" via-port "1-1" '
-                'with-interface 03:00:00 with-connect-type hotplug',
-                {},
-            )
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
 
-        handle_hid.assert_called_once()
-        assert fake_client.apply_policy_calls == []  # _handle_hid_device is mocked out
+        # Device is not in _permanent_allow_hashes → lock is scheduled (after a
+        # short delay so the warning notification can be read) but device stays
+        # blocked until the lock completes.
+        assert 1 in tray_app._hid_pending_devices
+        assert fake_client.apply_policy_calls == []
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
 
     def test_hid_insert_while_locked_and_inhibited_prompts(
         self, tray_app, fake_client, fake_screensaver, qtbot
@@ -369,3 +372,158 @@ class TestHIDWhenLockInhibited:
         assert fake_client.apply_policy_calls == []
         # Screen-locked fallback: device is deferred rather than prompted immediately.
         assert 1 in tray_app._screensaver_pending_devices
+
+
+# ---------------------------------------------------------------------------
+# HID permanently allowed devices
+# ---------------------------------------------------------------------------
+
+
+class TestHIDPermanentlyAllowed:
+    """Permanently allowed HID devices must NOT trigger screen lock.
+
+    The app caches hashes of permanent allow rules from the daemon's
+    policy (fetched on connect).  When a HID INSERT arrives, the device
+    hash is checked against this cache — if it matches, HID treatment is
+    skipped.
+    """
+
+    def test_allowed_hid_skipped_when_target_allow(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """When target=ALLOW, the device is skipped entirely (existing behaviour)."""
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.ALLOW),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert tray_app._hid_pending_devices == set()
+        assert fake_screensaver.lock_calls == 0
+
+    def test_allowed_hid_skipped_when_hash_in_cache(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """A HID device whose hash matches _permanent_allow_hashes must not
+        trigger the screen lock, even though target=BLOCK."""
+        tray_app._permanent_allow_hashes.add("abc123")
+
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert tray_app._hid_pending_devices == set()
+        assert fake_screensaver.lock_calls == 0
+        assert fake_client.apply_policy_calls == []
+
+    def test_allowed_hid_skipped_when_hash_in_cache_multiple(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """Multiple hashes in the cache: matching device is skipped,
+        non-matching device still triggers lock."""
+        tray_app._permanent_allow_hashes.add("abc123")
+        tray_app._permanent_allow_hashes.add("xyz789")
+
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert tray_app._hid_pending_devices == set()
+        assert fake_screensaver.lock_calls == 0
+
+    def test_allowed_hid_without_hash_in_cache_triggers_lock(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """A HID device whose hash is NOT in the cache triggers the lock."""
+        tray_app._permanent_allow_hashes.add("other_hash")
+
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert 1 in tray_app._hid_pending_devices
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+
+    def test_allowed_hid_empty_hash_not_matched(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """A device with an empty hash (malformed rule) must not be skipped
+        even if the cache has entries."""
+        tray_app._permanent_allow_hashes.add("abc123")
+
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "No Hash" '
+            'hash "" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert 1 in tray_app._hid_pending_devices
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+
+    def test_blocked_hid_device_still_triggers_lock(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """Regression guard: a blocked HID device (not in cache) triggers the
+        screen lock immediately."""
+        fake_client.device_presence_changed.emit(
+            2, 1, int(DeviceTarget.BLOCK),
+            'block id 5678:ef01 serial "" name "Unknown Keyboard" '
+            'hash "def456" parent-hash "" via-port "2-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
+
+        assert 2 in tray_app._hid_pending_devices
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+
+    def test_cache_seeded_by_policy_changed_with_rule_id(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """When DevicePolicyChanged fires with ALLOW and rule_id>0, the
+        device's hash is added to the cache for future insertions."""
+        fake_client.device_policy_changed.emit(
+            1,
+            int(DeviceTarget.BLOCK),
+            int(DeviceTarget.ALLOW),
+            'allow id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            5,
+            {},
+        )
+
+        assert "abc123" in tray_app._permanent_allow_hashes
+
+    def test_cache_not_seeded_by_policy_changed_without_rule_id(
+        self, tray_app, fake_client, fake_screensaver, qtbot
+    ) -> None:
+        """PolicyChanged with ALLOW but rule_id==0 (temporary rule) must not
+        seed the cache."""
+        fake_client.device_policy_changed.emit(
+            1,
+            int(DeviceTarget.BLOCK),
+            int(DeviceTarget.ALLOW),
+            'allow id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            0,
+            {},
+        )
+
+        assert "abc123" not in tray_app._permanent_allow_hashes
