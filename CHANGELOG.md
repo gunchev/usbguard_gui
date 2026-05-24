@@ -1,3 +1,9 @@
+## 0.4.1 — 2026-05-24
+
+### Changes since v0.4.0
+
+- 3649ee9 app: skip HID treatment for whitelisted devices, delay lock for notification
+
 ## 0.4.0 — 2026-05-17
 
 ### Changes since v0.3.1
