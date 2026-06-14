@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import TypedDict
 
 
 class DeviceTarget(IntEnum):
@@ -70,8 +71,7 @@ class Device:
     @classmethod
     def from_dbus(cls, device_id: int, rule_string: str) -> Device:
         """Create a Device from a D-Bus (id, rule_string) tuple."""
-        parsed = parse_device_rule(rule_string)
-        return cls(number=device_id, **parsed)
+        return cls(number=device_id, **parse_device_rule(rule_string))
 
     def is_allowed(self) -> bool:
         return self.rule.lower() == "allow"
@@ -170,7 +170,19 @@ def _extract_interfaces(rule: str) -> list[str]:
     return []
 
 
-def parse_device_rule(rule_string: str) -> dict[str, str | list[str]]:
+class _ParsedRule(TypedDict):
+    rule: str
+    id: str
+    serial: str
+    name: str
+    hash: str
+    parent_hash: str
+    via_port: str
+    with_interface: list[str]
+    with_connect_type: str
+
+
+def parse_device_rule(rule_string: str) -> _ParsedRule:
     """Parse a USBGuard rule string into a dict suitable for Device construction.
 
     Example rule:

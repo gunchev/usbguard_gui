@@ -13,6 +13,7 @@ class Settings:
     """Application settings with QSettings backend."""
 
     _instance: Settings | None = None
+    _settings: QSettings
 
     def __new__(cls) -> Settings:
         if cls._instance is None:

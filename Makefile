@@ -21,8 +21,9 @@ help:
 	@echo
 	@echo "Available targets:"
 	@echo "    lint:               run linters"
+	@echo "    typecheck:          run pyright type checker"
 	@echo "    test:               run tests"
-	@echo "    check:              test + lint"
+	@echo "    check:              test + lint + typecheck"
 	@echo "    coverage:           run tests and collect code coverage"
 	@echo
 	@echo "    format:             auto-format code with autopep8"
@@ -47,8 +48,14 @@ help:
 
 .PHONY: lint
 lint:
+	uv run isort --check-only src/ tests/
 	uv run ruff check src/ tests/
 	uv run autopep8 --diff --recursive src/ tests/
+
+
+.PHONY: typecheck
+typecheck:
+	uv run pyright src/
 
 
 .PHONY: test
@@ -57,7 +64,7 @@ test:
 
 
 .PHONY: check
-check: lint test
+check: lint typecheck test
 
 
 .PHONY: coverage
@@ -67,6 +74,7 @@ coverage:
 
 .PHONY: format
 format:
+	uv run isort src/ tests/
 	uv run autopep8 --in-place --recursive src/ tests/
 	uv run ruff check --fix src/ tests/
 

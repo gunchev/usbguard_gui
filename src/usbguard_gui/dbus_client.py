@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Coroutine
+from typing import Any
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
@@ -64,8 +66,8 @@ class _DBusThread(QThread):
         super().__init__(parent)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
-        self._devices_iface = None
-        self._policy_iface = None
+        self._devices_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
+        self._policy_iface: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._running = True
         self._connected = False
 
@@ -95,12 +97,12 @@ class _DBusThread(QThread):
 
         try:
             devices_obj = self._bus.get_proxy_object(
-                USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, _DEVICES_INTROSPECTION
+                USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, _DEVICES_INTROSPECTION  # pyright: ignore[reportArgumentType]
             )
             self._devices_iface = devices_obj.get_interface(USBGUARD_DEVICES_IFACE)
 
             policy_obj = self._bus.get_proxy_object(
-                USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH, _POLICY_INTROSPECTION
+                USBGUARD_BUS_NAME, USBGUARD_POLICY_PATH, _POLICY_INTROSPECTION  # pyright: ignore[reportArgumentType]
             )
             self._policy_iface = policy_obj.get_interface(USBGUARD_POLICY_IFACE)
 
@@ -138,7 +140,7 @@ class _DBusThread(QThread):
     ) -> None:
         self.device_policy_changed.emit(device_id, target_old, target_new, device_rule, rule_id, attributes)
 
-    def _schedule(self, coro: asyncio.coroutine) -> None:
+    def _schedule(self, coro: Coroutine[Any, Any, Any]) -> None:
         if self._loop and self._running:
             self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
 

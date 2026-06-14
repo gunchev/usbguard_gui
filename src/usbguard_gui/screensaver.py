@@ -6,6 +6,8 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Coroutine
+from typing import Any
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
@@ -51,8 +53,8 @@ class _ScreensaverThread(QThread):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
         self._system_bus: MessageBus | None = None
-        self._proxy = None
-        self._logind = None
+        self._proxy: Any = None   # ProxyInterface — dbus-fast dynamic API
+        self._logind: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._running = True
         self._active = False
         self._inhibited = False
@@ -83,7 +85,7 @@ class _ScreensaverThread(QThread):
 
         try:
             proxy_obj = self._bus.get_proxy_object(
-                SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION
+                SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION  # pyright: ignore[reportArgumentType]
             )
             self._proxy = proxy_obj.get_interface(SCREENSAVER_IFACE)
             self._proxy.on_active_changed(self._on_active_changed)
@@ -148,7 +150,7 @@ class _ScreensaverThread(QThread):
             self.inhibit_changed.emit(new_state)
 
     @staticmethod
-    def _has_idle_block_inhibitor(inhibitors) -> bool:
+    def _has_idle_block_inhibitor(inhibitors: list[Any] | None) -> bool:
         """Return True if any logind inhibitor blocks idle/screen-lock.
 
         `ListInhibitors` returns an array of (what, who, why, mode, uid, pid)
@@ -182,7 +184,7 @@ class _ScreensaverThread(QThread):
         except DBusError as e:
             log.debug("GetActive failed: %s", e)
 
-    def _schedule(self, coro: asyncio.coroutine) -> None:
+    def _schedule(self, coro: Coroutine[Any, Any, Any]) -> None:
         if self._loop and self._running:
             self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
 

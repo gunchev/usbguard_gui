@@ -141,19 +141,22 @@ class DeviceListWindow(QMainWindow):
         self._view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._show_context_menu)
-        self._view.horizontalHeader().setStretchLastSection(True)
-        self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self._view.horizontalHeader().setSectionsMovable(True)
-        self._view.horizontalHeader().sectionMoved.connect(self._on_section_moved)
-        self._view.verticalHeader().setVisible(False)
+        hh = self._view.horizontalHeader()
+        assert hh is not None
+        hh.setStretchLastSection(True)
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        hh.setSectionsMovable(True)
+        hh.sectionMoved.connect(self._on_section_moved)
+        vh = self._view.verticalHeader()
+        assert vh is not None
+        vh.setVisible(False)
 
         self._settings = QSettings("usbguard_gui", "device_list")
         saved_geometry = self._settings.value("geometry")
         if isinstance(saved_geometry, QByteArray) and not saved_geometry.isEmpty():
             self.restoreGeometry(saved_geometry)
         saved_state = self._settings.value("header_state")
-        header = self._view.horizontalHeader()
-        if isinstance(saved_state, QByteArray) and not saved_state.isEmpty() and header.restoreState(saved_state):
+        if isinstance(saved_state, QByteArray) and not saved_state.isEmpty() and hh.restoreState(saved_state):
             self._columns_sized = True
 
         toolbar = QToolBar("Actions")
@@ -218,11 +221,15 @@ class DeviceListWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._settings.setValue("geometry", self.saveGeometry())
-        self._settings.setValue("header_state", self._view.horizontalHeader().saveState())
+        hh = self._view.horizontalHeader()
+        assert hh is not None
+        self._settings.setValue("header_state", hh.saveState())
         super().closeEvent(event)
 
     def _selected_device(self) -> Device | None:
-        indexes = self._view.selectionModel().selectedRows()
+        sm = self._view.selectionModel()
+        assert sm is not None
+        indexes = sm.selectedRows()
         if not indexes:
             return None
         source_index = self._proxy.mapToSource(indexes[0])
@@ -231,6 +238,7 @@ class DeviceListWindow(QMainWindow):
     def _on_section_moved(self, logical: int, old_visual: int, new_visual: int) -> None:
         """Keep the '#' column (logical 0) anchored at visual position 0."""
         header = self._view.horizontalHeader()
+        assert header is not None
         if header.visualIndex(0) != 0:
             header.blockSignals(True)
             header.moveSection(header.visualIndex(0), 0)
@@ -247,7 +255,9 @@ class DeviceListWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Block", lambda: self._apply(device, DeviceTarget.BLOCK, permanent=False))
         menu.addAction("Reject", lambda: self._apply(device, DeviceTarget.REJECT, permanent=False))
-        menu.exec(self._view.viewport().mapToGlobal(pos))
+        vp = self._view.viewport()
+        assert vp is not None
+        menu.exec(vp.mapToGlobal(pos))
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
         self._pending_apply = (device, target, permanent)

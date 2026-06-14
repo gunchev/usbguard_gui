@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+from enum import Enum
 from pathlib import Path
 
 from PyQt6.QtCore import QLockFile, QStandardPaths, QTimer
@@ -40,7 +41,7 @@ def _app_icon() -> QIcon:
     return QIcon.fromTheme("drive-removable-media")
 
 
-def _enum_name(enum: type, value: int, fallback: str = "?") -> str:
+def _enum_name(enum: type[Enum], value: int, fallback: str = "?") -> str:
     """Return the name of an enum member by value, or a fallback string."""
     try:
         return enum(value).name
