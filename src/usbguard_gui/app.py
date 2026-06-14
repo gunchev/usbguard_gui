@@ -254,12 +254,6 @@ class USBGuardTrayApp:
             hid_treatment_enabled = not self._settings.disable_hid_treatment()
             lock_inhibited = self._screensaver.inhibited
             hid_special_treatment = is_hid and hid_treatment_enabled and not lock_inhibited
-            if is_hid and hid_treatment_enabled and lock_inhibited:
-                log.info(
-                    "HID device %d inserted while screen locking is inhibited — "
-                    "falling back to prompt (will not auto-allow)",
-                    device_id,
-                )
             if hid_special_treatment:
                 if self._screensaver.active:
                     log.info(
@@ -283,6 +277,13 @@ class USBGuardTrayApp:
                 )
                 self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
                 return
+            elif is_hid and hid_treatment_enabled:
+                # lock_inhibited is True — fall through to normal prompt path
+                log.info(
+                    "HID device %d inserted while screen locking is inhibited — "
+                    "falling back to prompt (will not auto-allow)",
+                    device_id,
+                )
 
             # Non-HID device: defer while screen is locked, otherwise prompt.
             if self._screensaver.active:

@@ -22,7 +22,6 @@ def mock_thread():
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
             list_devices_result = pyqtSignal(list)
-            apply_policy_result = pyqtSignal(object)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
 
@@ -179,17 +178,6 @@ class TestUSBGuardClient:
         client.connect()
         client.apply_device_policy(1, DeviceTarget.BLOCK, permanent=True)
         assert mock_thread._apply_policy_calls == [(1, DeviceTarget.BLOCK, True)]
-
-    def test_apply_device_policy_result_signal_propagates(self, client, mock_thread):
-        client.connect()
-        emitted = []
-
-        def capture(value):
-            emitted.append(value)
-
-        client.apply_policy_result.connect(capture)
-        mock_thread.apply_policy_result.emit(42)
-        assert emitted == [42]
 
     def test_list_rules_calls_thread(self, client, mock_thread):
         client.connect()
@@ -375,22 +363,16 @@ class TestDBusThreadFastFail:
 
     def test_apply_device_policy_fast_fails_when_disconnected(self):
         thread = self._build_thread(connected=False)
-        emitted: list = []
-        thread.apply_policy_result.connect(lambda v: emitted.append(v))
 
         thread.apply_device_policy(1, DeviceTarget.ALLOW)
 
-        assert emitted == [None]
         thread._loop.call_soon_threadsafe.assert_not_called()
 
     def test_apply_device_policy_schedules_when_connected(self):
         thread = self._build_thread(connected=True)
-        emitted: list = []
-        thread.apply_policy_result.connect(lambda v: emitted.append(v))
 
         thread.apply_device_policy(1, DeviceTarget.ALLOW)
 
-        assert emitted == []
         thread._loop.call_soon_threadsafe.assert_called_once()
         self._close_captured_coros(thread._loop)
 

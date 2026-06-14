@@ -56,7 +56,6 @@ class _DBusThread(QThread):
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     list_devices_result = pyqtSignal(list)
-    apply_policy_result = pyqtSignal(object)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
@@ -165,7 +164,6 @@ class _DBusThread(QThread):
         try:
             rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
             log.info("Applied %s to device %d (permanent=%s) → rule %d", target.name, device_id, permanent, rule_id)
-            self.apply_policy_result.emit(int(rule_id))
         except DBusError as e:
             if _is_permission_error(e):
                 log.error(
@@ -184,7 +182,6 @@ class _DBusThread(QThread):
                 )
                 self._connected = False
                 self.connection_changed.emit(False)
-            self.apply_policy_result.emit(None)
 
     async def _do_list_rules(self, label: str) -> None:
         try:
@@ -221,7 +218,6 @@ class _DBusThread(QThread):
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
         if not self._connected:
-            self.apply_policy_result.emit(None)
             return
         if self._devices_iface and self._loop:
             self._schedule(self._do_apply_policy(device_id, target, permanent))
@@ -252,7 +248,6 @@ class USBGuardClient(QObject):
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
     list_devices_result = pyqtSignal(list)
-    apply_policy_result = pyqtSignal(object)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
 
@@ -270,7 +265,6 @@ class USBGuardClient(QObject):
         self._thread.device_presence_changed.connect(self.device_presence_changed)
         self._thread.device_policy_changed.connect(self.device_policy_changed)
         self._thread.list_devices_result.connect(self.list_devices_result)
-        self._thread.apply_policy_result.connect(self.apply_policy_result)
         self._thread.list_rules_result.connect(self.list_rules_result)
         self._thread.remove_rule_result.connect(self.remove_rule_result)
         self._thread.start()

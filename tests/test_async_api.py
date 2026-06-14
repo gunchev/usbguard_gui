@@ -33,7 +33,6 @@ class TestUSBGuardClientAsyncAPI:
         client = USBGuardClient()
 
         assert hasattr(client, "list_devices_result")
-        assert hasattr(client, "apply_policy_result")
         assert hasattr(client, "list_rules_result")
         assert hasattr(client, "remove_rule_result")
 

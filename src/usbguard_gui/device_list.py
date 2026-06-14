@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QAbstractTableModel, QByteArray, QModelIndex, QPoint, QSettings, QSortFilterProxyModel, Qt, \
     QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QColor
+from PyQt6.QtGui import QAction, QCloseEvent, QColor, QShowEvent
 from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, QTableView, QToolBar, QVBoxLayout, \
     QWidget
 
@@ -212,7 +212,7 @@ class DeviceListWindow(QMainWindow):
                 self._view.resizeColumnsToContents()
                 self._columns_sized = True
 
-    def showEvent(self, event: QPoint) -> None:
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._request_refresh()
 
