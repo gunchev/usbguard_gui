@@ -1,3 +1,12 @@
+## 0.5.0 — 2026-06-15
+
+### Changes since v0.4.1
+
+- 67dc7d3 docs: rewrite DESIGN.md for current shipped architecture
+- 23cd568 chore: fix type annotations, add pyright and isort
+- 331bd70 fix: correct showEvent type annotation, remove dead apply_policy_result signal, clarify HID conditional
+- 9aae461 app: cancel deferred HID lock when the triggering device is removed
+
 ## 0.4.1 — 2026-05-24
 
 ### Changes since v0.4.0
