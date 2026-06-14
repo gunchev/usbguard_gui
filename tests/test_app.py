@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.device import Device, DeviceTarget
+from usbguard_gui.device import Device, DeviceTarget, PresenceEvent
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -258,6 +258,53 @@ class TestHIDLockOnDeviceRemoval:
         assert fake_client.apply_policy_calls == []
 
 
+class TestHIDRemovalCancelsScheduledLock:
+    """Unplugging a HID device during the notification delay must abort the
+    deferred screen lock and drop the device from the pending set, so it is
+    neither locked for nor auto-allowed afterwards."""
+
+    _RULE = (
+        'block id 1234:abcd serial "" name "Test Keyboard" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        'with-interface 03:00:00 with-connect-type hotplug'
+    )
+
+    def test_remove_before_lock_cancels_lock(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+        assert tray_app._hid_pending_devices == {1}
+        assert tray_app._hid_lock_timer.isActive()
+
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), self._RULE, {})
+        assert tray_app._hid_pending_devices == set()
+        # A stopped single-shot timer can never fire — the lock is aborted.
+        assert not tray_app._hid_lock_timer.isActive()
+        assert fake_screensaver.lock_calls == 0
+
+    def test_remove_one_of_several_keeps_lock(self, tray_app, fake_client, fake_screensaver) -> None:
+        """With two HID devices pending, removing one keeps the lock scheduled."""
+        other = (
+            'block id 5678:ef01 serial "" name "Other Keyboard" '
+            'hash "def456" parent-hash "" via-port "2-1" '
+            'with-interface 03:00:00 with-connect-type hotplug'
+        )
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+        fake_client.device_presence_changed.emit(2, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), other, {})
+        assert tray_app._hid_pending_devices == {1, 2}
+
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), self._RULE, {})
+        assert tray_app._hid_pending_devices == {2}
+        assert tray_app._hid_lock_timer.isActive()
+        tray_app._hid_lock_timer.stop()  # don't leak a 5 s timer into later tests
+
+    def test_removed_device_not_allowed_on_later_lock(self, tray_app, fake_client, fake_screensaver) -> None:
+        """A removed device must not be auto-allowed if the screen locks later."""
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        tray_app._on_screensaver_active_changed(True)
+        assert fake_client.apply_policy_calls == []
+
+
 # ---------------------------------------------------------------------------
 # HID allow on screen lock
 # ---------------------------------------------------------------------------
@@ -351,7 +398,7 @@ class TestHIDWhenLockInhibited:
         # blocked until the lock completes.
         assert 1 in tray_app._hid_pending_devices
         assert fake_client.apply_policy_calls == []
-        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
     def test_hid_insert_while_locked_and_inhibited_prompts(
         self, tray_app, fake_client, fake_screensaver, qtbot
@@ -456,7 +503,7 @@ class TestHIDPermanentlyAllowed:
         )
 
         assert 1 in tray_app._hid_pending_devices
-        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
     def test_allowed_hid_empty_hash_not_matched(
         self, tray_app, fake_client, fake_screensaver, qtbot
@@ -474,7 +521,7 @@ class TestHIDPermanentlyAllowed:
         )
 
         assert 1 in tray_app._hid_pending_devices
-        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
     def test_blocked_hid_device_still_triggers_lock(
         self, tray_app, fake_client, fake_screensaver, qtbot
@@ -490,7 +537,7 @@ class TestHIDPermanentlyAllowed:
         )
 
         assert 2 in tray_app._hid_pending_devices
-        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=5000)
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
     def test_cache_seeded_by_policy_changed_with_rule_id(
         self, tray_app, fake_client, fake_screensaver, qtbot

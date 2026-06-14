@@ -81,6 +81,13 @@ class USBGuardTrayApp:
         self._reconnect_timer.timeout.connect(self._try_connect)
         self._reconnect_attempts = 0
 
+        # Deferred screen lock for HID inserts. Single-shot and cancellable so
+        # that unplugging the triggering device before it fires aborts the lock
+        # (see _on_device_presence_changed REMOVE handling).
+        self._hid_lock_timer = QTimer()
+        self._hid_lock_timer.setSingleShot(True)
+        self._hid_lock_timer.timeout.connect(self._lock_for_pending_hid)
+
         self._setup_tray()
         self._connect_signals()
         self._connect_client_signals()
@@ -205,6 +212,15 @@ class USBGuardTrayApp:
                 dialog = self._open_dialogs.pop(device_id, None)
                 if dialog:
                     dialog.close()
+                # Drop the device from any pending set — it is gone, so it must
+                # neither be auto-allowed on lock nor prompted for on unlock.
+                self._hid_pending_devices.discard(device_id)
+                self._screensaver_pending_devices.discard(device_id)
+                # If this was the last HID device awaiting the deferred lock,
+                # cancel the lock: the user unplugged the device before it fired.
+                if not self._hid_pending_devices and self._hid_lock_timer.isActive():
+                    log.info("HID device %d removed before lock — cancelling scheduled lock", device_id)
+                    self._hid_lock_timer.stop()
                 return
 
             # Only react to new insertions — PRESENT fires for devices already
@@ -265,7 +281,7 @@ class USBGuardTrayApp:
                     QSystemTrayIcon.MessageIcon.Warning,
                     5000,
                 )
-                QTimer.singleShot(HID_LOCK_NOTIFY_DELAY_MS, self._screensaver.lock)
+                self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
                 return
 
             # Non-HID device: defer while screen is locked, otherwise prompt.
@@ -305,6 +321,14 @@ class USBGuardTrayApp:
                         self._permanent_allow_hashes.add(d.hash)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
+
+    def _lock_for_pending_hid(self) -> None:
+        """Lock the screen for a deferred HID insert, unless every triggering
+        device was unplugged during the notification delay."""
+        if not self._hid_pending_devices:
+            log.debug("HID lock timer fired with no pending devices — skipping lock")
+            return
+        self._screensaver.lock()
 
     def _on_screensaver_changed(self, active: bool) -> None:
         if active or not self._screensaver_pending_devices:
