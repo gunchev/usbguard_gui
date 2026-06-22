@@ -1,3 +1,9 @@
+## 0.5.1 — 2026-06-22
+
+### Changes since v0.5.0
+
+- 6e1a7b5 rpm: replace dasbus/PyGObject deps with dbus-fast, drop PyGObject.md
+
 ## 0.5.0 — 2026-06-15
 
 ### Changes since v0.4.1
