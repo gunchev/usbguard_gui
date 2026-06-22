@@ -10,14 +10,13 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    container:
+      image: quay.io/fedora/fedora:latest
 
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
     - name: Run tox (py310–py314) on Fedora
-      run: |
-        sudo apt-get update && sudo apt-get install -y podman
-        podman run --rm -v "$PWD:/work" -w "/work" quay.io/fedora/fedora:latest bash -c '
-          dnf -y install uv python3 python3.10 python3.11 python3.12 python3.13 make gcc fedora-packager python3-devel python3-cairo cairo-gobject-devel cairo-devel libglvnd-glx libglvnd-egl
-          UV_PYTHON_DOWNLOADS=never QT_QPA_PLATFORM=offscreen uv run tox
-        '
+
+        sudo dnf -y install uv python3 python3.10 python3.11 python3.12 python3.13 make gcc fedora-packager python3-devel python3-cairo cairo-gobject-devel cairo-devel libglvnd-glx libglvnd-egl
+        UV_PYTHON_DOWNLOADS=never QT_QPA_PLATFORM=offscreen uv run tox
