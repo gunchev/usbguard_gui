@@ -16,12 +16,10 @@ BuildRequires:  python3-devel
 BuildRequires:  pyproject-rpm-macros
 BuildRequires:  desktop-file-utils
 BuildRequires:  python3dist(pyqt6) >= 6.5
-BuildRequires:  python3dist(dasbus) >= 1.7
-BuildRequires:  python3dist(pygobject) >= 3.42
+BuildRequires:  python3dist(dbus-fast) >= 1.0
 
 Requires:       python3dist(pyqt6) >= 6.5
-Requires:       python3dist(dasbus) >= 1.7
-Requires:       python3dist(pygobject) >= 3.42
+Requires:       python3dist(dbus-fast) >= 1.0
 Requires:       usbguard
 Requires:       usbguard-dbus
 
