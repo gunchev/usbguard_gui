@@ -1,3 +1,12 @@
+## 0.6.0 — 2026-06-24
+
+### Changes since v0.5.1
+
+- d646db1 Integrate `usbguard generate-policy` in the RPM post script.
+- 09b1e35 Add Dependabot configuration (related to issue #3)
+- de6e772 Will this run on fedora?
+- b2caa3c ci: pin actions/checkout to commit SHA instead of version tag
+
 ## 0.5.1 — 2026-06-22
 
 ### Changes since v0.5.0
