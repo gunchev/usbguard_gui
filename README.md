@@ -83,7 +83,7 @@ keyboard cannot be used to unlock the screen.
 ### Fedora
 
 On Fedora installing the RPM package will start the app on session start in KDE.
-Make sure to generate the USBGuard policy or all your USB devices will be unavailable.
+On first install the RPM generates an initial USBGuard policy if `/etc/usbguard/rules.conf` is missing or empty.
 
 ```bash
 # Enable the COPR repository
@@ -93,7 +93,7 @@ dnf copr enable dgunchev/usbguard_gui
 sudo dnf -y install usbguard_gui
 
 # Generate initial policy to allow currently attached USB devices.
-# No idea why USBGuard does not do that by itself.
+# This is needed only if the RPM package failed to generate one.
 sudo usbguard generate-policy | sudo tee /etc/usbguard/rules.conf
 
 # Start both the main and dbus services. The "usbguard-dbus.service" is enabled by the RPM %post-install scriptlet.

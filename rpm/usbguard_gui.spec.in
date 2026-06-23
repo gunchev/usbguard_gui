@@ -91,6 +91,13 @@ if [ $1 -eq 1 ] ; then
     systemctl enable usbguard-dbus.service >/dev/null 2>&1 || :
 fi
 
+# Generate an initial USBGuard policy on first install if the system does not
+# already have one. This mirrors the manual setup step documented in the README
+# and prevents a fresh install from blocking every USB device by default.
+if [ $1 -eq 1 ] && [ ! -s /etc/usbguard/rules.conf ]; then
+    usbguard generate-policy >> /etc/usbguard/rules.conf
+fi
+
 
 %preun
 # Mirror %post: disable and stop usbguard-dbus on package removal.
