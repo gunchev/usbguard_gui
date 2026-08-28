@@ -7,7 +7,7 @@ import os
 import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.device import Device
+from usbguard_gui.device import Device, DeviceTarget
 from usbguard_gui.device_list import DeviceListWindow
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -28,6 +28,8 @@ class _FakeClient(QObject):
         super().__init__()
         self.list_devices_calls: int = 0
         self.list_rules_calls: int = 0
+        self.apply_policy_calls: list[tuple] = []
+        self.remove_rule_calls: list[int] = []
 
     def list_devices(self, query: str = "match") -> None:
         self.list_devices_calls += 1
@@ -36,10 +38,10 @@ class _FakeClient(QObject):
         self.list_rules_calls += 1
 
     def apply_device_policy(self, device_id: int, target, permanent: bool = False) -> None:
-        pass
+        self.apply_policy_calls.append((device_id, target, permanent))
 
     def remove_rule(self, rule_id: int) -> None:
-        pass
+        self.remove_rule_calls.append(rule_id)
 
 
 def _make_device(number: int = 1, rule: str = "block") -> Device:
@@ -153,20 +155,34 @@ class TestRefreshFlow:
         assert client.receivers(client.list_devices_result) == before_devices
         assert client.receivers(client.list_rules_result) == before_rules
 
-    def test_pending_apply_takes_priority_over_refresh(self, window, client):
-        """When _pending_apply is set, list_rules_result handles apply not refresh."""
-        from usbguard_gui.device import DeviceTarget
+class TestApplyDoesNotRemoveRules:
+    """Regression: applying 'Allow (Temporary)' used to remove every allow
+    rule matching the device hash — including the user's permanent rule —
+    silently revoking persistent authorization (after the next replug or
+    reboot the device would be blocked again).  Permanent and temporary
+    rules are indistinguishable from the rule string, so the GUI must not
+    remove rules at all: re-applying a temporary allow is harmless because
+    USBGuard prepends it, so it wins evaluation order."""
 
+    _PERMANENT_RULE = (
+        'allow id 1234:abcd serial "" name "Test Device" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        "with-interface 03:00:00 with-connect-type hotplug"
+    )
+
+    def test_temporary_allow_keeps_permanent_rule(self, window, client):
+        device = _make_device(1)  # hash "abc123", matches the rule below
+        window._apply(device, DeviceTarget.ALLOW, permanent=False)
+
+        # Whatever the daemon reports must not be removed:
+        client.list_rules_result.emit([(7, self._PERMANENT_RULE)])
+
+        assert client.remove_rule_calls == []
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+
+    def test_permanent_allow_applies_policy_directly(self, window, client):
         device = _make_device(1)
-        window._request_refresh()
-        # Simulate devices result came in
-        client.list_devices_result.emit([device])
+        window._apply(device, DeviceTarget.ALLOW, permanent=True)
 
-        # Apply action set before rules result arrives
-        window._pending_apply = (device, DeviceTarget.ALLOW, True)
-
-        # list_rules_result arrives
-        client.list_rules_result.emit([])
-
-        # _pending_apply consumed, model NOT updated from this rules result
-        assert window._pending_apply is None
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, True)]
+        assert client.remove_rule_calls == []

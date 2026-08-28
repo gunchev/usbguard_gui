@@ -123,7 +123,6 @@ class DeviceListWindow(QMainWindow):
     def __init__(self, client: USBGuardClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._client = client
-        self._pending_apply: tuple[Device, DeviceTarget, bool] | None = None
         self._refresh_pending = False
         self._pending_devices: list[Device] = []
         self.setWindowTitle("USBGuard — Devices")
@@ -204,11 +203,7 @@ class DeviceListWindow(QMainWindow):
         self._client.list_rules()
 
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
-        if self._pending_apply:
-            device, target, permanent = self._pending_apply
-            self._pending_apply = None
-            self._do_apply_with_rules(device, target, permanent, rules)
-        elif self._refresh_pending:
+        if self._refresh_pending:
             self._refresh_pending = False
             self._model.set_devices(self._pending_devices, _permanent_allow_hashes(rules))
             if not self._columns_sized:
@@ -260,17 +255,12 @@ class DeviceListWindow(QMainWindow):
         menu.exec(vp.mapToGlobal(pos))
 
     def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
-        self._pending_apply = (device, target, permanent)
-        self._client.list_rules()
-
-    def _do_apply_with_rules(
-        self, device: Device, target: DeviceTarget, permanent: bool, rules: list[tuple[int, str]]
-    ) -> None:
-        if target == DeviceTarget.ALLOW and not permanent and device.hash:
-            for rule_id, rule_str in rules:
-                parsed = parse_device_rule(rule_str)
-                if parsed["rule"] == "allow" and parsed["hash"] == device.hash:
-                    self._client.remove_rule(rule_id)
+        # Apply directly.  Do NOT remove any existing allow rules first: a
+        # permanent rule and a temporary one are indistinguishable from the
+        # rule string, and removing the user's permanent rule (e.g. when
+        # re-applying a temporary allow) would silently revoke persistent
+        # authorization.  Re-applying a temporary allow is harmless —
+        # USBGuard prepends it, so it wins evaluation order.
         self._client.apply_device_policy(device.number, target, permanent)
         self._request_refresh()
 
