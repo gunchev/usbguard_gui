@@ -664,3 +664,55 @@ class TestHIDPermanentlyAllowed:
         )
 
         assert "abc123" not in tray_app._permanent_allow_hashes
+
+
+# ---------------------------------------------------------------------------
+# Reconnect backoff
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectBackoff:
+    """The reconnection timer must use exponential backoff: each failed
+    attempt doubles the interval up to RECONNECT_MAX_INTERVAL, and a
+    successful connection resets it.
+
+    Regression: connect() always returns True (it only starts the worker
+    thread), so the backoff branch in _try_connect() was unreachable and
+    the timer retried at a fixed 5 s interval forever."""
+
+    def test_backoff_doubles_after_each_failure(self, tray_app, fake_client) -> None:
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == 5000
+        assert tray_app._reconnect_timer.isActive()
+
+        # The single-shot timer fires (stopping itself) and calls _try_connect.
+        tray_app._reconnect_timer.stop()
+        tray_app._try_connect()
+
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == 10000
+
+        tray_app._reconnect_timer.stop()
+        tray_app._try_connect()
+
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == 20000
+
+    def test_backoff_caps_at_max_interval(self, tray_app, fake_client) -> None:
+        from usbguard_gui.app import RECONNECT_MAX_INTERVAL
+
+        tray_app._reconnect_attempts = 5  # 5 * 2^5 = 160 s > cap
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == RECONNECT_MAX_INTERVAL * 1000
+
+    def test_success_resets_backoff(self, tray_app, fake_client) -> None:
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == 5000
+        tray_app._reconnect_timer.stop()
+
+        fake_client.connection_changed.emit(True)
+        assert tray_app._reconnect_timer.isActive() is False
+        assert tray_app._reconnect_attempts == 0
+
+        fake_client.connection_changed.emit(False)
+        assert tray_app._reconnect_timer.interval() == 5000  # backoff restarted

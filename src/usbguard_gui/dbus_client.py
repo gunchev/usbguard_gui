@@ -83,6 +83,9 @@ class _DBusThread(QThread):
         except Exception as e:
             log.error("DBus thread error: %s", e)
             self.error_occurred.emit(str(e))
+            # Report the failure too, so the app schedules a reconnect —
+            # without this the app would sit in "connecting..." forever.
+            self.connection_changed.emit(False)
         finally:
             self._loop.close()
             self.finished.emit()
@@ -262,6 +265,11 @@ class USBGuardClient(QObject):
         return self._thread.is_connected if self._thread else False
 
     def connect(self) -> bool:
+        # Recycle any previous worker: the app calls connect() again on every
+        # reconnect attempt, and leaving the old thread running would leak a
+        # live QThread (with its D-Bus connection and signal subscriptions)
+        # that keeps delivering duplicate events after a daemon restart.
+        self.stop()
         self._thread = _DBusThread(self)
         self._thread.connection_changed.connect(self.connection_changed)
         self._thread.device_presence_changed.connect(self.device_presence_changed)

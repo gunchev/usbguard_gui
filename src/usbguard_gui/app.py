@@ -76,8 +76,11 @@ class USBGuardTrayApp:
         self._screensaver_pending_ids: list[int] | None = None
         self._permanent_allow_hashes: set[str] = set()
 
-        # Reconnect timer with exponential backoff
+        # Reconnect timer with exponential backoff. Single-shot: each failed
+        # attempt (connection_changed(False)) reschedules it with a doubled
+        # interval, capped at RECONNECT_MAX_INTERVAL.
         self._reconnect_timer = QTimer()
+        self._reconnect_timer.setSingleShot(True)
         self._reconnect_timer.setInterval(RECONNECT_BASE_INTERVAL * 1000)
         self._reconnect_timer.timeout.connect(self._try_connect)
         self._reconnect_attempts = 0
@@ -173,22 +176,20 @@ class USBGuardTrayApp:
                 self._show_device_dialog(device)
 
     def start(self) -> None:
-        """Initialize D-Bus connections and start the application."""
+        """Initialize D-Bus connections and start the application.
+
+        connect() only starts the worker thread and always returns True;
+        the actual connection result arrives asynchronously via
+        connection_changed, which schedules reconnection with backoff.
+        """
         self._screensaver.connect()
-        if not self._client.connect():
-            log.warning("USBGuard daemon not available, will retry...")
-            self._reconnect_timer.start()
+        self._client.connect()
 
     def _try_connect(self) -> None:
-        if self._client.connect():
-            self._reconnect_timer.stop()
-            self._reconnect_attempts = 0  # Reset on successful connection
-        else:
-            # Exponential backoff: increase interval up to maximum
-            self._reconnect_attempts += 1
-            backoff = min(RECONNECT_BASE_INTERVAL * (2 ** (self._reconnect_attempts - 1)), RECONNECT_MAX_INTERVAL)
-            self._reconnect_timer.setInterval(backoff * 1000)
-            log.debug("Connection attempt %d failed, retrying in %d seconds", self._reconnect_attempts, backoff)
+        # connect() recycles any previous worker thread; success/failure
+        # arrives asynchronously via connection_changed, which reschedules
+        # the next attempt with exponential backoff.
+        self._client.connect()
 
     def _on_connection_changed(self, connected: bool) -> None:
         if connected:
@@ -196,10 +197,16 @@ class USBGuardTrayApp:
             self._reconnect_timer.stop()
             self._reconnect_attempts = 0  # Reset on successful connection
             self._client.list_rules()
-        else:
-            self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
-            if not self._reconnect_timer.isActive():
-                self._reconnect_timer.start()
+            return
+
+        self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
+        if self._reconnect_timer.isActive():
+            return
+        backoff = min(RECONNECT_BASE_INTERVAL * (2 ** self._reconnect_attempts), RECONNECT_MAX_INTERVAL)
+        self._reconnect_attempts += 1
+        self._reconnect_timer.setInterval(backoff * 1000)
+        log.debug("Connection attempt failed, retrying in %d seconds", backoff)
+        self._reconnect_timer.start()
 
     def _on_device_presence_changed(
         self, device_id: int, event: int, target: int, device_rule: str, attributes: dict

@@ -256,6 +256,69 @@ class TestUSBGuardClient:
         client.remove_rule(1)
 
 
+class TestConnectRecyclesPreviousThread:
+    """USBGuardClient.connect() must stop the previous worker thread before
+    starting a new one — the app calls connect() again on every reconnect
+    attempt, and leaving the old thread running would leak a live QThread
+    (with its D-Bus connection and signal subscriptions) that keeps
+    delivering duplicate events after a daemon restart."""
+
+    @staticmethod
+    def _make_factory(threads: list):
+        from PyQt6.QtCore import QObject, pyqtSignal
+
+        class MockThread(QObject):
+            connection_changed = pyqtSignal(bool)
+            device_presence_changed = pyqtSignal(int, int, int, str, dict)
+            device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
+            list_devices_result = pyqtSignal(list)
+            list_rules_result = pyqtSignal(list)
+            remove_rule_result = pyqtSignal(bool)
+
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.events: list = []
+
+            def start(self):
+                self.events.append("start")
+
+            def stop(self):
+                self.events.append("stop")
+
+            def wait(self):
+                self.events.append("wait")
+
+        def factory(parent=None):
+            t = MockThread(parent)
+            threads.append(t)
+            return t
+
+        return factory
+
+    def test_connect_stops_previous_thread(self):
+        threads: list = []
+        with patch("usbguard_gui.dbus_client._DBusThread", side_effect=self._make_factory(threads)):
+            client = USBGuardClient()
+            client.connect()
+            client.connect()  # e.g. _try_connect() on reconnect
+
+            assert len(threads) == 2
+            # The first worker must have been stopped and waited for, and
+            # only then may the second one be started.
+            assert threads[0].events == ["start", "stop", "wait"]
+            assert threads[1].events == ["start"]
+            assert client._thread is threads[1]
+
+    def test_connect_without_previous_thread(self):
+        threads: list = []
+        with patch("usbguard_gui.dbus_client._DBusThread", side_effect=self._make_factory(threads)):
+            client = USBGuardClient()
+            client.connect()
+
+            assert len(threads) == 1
+            assert threads[0].events == ["start"]
+
+
 class TestDBusThread:
     def test_init_sets_defaults(self):
         thread = _DBusThread()
