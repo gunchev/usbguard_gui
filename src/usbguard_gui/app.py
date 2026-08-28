@@ -142,7 +142,15 @@ class USBGuardTrayApp:
                 self._permanent_allow_hashes.add(str(parsed["hash"]))
 
     def _on_list_devices_result(self, devices: list[Device]) -> None:
-        if self._hid_pending_devices:
+        # Pending HID devices may only be allowed while the screen is actually
+        # locked — that is the moment a newly-attached keyboard is safe to
+        # activate (unlocking requires a password).  If the screen is still
+        # unlocked, the deferred lock may not have fired yet: keep the devices
+        # pending so they are allowed by _on_screensaver_active_changed() once
+        # the screen locks.  Allowing them here would hand a just-plugged
+        # keyboard keystrokes on an unlocked session (race between this result
+        # and the lock timer).
+        if self._hid_pending_devices and self._screensaver.active:
             pending_ids = self._hid_pending_devices
             self._hid_pending_devices = set()
             for device_number in pending_ids:

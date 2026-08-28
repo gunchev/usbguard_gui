@@ -348,6 +348,96 @@ class TestHIDAllowOnScreenLock:
 
 
 # ---------------------------------------------------------------------------
+# HID auto-allow from list_devices_result requires a locked screen
+# ---------------------------------------------------------------------------
+
+
+class TestHIDAllowRequiresLockedScreen:
+    """A pending HID device may only be auto-allowed from a list_devices
+    result while the screen is actually locked — that is the moment a
+    newly-attached keyboard is safe to activate (unlocking requires a
+    password).  While the screen is still unlocked the device must stay
+    pending for the deferred lock (_on_screensaver_active_changed).
+
+    Regression: a list_devices_result arriving during the 5 s lock delay
+    window (e.g. the unlock deferred-summary check) used to allow the
+    keyboard while the screen was unlocked and then skip the lock entirely
+    because the pending set was empty — handing an attacker's keyboard
+    keystrokes on an unlocked session.
+    """
+
+    _RULE_NON_HID = (
+        'block id 04f2:b2ea serial "" name "Test Camera" '
+        'hash "cam123" parent-hash "" via-port "1-2" '
+        "with-interface 0e:01:00 with-connect-type hotplug"
+    )
+
+    def test_does_not_allow_pending_hid_while_screen_unlocked(self, tray_app, fake_client, fake_screensaver) -> None:
+        """Screen unlocked + list_devices_result: pending HID stays pending and blocked."""
+        device = _make_hid_device(1)
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver._active = False  # screen is unlocked
+
+        fake_client.list_devices_result.emit([device])
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._hid_pending_devices == {1}  # still pending for the lock
+
+    def test_race_hid_inserted_during_unlock_check(self, tray_app, fake_client, fake_screensaver) -> None:
+        """End-to-end repro of the unlock-window race:
+
+        1. screen locked, non-HID device A inserted  -> deferred
+        2. screen unlocks                            -> deferred-summary check starts (list_devices in flight)
+        3. attacker's keyboard B inserted while that result is in flight
+        4. the in-flight result arrives (screen still unlocked)
+
+        B must stay blocked+pending; A gets its deferred prompt.  B is only
+        allowed once the deferred lock actually happens.
+        """
+        # 1. Screen locked, non-HID device A inserted -> deferred.
+        fake_screensaver._active = True
+        fake_client.device_presence_changed.emit(
+            10, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE_NON_HID, {}
+        )
+        assert tray_app._screensaver_pending_devices == {10}
+
+        # 2. Screen unlocks -> _screensaver_pending_ids set, list_devices() in flight.
+        fake_screensaver._active = False
+        tray_app._on_screensaver_changed(False)
+        assert tray_app._screensaver_pending_ids == [10]
+
+        # 3. Attacker's keyboard B inserted while the result is in flight.
+        fake_client.device_presence_changed.emit(
+            1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            "with-interface 03:00:00 with-connect-type hotplug",
+            {},
+        )
+        assert tray_app._hid_pending_devices == {1}
+        tray_app._hid_lock_timer.stop()  # don't let the 5 s lock timer fire in-test
+
+        # 4. In-flight result arrives; the screen is still unlocked.
+        device_a = Device.from_dbus(10, self._RULE_NON_HID)
+        device_b = _make_hid_device(1)
+        fake_client.list_devices_result.emit([device_a, device_b])
+
+        # B must stay blocked and pending — the pre-fix code allowed it here.
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._hid_pending_devices == {1}
+        # A still gets its deferred prompt.
+        assert 10 in tray_app._open_dialogs
+
+        # 5. The deferred lock happens -> B is allowed (the safe path).
+        fake_screensaver._active = True
+        tray_app._on_screensaver_active_changed(True)
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+
+        for dialog in list(tray_app._open_dialogs.values()):
+            dialog.close()
+
+
+# ---------------------------------------------------------------------------
 # HID handling when screen lock is inhibited
 # ---------------------------------------------------------------------------
 
