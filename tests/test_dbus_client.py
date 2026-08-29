@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from usbguard_gui.dbus_client import USBGuardClient, _DBusThread, _is_permission_error
 from usbguard_gui.device import DeviceTarget
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture()
@@ -317,6 +322,140 @@ class TestConnectRecyclesPreviousThread:
 
             assert len(threads) == 1
             assert threads[0].events == ["start"]
+
+
+class TestNameOwnerChangedHandler:
+    """_on_name_owner_changed must flip _connected (and emit) only for the
+    USBGuard bus name, on owner gain/loss — not for other names and not
+    when ownership merely moves to a new unique name (daemon restart)."""
+
+    def test_ignores_other_names(self):
+        thread = _DBusThread()
+        thread._connected = True
+        emitted: list[bool] = []
+        thread.connection_changed.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.example.Other", "", ":1.42")
+
+        assert emitted == []
+        assert thread._connected is True
+
+    def test_daemon_appearance_sets_connected(self):
+        thread = _DBusThread()
+        thread._connected = False
+        emitted: list[bool] = []
+        thread.connection_changed.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.usbguard1", "", ":1.42")
+
+        assert emitted == [True]
+        assert thread._connected is True
+
+    def test_daemon_disappearance_clears_connected(self):
+        thread = _DBusThread()
+        thread._connected = True
+        emitted: list[bool] = []
+        thread.connection_changed.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.usbguard1", ":1.42", "")
+
+        assert emitted == [False]
+        assert thread._connected is False
+
+    def test_no_emit_when_owner_changes_but_stays_owned(self):
+        thread = _DBusThread()
+        thread._connected = True
+        emitted: list[bool] = []
+        thread.connection_changed.connect(lambda v: emitted.append(v))
+
+        # Daemon restart: the name is handed to a new unique name.
+        thread._on_name_owner_changed("org.usbguard1", ":1.42", ":1.43")
+
+        assert emitted == []
+        assert thread._connected is True
+
+
+@pytest.mark.skipif(
+    shutil.which("dbus-daemon") is None or shutil.which("gdbus") is None,
+    reason="dbus-daemon and gdbus are required",
+)
+class TestProactiveOwnerDetection:
+    """_DBusThread must notice the USBGuard daemon vanishing/returning on
+    the bus (NameOwnerChanged) instead of staying 'connected' until the
+    next call happens to fail, and must not claim 'connected' while the
+    daemon is absent.  Runs against a private dbus-daemon."""
+
+    _BUS_CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>custom</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+  </policy>
+</busconfig>
+"""
+
+    @staticmethod
+    def _gdbus(addr: str, method: str, *args: str) -> None:
+        subprocess.run(
+            [
+                "gdbus",
+                "call",
+                "--address",
+                addr,
+                "--dest",
+                "org.freedesktop.DBus",
+                "--object-path",
+                "/org/freedesktop/DBus",
+                "--method",
+                method,
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_detects_owner_loss_and_reappearance(self, qtbot, tmp_path, monkeypatch) -> None:
+        config = tmp_path / "bus.conf"
+        config.write_text(self._BUS_CONFIG)
+        daemon = subprocess.Popen(
+            ["dbus-daemon", "--config-file", str(config), "--print-address", "--nofork"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        try:
+            assert daemon.stdout is not None
+            addr = daemon.stdout.readline().strip()
+            assert addr, "dbus-daemon did not print a bus address"
+            monkeypatch.setenv("DBUS_SYSTEM_BUS_ADDRESS", addr)
+
+            thread = _DBusThread()
+            events: list[bool] = []
+            thread.connection_changed.connect(lambda v: events.append(v))
+            thread.start()
+
+            # 1. Bus is up, daemon absent -> reported disconnected.
+            qtbot.waitUntil(lambda: len(events) >= 1 and events[0] is False, timeout=10000)
+
+            # 2. Daemon appears (some process takes the bus name).
+            self._gdbus(addr, "org.freedesktop.DBus.RequestName", "org.usbguard1", "0")
+            qtbot.waitUntil(lambda: len(events) >= 2 and events[1] is True, timeout=10000)
+
+            # 3. Daemon disappears again.
+            self._gdbus(addr, "org.freedesktop.DBus.ReleaseName", "org.usbguard1")
+            qtbot.waitUntil(lambda: len(events) >= 3 and events[2] is False, timeout=10000)
+
+            thread.stop()
+            assert thread.wait(5000)
+        finally:
+            daemon.terminate()
+            daemon.wait()
 
 
 class TestDBusThread:

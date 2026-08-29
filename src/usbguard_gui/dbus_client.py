@@ -22,6 +22,10 @@ USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
 USBGUARD_DEVICES_IFACE = "org.usbguard.Devices1"
 USBGUARD_POLICY_IFACE = "org.usbguard.Policy1"
 
+DBUS_BUS_NAME = "org.freedesktop.DBus"
+DBUS_BUS_PATH = "/org/freedesktop/DBus"
+DBUS_IFACE = "org.freedesktop.DBus"
+
 _PERMISSION_ERRORS = frozenset(
     [
         "org.freedesktop.DBus.Error.AccessDenied",
@@ -50,6 +54,7 @@ def _get_introspection(filename: str) -> str:
 # blocks on file I/O.
 _DEVICES_INTROSPECTION = _get_introspection("org.usbguard.Devices1.xml")
 _POLICY_INTROSPECTION = _get_introspection("org.usbguard.Policy1.xml")
+_DBUS_INTROSPECTION = _get_introspection("org.freedesktop.DBus.xml")
 
 
 class _DBusThread(QThread):
@@ -66,6 +71,7 @@ class _DBusThread(QThread):
         super().__init__(parent)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
+        self._bus_iface: Any = None     # ProxyInterface — dbus-fast dynamic API
         self._devices_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._policy_iface: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._running = True
@@ -74,6 +80,13 @@ class _DBusThread(QThread):
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def _set_connected(self, connected: bool) -> None:
+        """Update the connection state, emitting connection_changed on change."""
+        if connected == self._connected:
+            return
+        self._connected = connected
+        self.connection_changed.emit(connected)
 
     def run(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -99,6 +112,16 @@ class _DBusThread(QThread):
             return
 
         try:
+            # Watch the bus for ownership of the USBGuard name so the daemon
+            # dying or (re)appearing is detected proactively via
+            # NameOwnerChanged, instead of staying 'connected' until the next
+            # D-Bus call happens to fail.
+            dbus_obj = self._bus.get_proxy_object(
+                DBUS_BUS_NAME, DBUS_BUS_PATH, _DBUS_INTROSPECTION  # pyright: ignore[reportArgumentType]
+            )
+            self._bus_iface = dbus_obj.get_interface(DBUS_IFACE)
+            self._bus_iface.on_name_owner_changed(self._on_name_owner_changed)
+
             devices_obj = self._bus.get_proxy_object(
                 USBGUARD_BUS_NAME, USBGUARD_DEVICES_PATH, _DEVICES_INTROSPECTION  # pyright: ignore[reportArgumentType]
             )
@@ -112,13 +135,30 @@ class _DBusThread(QThread):
             self._devices_iface.on_device_presence_changed(self._on_device_presence_changed)
             self._devices_iface.on_device_policy_changed(self._on_device_policy_changed)
 
-            self._connected = True
-            self.connection_changed.emit(True)
-            log.info("Connected to USBGuard D-Bus service")
+            # Initial state: the proxies above are valid even while the daemon
+            # is absent (they target the well-known name), so report
+            # 'connected' only when the name is actually owned.  The initial
+            # report is unconditional so the app learns the probe happened.
+            # An absent daemon must not kill the thread — the
+            # NameOwnerChanged subscription flips the state when it appears.
+            try:
+                owner = await self._bus_iface.call_get_name_owner(USBGUARD_BUS_NAME)
+            except DBusError as e:
+                # dbus-daemon answers a never-registered name with
+                # NameHasNoOwner rather than the spec's empty string.
+                if getattr(e, "type", "") != "org.freedesktop.DBus.Error.NameHasNoOwner":
+                    raise
+                owner = ""
+            self._connected = bool(owner)
+            self.connection_changed.emit(self._connected)
+            if owner:
+                log.info("Connected to USBGuard D-Bus service")
+            else:
+                log.warning("USBGuard daemon not present on the bus — waiting for it to appear")
 
         except DBusError as e:
             log.error("Failed to connect to USBGuard: %s", e)
-            self.connection_changed.emit(False)
+            self._set_connected(False)
             return
 
         while self._running:
@@ -126,6 +166,25 @@ class _DBusThread(QThread):
 
         if self._bus:
             self._bus.disconnect()
+
+    def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
+        """React to the USBGuard daemon taking or releasing its bus name.
+
+        Owner gain (old_owner empty) is the daemon starting, owner loss
+        (new_owner empty) is it dying — both flip the connection state
+        immediately.  An ownership handover (daemon restart, both non-empty)
+        needs no action: the proxies target the well-known name, so calls
+        and signal subscriptions keep working against the new owner.
+        """
+        if name != USBGUARD_BUS_NAME:
+            return
+        if bool(new_owner) == self._connected:
+            return
+        if new_owner:
+            log.info("USBGuard daemon appeared on the bus (%s)", new_owner)
+        else:
+            log.warning("USBGuard daemon left the bus (was %s)", old_owner)
+        self._set_connected(bool(new_owner))
 
     def _on_device_presence_changed(
         self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
@@ -161,8 +220,7 @@ class _DBusThread(QThread):
         except DBusError as e:
             log.error("Failed to list devices (query=%s): %s", query, e)
             if not _is_permission_error(e):
-                self._connected = False
-                self.connection_changed.emit(False)
+                self._set_connected(False)
             self.list_devices_result.emit([])
 
     async def _do_apply_policy(self, device_id: int, target: DeviceTarget, permanent: bool) -> None:
@@ -185,8 +243,7 @@ class _DBusThread(QThread):
                     permanent,
                     e,
                 )
-                self._connected = False
-                self.connection_changed.emit(False)
+                self._set_connected(False)
 
     async def _do_list_rules(self, label: str) -> None:
         try:
@@ -196,8 +253,7 @@ class _DBusThread(QThread):
         except DBusError as e:
             log.error("Failed to list rules (label='%s'): %s", label, e)
             if not _is_permission_error(e):
-                self._connected = False
-                self.connection_changed.emit(False)
+                self._set_connected(False)
             self.list_rules_result.emit([])
 
     async def _do_remove_rule(self, rule_id: int) -> None:
@@ -210,8 +266,7 @@ class _DBusThread(QThread):
                 log.error("Not authorized to remove rule %d", rule_id)
             else:
                 log.error("Failed to remove rule %d: %s", rule_id, e)
-                self._connected = False
-                self.connection_changed.emit(False)
+                self._set_connected(False)
             self.remove_rule_result.emit(False)
 
     def list_devices(self, query: str = "match") -> None:
