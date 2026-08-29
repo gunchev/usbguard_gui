@@ -23,6 +23,13 @@ LOGIN1_BUS_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER_IFACE = "org.freedesktop.login1.Manager"
 
+# How long stop() waits for the worker thread to exit on its own before
+# terminate() is used as a last resort.  A healthy worker notices
+# _running=False within its 0.1 s keep-alive tick; a worker stuck in
+# MessageBus.connect() never will, and an unbounded wait() would hang
+# _quit() forever.
+_THREAD_STOP_TIMEOUT_MS = 3000
+
 # Seconds between polls of logind's inhibitor list. Short enough that a
 # user-initiated "prevent screen lock" toggle is picked up before the next
 # HID insertion, long enough that we are not hammering the system bus.
@@ -252,7 +259,12 @@ class ScreensaverMonitor(QObject):
     def stop(self) -> None:
         if self._thread:
             self._thread.stop()
-            self._thread.wait()
+            if not self._thread.wait(_THREAD_STOP_TIMEOUT_MS):
+                log.warning(
+                    "Screensaver worker thread did not exit within %d ms — terminating",
+                    _THREAD_STOP_TIMEOUT_MS,
+                )
+                self._thread.terminate()
             self._thread = None
 
     def lock(self) -> None:

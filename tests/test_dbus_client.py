@@ -54,8 +54,8 @@ def mock_thread():
             def stop(self):
                 self._stop_called = True
 
-            def wait(self):
-                pass
+            def wait(self, timeout=None):
+                return True
 
             def list_devices(self, query="match"):
                 self._list_devices_calls.append(query)
@@ -290,8 +290,9 @@ class TestConnectRecyclesPreviousThread:
             def stop(self):
                 self.events.append("stop")
 
-            def wait(self):
+            def wait(self, timeout=None):
                 self.events.append("wait")
+                return True
 
         def factory(parent=None):
             t = MockThread(parent)
@@ -322,6 +323,45 @@ class TestConnectRecyclesPreviousThread:
 
             assert len(threads) == 1
             assert threads[0].events == ["start"]
+
+
+class TestStopBoundedWait:
+    """stop() must not wait forever for the worker thread: a worker stuck in
+    MessageBus.connect() would hang _quit() indefinitely, so the wait is
+    bounded with terminate() as the last-resort fallback."""
+
+    def _client_with_thread(self, thread: MagicMock) -> USBGuardClient:
+        client = USBGuardClient()
+        client._thread = thread
+        return client
+
+    def test_stop_waits_with_bounded_timeout(self):
+        from usbguard_gui.dbus_client import _THREAD_STOP_TIMEOUT_MS
+
+        thread = MagicMock()
+        thread.wait.return_value = True
+        client = self._client_with_thread(thread)
+
+        client.stop()
+
+        thread.stop.assert_called_once_with()
+        thread.wait.assert_called_once_with(_THREAD_STOP_TIMEOUT_MS)
+        thread.terminate.assert_not_called()
+        assert client._thread is None
+
+    def test_stop_terminates_when_wait_times_out(self):
+        from usbguard_gui.dbus_client import _THREAD_STOP_TIMEOUT_MS
+
+        thread = MagicMock()
+        thread.wait.return_value = False
+        client = self._client_with_thread(thread)
+
+        client.stop()
+
+        thread.stop.assert_called_once_with()
+        thread.wait.assert_called_once_with(_THREAD_STOP_TIMEOUT_MS)
+        thread.terminate.assert_called_once_with()
+        assert client._thread is None
 
 
 class TestNameOwnerChangedHandler:

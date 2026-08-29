@@ -169,6 +169,47 @@ class TestScreensaverMonitorAsyncAPI:
             assert monitor.inhibited is False
 
 
+class TestScreensaverStopBoundedWait:
+    """ScreensaverMonitor.stop() must not wait forever for the worker thread:
+    a worker stuck in MessageBus.connect() would hang _quit() indefinitely,
+    so the wait is bounded with terminate() as the last-resort fallback."""
+
+    def _monitor_with_thread(self, thread):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        monitor._thread = thread
+        return monitor
+
+    def test_stop_waits_with_bounded_timeout(self):
+        from usbguard_gui.screensaver import _THREAD_STOP_TIMEOUT_MS
+
+        thread = MagicMock()
+        thread.wait.return_value = True
+        monitor = self._monitor_with_thread(thread)
+
+        monitor.stop()
+
+        thread.stop.assert_called_once_with()
+        thread.wait.assert_called_once_with(_THREAD_STOP_TIMEOUT_MS)
+        thread.terminate.assert_not_called()
+        assert monitor._thread is None
+
+    def test_stop_terminates_when_wait_times_out(self):
+        from usbguard_gui.screensaver import _THREAD_STOP_TIMEOUT_MS
+
+        thread = MagicMock()
+        thread.wait.return_value = False
+        monitor = self._monitor_with_thread(thread)
+
+        monitor.stop()
+
+        thread.stop.assert_called_once_with()
+        thread.wait.assert_called_once_with(_THREAD_STOP_TIMEOUT_MS)
+        thread.terminate.assert_called_once_with()
+        assert monitor._thread is None
+
+
 class TestHasIdleBlockInhibitor:
     """Unit tests for the logind inhibitor filter."""
 

@@ -16,6 +16,13 @@ from usbguard_gui.device import Device, DeviceTarget
 
 log = logging.getLogger(__name__)
 
+# How long stop() waits for the worker thread to exit on its own before
+# terminate() is used as a last resort.  A healthy worker notices
+# _running=False within its 0.1 s keep-alive tick; a worker stuck in
+# MessageBus.connect() never will, and an unbounded wait() would hang
+# _quit() forever.
+_THREAD_STOP_TIMEOUT_MS = 3000
+
 USBGUARD_BUS_NAME = "org.usbguard1"
 USBGUARD_DEVICES_PATH = "/org/usbguard1/Devices"
 USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
@@ -338,7 +345,12 @@ class USBGuardClient(QObject):
     def stop(self) -> None:
         if self._thread:
             self._thread.stop()
-            self._thread.wait()
+            if not self._thread.wait(_THREAD_STOP_TIMEOUT_MS):
+                log.warning(
+                    "D-Bus worker thread did not exit within %d ms — terminating",
+                    _THREAD_STOP_TIMEOUT_MS,
+                )
+                self._thread.terminate()
             self._thread = None
 
     def list_devices(self, query: str = "match") -> None:
