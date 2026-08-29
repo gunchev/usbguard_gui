@@ -377,7 +377,7 @@ class USBGuardTrayApp:
             5000,
         )
 
-        dialog = DeviceActionDialog(device)
+        dialog = DeviceActionDialog(device, client=self._client)
         self._open_dialogs[device.number] = dialog
 
         def on_finished(result: int, device_number: int = device.number) -> None:

@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
+
+    from usbguard_gui.dbus_client import USBGuardClient
 
 # Auto-close timeout in seconds (blocks device if no user response)
 DEFAULT_TIMEOUT = 30
@@ -23,9 +25,16 @@ class DeviceActionDialog(QDialog):
     If no action is taken within the timeout, the device remains blocked.
     """
 
-    def __init__(self, device: Device, parent: QWidget | None = None, timeout: int = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        device: Device,
+        client: USBGuardClient,
+        parent: QWidget | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
         super().__init__(parent)
         self.device = device
+        self._client = client
         self._result_target: DeviceTarget | None = None
         self._permanent = False
         self._remaining = timeout
@@ -99,22 +108,47 @@ class DeviceActionDialog(QDialog):
     def _update_timeout_label(self) -> None:
         self._timeout_label.setText(f"Auto-close in {self._remaining}s (device stays blocked)")
 
+    def _action_blocked(self) -> bool:
+        """Warn and return True if the action cannot reach the daemon.
+
+        The dialog stays open so the user can retry once the connection is
+        back — silently accepting the click would make them believe the
+        action was applied.
+        """
+        if self._client.connected:
+            return False
+        QMessageBox.warning(
+            self,
+            "USBGuard GUI",
+            "The USBGuard daemon is not connected.\nThe action was not applied — "
+            "try again once the tray icon shows 'connected'.",
+        )
+        return True
+
     def _on_allow(self) -> None:
+        if self._action_blocked():
+            return
         self._result_target = DeviceTarget.ALLOW
         self._permanent = True
         self.accept()
 
     def _on_allow_temp(self) -> None:
+        if self._action_blocked():
+            return
         self._result_target = DeviceTarget.ALLOW
         self._permanent = False
         self.accept()
 
     def _on_block(self) -> None:
+        if self._action_blocked():
+            return
         self._result_target = DeviceTarget.BLOCK
         self._permanent = False
         self.accept()
 
     def _on_reject(self) -> None:
+        if self._action_blocked():
+            return
         self._result_target = DeviceTarget.REJECT
         self._permanent = False
         self.accept()

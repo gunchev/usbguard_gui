@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QAbstractTableModel, QByteArray, QModelIndex, QPoint, QSettings, QSortFilterProxyModel, Qt, \
     QTimer
 from PyQt6.QtGui import QAction, QCloseEvent, QColor, QShowEvent
-from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, QTableView, QToolBar, QVBoxLayout, \
-    QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, QMessageBox, QTableView, QToolBar, \
+    QVBoxLayout, QWidget
 
 from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from usbguard_gui.dbus_client import USBGuardClient
@@ -261,6 +264,15 @@ class DeviceListWindow(QMainWindow):
         # re-applying a temporary allow) would silently revoke persistent
         # authorization.  Re-applying a temporary allow is harmless —
         # USBGuard prepends it, so it wins evaluation order.
+        if not self._client.connected:
+            log.warning("Action %s on device %d not applied: USBGuard daemon not connected", target.name, device.number)
+            QMessageBox.warning(
+                self,
+                "USBGuard GUI",
+                "The USBGuard daemon is not connected.\nThe action was not applied — "
+                "try again once the connection is restored.",
+            )
+            return
         self._client.apply_device_policy(device.number, target, permanent)
         self._request_refresh()
 

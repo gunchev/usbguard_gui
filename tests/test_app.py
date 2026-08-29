@@ -138,6 +138,11 @@ class _FakeClient(QObject):
         super().__init__()
         self.apply_policy_calls: list[tuple] = []
         self.list_devices_calls: int = 0
+        self._connected = True
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     def list_devices(self, query: str = "match") -> None:
         self.list_devices_calls += 1

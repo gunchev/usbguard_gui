@@ -26,10 +26,15 @@ class _FakeClient(QObject):
 
     def __init__(self) -> None:
         super().__init__()
+        self._connected: bool = True
         self.list_devices_calls: int = 0
         self.list_rules_calls: int = 0
         self.apply_policy_calls: list[tuple] = []
         self.remove_rule_calls: list[int] = []
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     def list_devices(self, query: str = "match") -> None:
         self.list_devices_calls += 1
@@ -186,3 +191,31 @@ class TestApplyDoesNotRemoveRules:
 
         assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, True)]
         assert client.remove_rule_calls == []
+
+
+class TestApplyConnectionWarning:
+    """When the USBGuard daemon is not connected, _apply() must show a
+    warning instead of silently dropping the action — the user must not
+    believe their choice was applied."""
+
+    def test_apply_warns_and_does_not_apply_when_disconnected(self, window, client, mocker):
+        from PyQt6.QtWidgets import QMessageBox
+
+        client._connected = False
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(_make_device(1), DeviceTarget.ALLOW, permanent=False)
+
+        assert warn.called
+        assert client.apply_policy_calls == []
+
+    def test_apply_without_warning_when_connected(self, window, client, mocker):
+        from PyQt6.QtWidgets import QMessageBox
+
+        client._connected = True
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(_make_device(1), DeviceTarget.ALLOW, permanent=False)
+
+        assert not warn.called
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
