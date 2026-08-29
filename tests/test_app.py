@@ -166,12 +166,14 @@ class _FakeClient(QObject):
 class _FakeScreensaver(QObject):
     active_changed = pyqtSignal(bool)
     inhibit_changed = pyqtSignal(bool)
+    connection_changed = pyqtSignal(bool)
 
     def __init__(self) -> None:
         super().__init__()
         self.lock_calls: int = 0
         self._active: bool = False
         self._inhibited: bool = False
+        self._connected: bool = True
 
     @property
     def active(self) -> bool:
@@ -180,6 +182,10 @@ class _FakeScreensaver(QObject):
     @property
     def inhibited(self) -> bool:
         return self._inhibited
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     def connect(self) -> bool:  # type: ignore[override]
         return True
@@ -721,3 +727,80 @@ class TestReconnectBackoff:
 
         fake_client.connection_changed.emit(False)
         assert tray_app._reconnect_timer.interval() == 5000  # backoff restarted
+
+
+# ---------------------------------------------------------------------------
+# Lock availability: all allow/deny functionality must be disabled when the
+# screen cannot be locked — allowing a keyboard without the lock-first
+# guarantee is exactly the attack this app exists to prevent.
+# ---------------------------------------------------------------------------
+
+
+class TestLockAvailability:
+    """The app must track whether screen locking is available and, when it
+    is not: (a) not schedule the HID lock flow (the 'Locking screen…' notice
+    would be a lie and the pending devices could never be auto-allowed),
+    (b) tell the user, and (c) leave every policy action to the disabled UI."""
+
+    _HID_RULE = (
+        'block id 1234:abcd serial "" name "Test Keyboard" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        "with-interface 03:00:00 with-connect-type hotplug"
+    )
+
+    def test_tracks_lock_availability(self, tray_app, fake_screensaver) -> None:
+        assert tray_app._lock_available is True
+
+        fake_screensaver.connection_changed.emit(False)
+        assert tray_app._lock_available is False
+
+        fake_screensaver.connection_changed.emit(True)
+        assert tray_app._lock_available is True
+
+    def test_first_unavailable_report_notifies(self, tray_app, fake_screensaver, mocker) -> None:
+        """When lock availability is confirmed down (first report), the user
+        must be told — the actions are being disabled under their feet."""
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+
+        assert notify.called
+
+    def test_repeated_same_state_does_not_notify(self, tray_app, fake_screensaver, mocker) -> None:
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver.connection_changed.emit(False)
+        fake_screensaver.connection_changed.emit(False)
+
+        assert notify.call_count == 1
+
+    def test_hid_insert_prompts_when_lock_unavailable(self, tray_app, fake_client, fake_screensaver) -> None:
+        """No lock flow: the HID device goes through the normal prompt path
+        (whose actions are disabled) instead of the deferred lock."""
+        fake_screensaver.connection_changed.emit(False)
+
+        with patch.object(tray_app, "_show_device_dialog") as show_dialog:
+            fake_client.device_presence_changed.emit(1, 1, int(DeviceTarget.BLOCK), self._HID_RULE, {})
+
+        show_dialog.assert_called_once()
+        assert fake_client.apply_policy_calls == []
+        assert fake_screensaver.lock_calls == 0
+        assert tray_app._hid_pending_devices == set()
+
+    def test_hid_lock_timer_skipped_when_lock_unavailable(self, tray_app, fake_client, fake_screensaver) -> None:
+        """If availability drops while a deferred lock is in flight, the lock
+        must not be claimed — the pending devices stay blocked."""
+        tray_app._hid_pending_devices = {1}
+        fake_screensaver.connection_changed.emit(False)
+
+        tray_app._lock_for_pending_hid()
+
+        assert fake_screensaver.lock_calls == 0
+        assert tray_app._hid_pending_devices == {1}
+
+    def test_hid_pending_flow_still_works_when_available(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
+        """Regression guard: with lock available the pending+lock flow is
+        unchanged."""
+        fake_client.device_presence_changed.emit(1, 1, int(DeviceTarget.BLOCK), self._HID_RULE, {})
+
+        assert 1 in tray_app._hid_pending_devices
+        qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)

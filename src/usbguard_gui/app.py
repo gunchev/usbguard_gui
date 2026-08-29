@@ -75,6 +75,11 @@ class USBGuardTrayApp:
         self._hid_pending_devices: set[int] = set()
         self._screensaver_pending_ids: list[int] | None = None
         self._permanent_allow_hashes: set[str] = set()
+        # Whether screen locking is available (ScreenSaver service reachable).
+        # While False, the HID lock-first flow cannot work and the UI must
+        # refuse all allow/deny actions — see _on_lock_availability_changed.
+        self._lock_available = self._screensaver.connected
+        self._lock_state_confirmed = False
 
         # Reconnect timer with exponential backoff. Single-shot: each failed
         # attempt (connection_changed(False)) reschedules it with a doubled
@@ -132,6 +137,31 @@ class USBGuardTrayApp:
         self._client.connection_changed.connect(self._on_connection_changed)
         self._screensaver.active_changed.connect(self._on_screensaver_changed)
         self._screensaver.active_changed.connect(self._on_screensaver_active_changed)
+        self._screensaver.connection_changed.connect(self._on_lock_availability_changed)
+
+    def _on_lock_availability_changed(self, available: bool) -> None:
+        # The monitor reports its state repeatedly (initial report plus
+        # every failed retry), so notify only on the first confirmed report
+        # or an actual transition.
+        changed = available != self._lock_available
+        first = not self._lock_state_confirmed
+        self._lock_available = available
+        self._lock_state_confirmed = True
+        if not available and (changed or first):
+            self._tray.showMessage(
+                "Screen locking unavailable",
+                "The screen cannot be locked, so device actions are disabled. "
+                "Devices remain blocked by USBGuard's policy.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                10000,
+            )
+        elif available and changed and not first:
+            self._tray.showMessage(
+                "Screen locking available",
+                "USBGuard GUI device actions re-enabled.",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._on_list_devices_result)
@@ -269,7 +299,13 @@ class USBGuardTrayApp:
             is_hid = device.has_hid_interface()
             hid_treatment_enabled = not self._settings.disable_hid_treatment()
             lock_inhibited = self._screensaver.inhibited
-            hid_special_treatment = is_hid and hid_treatment_enabled and not lock_inhibited
+            # The auto-allow-then-lock flow additionally requires that
+            # locking is actually available: without it the deferred lock
+            # would no-op, the 'Locking screen…' notice would be a lie, and
+            # the pending device could never be auto-allowed.  Fall back to
+            # the normal prompt path (whose actions are disabled) instead.
+            lock_available = self._lock_available
+            hid_special_treatment = is_hid and hid_treatment_enabled and not lock_inhibited and lock_available
             if hid_special_treatment:
                 if self._screensaver.active:
                     log.info(
@@ -294,11 +330,13 @@ class USBGuardTrayApp:
                 self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
                 return
             elif is_hid and hid_treatment_enabled:
-                # lock_inhibited is True — fall through to normal prompt path
+                # lock_inhibited or not lock_available — fall through to the
+                # normal prompt path
+                reason = "screen locking is inhibited" if lock_inhibited else "screen locking is unavailable"
                 log.info(
-                    "HID device %d inserted while screen locking is inhibited — "
-                    "falling back to prompt (will not auto-allow)",
+                    "HID device %d inserted while %s — falling back to prompt (will not auto-allow)",
                     device_id,
+                    reason,
                 )
 
             # Non-HID device: defer while screen is locked, otherwise prompt.
@@ -345,6 +383,12 @@ class USBGuardTrayApp:
         if not self._hid_pending_devices:
             log.debug("HID lock timer fired with no pending devices — skipping lock")
             return
+        if not self._lock_available:
+            # Locking became unavailable while the delay was running — do
+            # not claim to lock.  The pending devices stay blocked (safe);
+            # they are cleared on removal or the next lock.
+            log.warning("HID lock timer fired but screen locking is unavailable — devices stay blocked")
+            return
         self._screensaver.lock()
 
     def _on_screensaver_changed(self, active: bool) -> None:
@@ -377,7 +421,7 @@ class USBGuardTrayApp:
             5000,
         )
 
-        dialog = DeviceActionDialog(device, client=self._client)
+        dialog = DeviceActionDialog(device, client=self._client, screensaver=self._screensaver)
         self._open_dialogs[device.number] = dialog
 
         def on_finished(result: int, device_number: int = device.number) -> None:
@@ -392,7 +436,7 @@ class USBGuardTrayApp:
 
     def _show_device_list(self) -> None:
         if self._device_list_window is None:
-            self._device_list_window = DeviceListWindow(self._client)
+            self._device_list_window = DeviceListWindow(self._client, screensaver=self._screensaver)
         self._device_list_window.show()
         self._device_list_window.raise_()
         self._device_list_window.activateWindow()

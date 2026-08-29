@@ -58,14 +58,33 @@ def _make_device(number: int = 1, rule: str = "block") -> Device:
     return Device.from_dbus(number, rule_str)
 
 
+class _FakeScreensaver(QObject):
+    """Minimal stand-in for ScreensaverMonitor (lock availability)."""
+
+    connection_changed = pyqtSignal(bool)
+
+    def __init__(self, connected: bool = True) -> None:
+        super().__init__()
+        self._connected = connected
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+
 @pytest.fixture()
 def client(qapp):
     return _FakeClient()
 
 
 @pytest.fixture()
-def window(client, qtbot):
-    w = DeviceListWindow(client)
+def screensaver(qapp):
+    return _FakeScreensaver()
+
+
+@pytest.fixture()
+def window(client, screensaver, qtbot):
+    w = DeviceListWindow(client, screensaver=screensaver)
     qtbot.addWidget(w)
     return w
 
@@ -213,6 +232,38 @@ class TestApplyConnectionWarning:
         from PyQt6.QtWidgets import QMessageBox
 
         client._connected = True
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(_make_device(1), DeviceTarget.ALLOW, permanent=False)
+
+        assert not warn.called
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+
+
+class TestApplyLockUnavailable:
+    """When screen locking is unavailable, every policy action must be
+    refused with a warning — the app cannot uphold its lock-first contract,
+    so it does not touch the policy at all."""
+
+    @pytest.mark.parametrize("target,permanent", [(DeviceTarget.ALLOW, True), (DeviceTarget.ALLOW, False),
+                                                  (DeviceTarget.BLOCK, False), (DeviceTarget.REJECT, False)])
+    def test_apply_warns_and_does_not_apply_when_lock_unavailable(
+        self, window, client, screensaver, mocker, target: DeviceTarget, permanent: bool
+    ) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        screensaver._connected = False
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(_make_device(1), target, permanent=permanent)
+
+        assert warn.called
+        assert client.apply_policy_calls == []
+
+    def test_apply_without_warning_when_lock_available(self, window, client, screensaver, mocker):
+        from PyQt6.QtWidgets import QMessageBox
+
+        screensaver._connected = True
         warn = mocker.patch.object(QMessageBox, "warning")
 
         window._apply(_make_device(1), DeviceTarget.ALLOW, permanent=False)

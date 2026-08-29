@@ -35,6 +35,12 @@ _THREAD_STOP_TIMEOUT_MS = 3000
 # HID insertion, long enough that we are not hammering the system bus.
 _INHIBIT_POLL_INTERVAL = 2.0
 
+# Seconds between attempts to reach the session bus / ScreenSaver service
+# while it is unavailable at startup.  The screen locker may start after
+# this app does, so the thread keeps retrying instead of giving up for the
+# app's lifetime (in which case lock() would silently no-op forever).
+_CONNECT_RETRY_INTERVAL = 5.0
+
 
 def _get_introspection(filename: str) -> str:
     module_dir = os.path.dirname(__file__)
@@ -65,6 +71,7 @@ class _ScreensaverThread(QThread):
         self._running = True
         self._active = False
         self._inhibited = False
+        self._connected = False
 
     @property
     def active(self) -> bool:
@@ -83,27 +90,49 @@ class _ScreensaverThread(QThread):
             self.finished.emit()
 
     async def _main(self) -> None:
-        try:
-            self._bus = await MessageBus(bus_type=BusType.SESSION).connect()
-        except Exception as e:
-            log.warning("Failed to connect to session D-Bus: %s", e)
-            self.connected.emit(False)
+        # Retry until the ScreenSaver service is actually reachable — it may
+        # start after this app does.  The probe is a real GetActive call:
+        # creating the proxy succeeds even while the service is absent, so
+        # without it lock() would silently no-op for the app's lifetime.
+        # While the service is down, report disconnected so the app can
+        # disable all allow/deny functionality instead of pretending
+        # locking works.
+        connected = False
+        first_failure = True
+        while self._running and not connected:
+            bus: MessageBus | None = None
+            proxy: Any = None
+            try:
+                bus = await MessageBus(bus_type=BusType.SESSION).connect()
+                proxy_obj = bus.get_proxy_object(
+                    SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION  # pyright: ignore
+                )
+                proxy = proxy_obj.get_interface(SCREENSAVER_IFACE)
+                proxy.on_active_changed(self._on_active_changed)
+                await proxy.call_get_active()  # probe: fails while the service is absent
+                self._bus = bus
+                self._proxy = proxy
+                connected = True
+            except Exception as e:
+                if bus is not None:
+                    bus.disconnect()
+                self._bus = None
+                self._proxy = None
+                if first_failure:
+                    log.warning("Screensaver D-Bus unavailable: %s — retrying", e)
+                    first_failure = False
+                else:
+                    log.debug("Screensaver D-Bus still unavailable: %s", e)
+                self.connected.emit(False)
+                if not await self._sleep(_CONNECT_RETRY_INTERVAL):
+                    return
+
+        if not self._running:
             return
 
-        try:
-            proxy_obj = self._bus.get_proxy_object(
-                SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION  # pyright: ignore[reportArgumentType]
-            )
-            self._proxy = proxy_obj.get_interface(SCREENSAVER_IFACE)
-            self._proxy.on_active_changed(self._on_active_changed)
-            self.connected.emit(True)
-            log.info("Connected to freedesktop ScreenSaver D-Bus")
-            await self._sync_active()  # seed the cache from current state
-
-        except DBusError as e:
-            log.warning("Could not connect to screensaver D-Bus: %s", e)
-            self.connected.emit(False)
-            return
+        self.connected.emit(True)
+        log.info("Connected to freedesktop ScreenSaver D-Bus")
+        await self._sync_active()  # seed the cache from current state
 
         # Connect to logind on the system bus so we can poll screen-lock
         # inhibitors. Non-fatal: absent logind just means we treat the
@@ -190,25 +219,41 @@ class _ScreensaverThread(QThread):
             self._on_active_changed(bool(active))
         except DBusError as e:
             log.debug("GetActive failed: %s", e)
+            self.connected.emit(False)
 
     def _schedule(self, coro: Coroutine[Any, Any, Any]) -> None:
         if self._loop and self._running:
             self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
 
+    async def _sleep(self, seconds: float) -> bool:
+        """Sleep in small slices so stop() is noticed promptly.
+
+        Returns False if stop() was requested during the sleep.
+        """
+        for _ in range(max(1, int(seconds / 0.1))):
+            if not self._running:
+                return False
+            await asyncio.sleep(0.1)
+        return True
+
     def stop(self) -> None:
-        # Flip the flag and let _main()'s keep-alive loop exit on its next
-        # iteration so the trailing bus.disconnect() can run. Do NOT call
-        # loop.stop() here — that kills the loop mid-await and skips cleanup.
+        # Flip the flag and let _main()'s keep-alive loop (or the connect
+        # retry loop) exit on its next iteration so the trailing
+        # bus.disconnect() can run. Do NOT call loop.stop() here — that
+        # kills the loop mid-await and skips cleanup.
         self._running = False
 
     async def _do_lock(self) -> None:
         if not self._proxy:
             log.warning("Cannot lock screen: screensaver proxy not available")
+            self.connected.emit(False)
             return
         try:
             await self._proxy.call_lock()
+            self.connected.emit(True)
         except DBusError as e:
             log.warning("Failed to lock screen: %s", e)
+            self.connected.emit(False)
 
     def lock(self) -> None:
         if self._proxy and self._loop:
@@ -221,11 +266,14 @@ class ScreensaverMonitor(QObject):
     active_changed = pyqtSignal(bool)
     inhibit_changed = pyqtSignal(bool)
 
+    connection_changed = pyqtSignal(bool)
+
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._thread: _ScreensaverThread | None = None
         self._active = False
         self._inhibited = False
+        self._connected = False
 
     @property
     def active(self) -> bool:
@@ -236,6 +284,15 @@ class ScreensaverMonitor(QObject):
         """Whether a logind idle/block inhibitor is currently preventing screen lock."""
         return self._inhibited
 
+    @property
+    def connected(self) -> bool:
+        """Whether screen locking is available (ScreenSaver service reachable).
+
+        While this is False, lock() cannot work, so the app must disable all
+        allow/deny functionality rather than silently drop policy actions.
+        """
+        return self._connected
+
     def connect(self) -> bool:
         self._thread = _ScreensaverThread(self)
         self._thread.connected.connect(self._on_connected)
@@ -245,8 +302,16 @@ class ScreensaverMonitor(QObject):
         return True
 
     def _on_connected(self, connected: bool) -> None:
-        if not connected:
-            log.warning("Could not connect to screensaver D-Bus")
+        # The signal is re-emitted unconditionally (the app deduplicates)
+        # because the thread reports the initial state even when it matches
+        # the default; log only on actual transitions to avoid retry spam.
+        if connected != self._connected:
+            if connected:
+                log.info("Screen locking available")
+            else:
+                log.warning("Screen locking unavailable — device actions must be disabled")
+        self._connected = connected
+        self.connection_changed.emit(connected)
 
     def _on_active_changed(self, active: bool) -> None:
         self._active = active

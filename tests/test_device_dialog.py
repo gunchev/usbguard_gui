@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox
 
 from usbguard_gui.device import Device, DeviceTarget
@@ -32,6 +33,86 @@ class _FakeClient:
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
         self.apply_calls.append((device_id, target, permanent))
+
+
+class _FakeScreensaver(QObject):
+    """Minimal stand-in for ScreensaverMonitor (lock availability)."""
+
+    connection_changed = pyqtSignal(bool)
+
+    def __init__(self, connected: bool = True) -> None:
+        super().__init__()
+        self._connected = connected
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+
+class TestDialogLockUnavailable:
+    """When screen locking is unavailable, every action button must be
+    disabled — allowing (or blocking) a device without the lock-first
+    guarantee breaks the app's security contract, so the UI refuses to
+    touch the policy at all and says why."""
+
+    @pytest.fixture()
+    def buttons(self, dialog_with_screensaver):
+        dialog = dialog_with_screensaver[0]
+        return [dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject]
+
+    @pytest.fixture()
+    def dialog_with_screensaver(self, qapp, qtbot):
+        screensaver = _FakeScreensaver(connected=False)
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        qtbot.addWidget(dialog)
+        return dialog, screensaver
+
+    def test_buttons_disabled_when_lock_unavailable(self, dialog_with_screensaver, buttons) -> None:
+        for btn in buttons:
+            assert not btn.isEnabled()
+
+    def test_buttons_enabled_when_lock_available(self, qapp, qtbot) -> None:
+        screensaver = _FakeScreensaver(connected=True)
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        qtbot.addWidget(dialog)
+
+        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject):
+            assert btn.isEnabled()
+
+    def test_buttons_enabled_without_screensaver(self, qapp, qtbot) -> None:
+        """Callers that do not pass a monitor are not gated (old behaviour)."""
+        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        qtbot.addWidget(dialog)
+
+        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject):
+            assert btn.isEnabled()
+
+    def test_buttons_follow_lock_state_changes(self, dialog_with_screensaver, buttons) -> None:
+        _, screensaver = dialog_with_screensaver
+        assert all(not btn.isEnabled() for btn in buttons)
+
+        # The monitor updates its property and then emits (like the real
+        # _on_connected), so mirror that ordering in the fake.
+        screensaver._connected = True
+        screensaver.connection_changed.emit(True)
+        assert all(btn.isEnabled() for btn in buttons)
+
+        screensaver._connected = False
+        screensaver.connection_changed.emit(False)
+        assert all(not btn.isEnabled() for btn in buttons)
+
+    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_reject"])
+    def test_actions_warn_when_lock_unavailable(self, dialog_with_screensaver, mocker, handler: str) -> None:
+        """If a handler runs while lock is unavailable (e.g. the state flips
+        after the buttons were enabled), it must warn, not record the choice."""
+        dialog, _ = dialog_with_screensaver
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        getattr(dialog, handler)()
+
+        assert warn.called
+        assert dialog.result_target is None
+        dialog.close()
 
 
 class TestNoDefaultAction:

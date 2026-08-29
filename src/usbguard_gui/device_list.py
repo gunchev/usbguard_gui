@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from usbguard_gui.dbus_client import USBGuardClient
+    from usbguard_gui.screensaver import ScreensaverMonitor
 
 COLUMNS = ["#", "Status", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type", "Connection"]
 
@@ -123,9 +124,15 @@ class DeviceTableModel(QAbstractTableModel):
 class DeviceListWindow(QMainWindow):
     """Window displaying all USB devices with context-menu actions."""
 
-    def __init__(self, client: USBGuardClient, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        client: USBGuardClient,
+        parent: QWidget | None = None,
+        screensaver: ScreensaverMonitor | None = None,
+    ) -> None:
         super().__init__(parent)
         self._client = client
+        self._screensaver = screensaver
         self._refresh_pending = False
         self._pending_devices: list[Device] = []
         self.setWindowTitle("USBGuard — Devices")
@@ -271,6 +278,23 @@ class DeviceListWindow(QMainWindow):
                 "USBGuard GUI",
                 "The USBGuard daemon is not connected.\nThe action was not applied — "
                 "try again once the connection is restored.",
+            )
+            return
+        # All allow/deny functionality is disabled while screen locking is
+        # unavailable: without the ability to lock first, allowing a
+        # keyboard would hand an attached-device attacker an unlocked
+        # session — exactly what this app exists to prevent.
+        if self._screensaver is not None and not self._screensaver.connected:
+            log.warning(
+                "Action %s on device %d not applied: screen locking is unavailable",
+                target.name,
+                device.number,
+            )
+            QMessageBox.warning(
+                self,
+                "USBGuard GUI",
+                "Screen locking is unavailable — device actions are disabled.\n"
+                "Devices remain blocked by USBGuard's policy.",
             )
             return
         self._client.apply_device_policy(device.number, target, permanent)

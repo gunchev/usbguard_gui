@@ -210,6 +210,158 @@ class TestScreensaverStopBoundedWait:
         assert monitor._thread is None
 
 
+class TestScreensaverConnectionState:
+    """The monitor must expose lock availability (connected /
+    connection_changed) so the app can disable all allow/deny functionality
+    when screen locking is unavailable instead of letting lock() no-op
+    silently."""
+
+    def test_has_connection_changed_signal(self):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        assert hasattr(monitor, "connection_changed")
+
+    def test_connected_defaults_false(self):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        assert monitor.connected is False
+
+    def test_connected_follows_thread_signal(self):
+        from PyQt6.QtCore import QObject, pyqtSignal
+
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        with patch("usbguard_gui.screensaver._ScreensaverThread") as mock_cls:
+
+            class MockThread(QObject):
+                connected = pyqtSignal(bool)
+                active_changed = pyqtSignal(bool)
+                inhibit_changed = pyqtSignal(bool)
+
+                def start(self):
+                    pass
+
+                def stop(self):
+                    pass
+
+                def wait(self, timeout=None):
+                    pass
+
+                def lock(self):
+                    pass
+
+            mock_cls.return_value = MockThread()
+            monitor = ScreensaverMonitor()
+            monitor.connect()
+
+            events: list[bool] = []
+            monitor.connection_changed.connect(lambda v: events.append(v))
+
+            mock_cls.return_value.connected.emit(True)
+            assert monitor.connected is True
+            assert events == [True]
+
+            mock_cls.return_value.connected.emit(False)
+            assert monitor.connected is False
+            assert events == [True, False]
+
+
+class TestScreensaverThreadRetry:
+    """_ScreensaverThread must retry connecting while the session bus /
+    ScreenSaver service is unavailable instead of giving up forever:
+    the screen locker may start after the app does."""
+
+    def _fake_stack(self, mocker, fail_times: int):
+        """Patch MessageBus in the screensaver module with a fake that fails
+        the first `fail_times` connect() calls, then succeeds and serves a
+        working ScreenSaver + logind proxy."""
+        import usbguard_gui.screensaver as sa
+
+        state = {"attempts": 0}
+
+        class FakeProxy:
+            def on_active_changed(self, handler):
+                pass
+
+            async def call_get_active(self):
+                return False
+
+            async def call_lock(self):
+                pass
+
+        class FakeLogindProxy:
+            async def call_list_inhibitors(self):
+                return []
+
+        class FakeProxyObject:
+            def __init__(self, kind: str) -> None:
+                self._kind = kind
+
+            def get_interface(self, name: str):
+                return FakeProxy() if self._kind == "screensaver" else FakeLogindProxy()
+
+        class FakeBus:
+            def __init__(self, kind: str) -> None:
+                self._kind = kind
+                self.disconnected = False
+
+            def get_proxy_object(self, bus_name, path, introspection):
+                return FakeProxyObject(self._kind)
+
+            async def introspect(self, bus_name, path):
+                return "<node/>"
+
+            def disconnect(self):
+                self.disconnected = True
+
+        class FakeMessageBus:
+            def __init__(self, bus_type=None, **kwargs):
+                self._bus_type = bus_type
+
+            async def connect(self):
+                state["attempts"] += 1
+                if state["attempts"] <= fail_times:
+                    raise OSError("no session bus")
+                # SYSTEM bus (logind) is served with kind "logind".
+                kind = "logind" if self._bus_type == sa.BusType.SYSTEM else "screensaver"
+                return FakeBus(kind)
+
+        mocker.patch.object(sa, "MessageBus", FakeMessageBus)
+        mocker.patch.object(sa, "_CONNECT_RETRY_INTERVAL", 0.05)
+        return state
+
+    def test_retries_until_service_available(self, qapp, qtbot, mocker) -> None:
+        state = self._fake_stack(mocker, fail_times=2)
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        events: list[bool] = []
+        thread.connected.connect(lambda v: events.append(v))
+        thread.start()
+
+        qtbot.waitUntil(lambda: state["attempts"] >= 3, timeout=5000)
+        thread.stop()
+        assert thread.wait(2000)
+
+        # Failed probes reported disconnected, success reported connected.
+        assert events.count(False) >= 2
+        assert events[-1] is True
+
+    def test_stop_during_retry_exits_thread(self, qapp, qtbot, mocker) -> None:
+        """stop() must be honoured while the thread is stuck in the retry loop."""
+        self._fake_stack(mocker, fail_times=10_000)
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        thread.start()
+        # Give it a moment to enter the retry loop, then stop it.
+        qtbot.waitUntil(lambda: thread.isRunning(), timeout=5000)
+        thread.stop()
+        assert thread.wait(2000)
+
+
 class TestHasIdleBlockInhibitor:
     """Unit tests for the logind inhibitor filter."""
 
