@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QEvent, Qt, QTimer
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget
@@ -97,6 +98,21 @@ class DeviceActionDialog(QDialog):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+
+    def event(self, event: QEvent) -> bool:
+        # This dialog intentionally has no default button.  Qt assigns the
+        # first AcceptRole button as the default when the dialog is shown
+        # (during the post-show polish wave, where it cannot be reliably
+        # cleared), so swallow Return/Enter here to guarantee that a stray
+        # Enter cannot silently apply "Allow (Permanent)" — a persistent
+        # rule from an accidental keypress.  Esc keeps its cancel semantics.
+        if (
+            isinstance(event, QKeyEvent)
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            return True
+        return super().event(event)
 
     def _tick(self) -> None:
         self._remaining -= 1

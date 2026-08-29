@@ -34,6 +34,65 @@ class _FakeClient:
         self.apply_calls.append((device_id, target, permanent))
 
 
+class TestNoDefaultAction:
+    """Enter must not silently pick an action: the dialog has no default
+    button, and a stray Enter used to trigger Qt's auto-assigned default
+    ('Allow (Permanent)') — creating a persistent rule from an accidental
+    keypress."""
+
+    def test_enter_does_not_trigger_any_action(self, qapp, qtbot) -> None:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+
+        client = _FakeClient()
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qapp.processEvents()
+
+        for _ in range(3):
+            QTest.keyClick(dialog, Qt.Key.Key_Return)
+            qapp.processEvents()
+
+        assert dialog.result_target is None
+        assert client.apply_calls == []
+        assert dialog.isVisible()
+
+    def test_enter_on_both_keys(self, qapp, qtbot) -> None:
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+
+        client = _FakeClient()
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qapp.processEvents()
+
+        QTest.keyClick(dialog, Qt.Key.Key_Enter)
+        qapp.processEvents()
+
+        assert dialog.result_target is None
+        assert dialog.isVisible()
+
+    def test_escape_still_closes_without_action(self, qapp, qtbot) -> None:
+        """Esc keeps its cancel semantics: close the dialog, record nothing."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+
+        client = _FakeClient()
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qapp.processEvents()
+
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        qapp.processEvents()
+
+        assert dialog.result_target is None
+        assert client.apply_calls == []
+        assert not dialog.isVisible()
+
+
 def _make_device() -> Device:
     return Device.from_dbus(1, _RULE)
 
