@@ -312,7 +312,7 @@ class TestHIDRemovalCancelsScheduledLock:
         fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
         fake_client.device_presence_changed.emit(1, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), self._RULE, {})
 
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == []
 
 
@@ -327,13 +327,13 @@ class TestHIDAllowOnScreenLock:
 
     def test_allows_pending_hid_devices_on_lock(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = {1}
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
         assert tray_app._hid_pending_devices == set()
 
     def test_allows_multiple_pending_devices(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = {1, 2, 3}
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 3
         for device_id in (1, 2, 3):
             assert (device_id, DeviceTarget.ALLOW, False) in fake_client.apply_policy_calls
@@ -341,18 +341,18 @@ class TestHIDAllowOnScreenLock:
 
     def test_no_pending_no_action(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = set()
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == []
 
     def test_does_not_fire_on_unlock(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = {1}
-        tray_app._on_screensaver_active_changed(False)
+        tray_app._on_screensaver_locked(False)
         assert fake_client.apply_policy_calls == []
         assert tray_app._hid_pending_devices == {1}  # preserved for next lock
 
     def test_allows_only_matching_device_id(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = {1, 2}
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 2
         assert all(call[1] == DeviceTarget.ALLOW for call in fake_client.apply_policy_calls)
         assert all(call[2] is False for call in fake_client.apply_policy_calls)
@@ -368,7 +368,7 @@ class TestHIDAllowRequiresLockedScreen:
     result while the screen is actually locked — that is the moment a
     newly-attached keyboard is safe to activate (unlocking requires a
     password).  While the screen is still unlocked the device must stay
-    pending for the deferred lock (_on_screensaver_active_changed).
+    pending for the deferred lock (_on_screensaver_locked).
 
     Regression: a list_devices_result arriving during the 5 s lock delay
     window (e.g. the unlock deferred-summary check) used to allow the
@@ -414,7 +414,7 @@ class TestHIDAllowRequiresLockedScreen:
 
         # 2. Screen unlocks -> _screensaver_pending_ids set, list_devices() in flight.
         fake_screensaver._active = False
-        tray_app._on_screensaver_changed(False)
+        tray_app._on_screensaver_unlocked(False)
         assert tray_app._screensaver_pending_ids == [10]
 
         # 3. Attacker's keyboard B inserted while the result is in flight.
@@ -441,7 +441,7 @@ class TestHIDAllowRequiresLockedScreen:
 
         # 5. The deferred lock happens -> B is allowed (the safe path).
         fake_screensaver._active = True
-        tray_app._on_screensaver_active_changed(True)
+        tray_app._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
 
         for dialog in list(tray_app._open_dialogs.values()):

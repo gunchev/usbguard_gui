@@ -55,7 +55,7 @@ RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 60
 # Milliseconds between the HID warning notification and the actual screen lock.
 # The device stays blocked by USBGuard's default policy during this window (it is
-# only allowed after the screen has locked, in _on_screensaver_active_changed),
+# only allowed after the screen has locked, in _on_screensaver_locked),
 # so this delay does not reopen the keystroke-injection window — it just gives
 # the tray notification time to appear before the screen blanks.
 HID_LOCK_NOTIFY_DELAY_MS = 5000
@@ -135,8 +135,8 @@ class USBGuardTrayApp:
         self._client.device_presence_changed.connect(self._on_device_presence_changed)
         self._client.device_policy_changed.connect(self._on_device_policy_changed)
         self._client.connection_changed.connect(self._on_connection_changed)
-        self._screensaver.active_changed.connect(self._on_screensaver_changed)
-        self._screensaver.active_changed.connect(self._on_screensaver_active_changed)
+        self._screensaver.active_changed.connect(self._on_screensaver_unlocked)
+        self._screensaver.active_changed.connect(self._on_screensaver_locked)
         self._screensaver.connection_changed.connect(self._on_lock_availability_changed)
 
     def _on_lock_availability_changed(self, available: bool) -> None:
@@ -179,7 +179,7 @@ class USBGuardTrayApp:
         # locked — that is the moment a newly-attached keyboard is safe to
         # activate (unlocking requires a password).  If the screen is still
         # unlocked, the deferred lock may not have fired yet: keep the devices
-        # pending so they are allowed by _on_screensaver_active_changed() once
+        # pending so they are allowed by _on_screensaver_locked() once
         # the screen locks.  Allowing them here would hand a just-plugged
         # keyboard keystrokes on an unlocked session (race between this result
         # and the lock timer).
@@ -391,7 +391,9 @@ class USBGuardTrayApp:
             return
         self._screensaver.lock()
 
-    def _on_screensaver_changed(self, active: bool) -> None:
+    def _on_screensaver_unlocked(self, active: bool) -> None:
+        """Screen unlocked: collect the devices deferred while the screen was
+        locked and show their summary prompts."""
         if active or not self._screensaver_pending_devices:
             return
 
@@ -399,7 +401,9 @@ class USBGuardTrayApp:
         self._screensaver_pending_devices.clear()
         self._client.list_devices()
 
-    def _on_screensaver_active_changed(self, active: bool) -> None:
+    def _on_screensaver_locked(self, active: bool) -> None:
+        """Screen locked: auto-allow pending HID devices so the newly-attached
+        keyboard can be used to unlock."""
         if not active or not self._hid_pending_devices:
             return
 
