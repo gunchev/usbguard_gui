@@ -13,6 +13,7 @@ from PyQt6.QtCore import QLockFile, QStandardPaths, QTimer
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
 from usbguard_gui.device import Device, DeviceTarget, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
@@ -120,6 +121,12 @@ class USBGuardTrayApp:
 
         menu.addSeparator()
 
+        self._action_about = QAction("About")
+        self._action_about.triggered.connect(self._show_about)
+        menu.addAction(self._action_about)
+
+        menu.addSeparator()
+
         self._action_quit = QAction("Quit")
         self._action_quit.triggered.connect(self._quit)
         menu.addAction(self._action_quit)
@@ -130,6 +137,16 @@ class USBGuardTrayApp:
 
     def _on_disable_hid_toggled(self, checked: bool) -> None:
         self._settings.set_disable_hid_treatment(checked)
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self._tray,
+            "About USBGuard GUI",
+            f"<b>USBGuard GUI</b> v{usbguard_gui.__version__}<br>"
+            "KDE/Qt system tray GUI for USBGuard.<br><br>"
+            f"Author: {usbguard_gui.__author__}<br>"
+            f"License: {usbguard_gui.__license__}",
+        )
 
     def _connect_signals(self) -> None:
         self._client.device_presence_changed.connect(self._on_device_presence_changed)
