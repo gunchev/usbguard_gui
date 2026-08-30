@@ -738,10 +738,11 @@ class TestDBusThreadFastFail:
 
 
 class TestConnectionDropNarrowing:
-    """_do_apply_policy/_do_list_rules/_do_remove_rule must only flip
-    _connected on errors that indicate a broken transport/session — an
-    ordinary per-call failure (e.g. applying policy to a device that was
-    unplugged a moment earlier) must not trigger a full reconnect."""
+    """_do_apply_policy/_do_list_rules/_do_remove_rule/_do_list_devices must
+    only flip _connected on errors that indicate a broken transport/session
+    — an ordinary per-call failure (e.g. applying policy to a device that
+    was unplugged a moment earlier, or a malformed list_devices query) must
+    not trigger a full reconnect."""
 
     def _thread(self) -> _DBusThread:
         thread = _DBusThread()
@@ -865,6 +866,44 @@ class TestConnectionDropNarrowing:
         thread._policy_iface.call_remove_rule = raise_error
 
         asyncio.run(thread._do_remove_rule(42))
+
+        assert thread._connected is False
+        assert events == [False]
+
+    # -- list_devices -------------------------------------------------------
+
+    def test_list_devices_business_error_does_not_disconnect(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.FAILED, "malformed query")
+
+        thread._devices_iface.call_list_devices = raise_error
+
+        asyncio.run(thread._do_list_devices("match"))
+
+        assert thread._connected is True
+        assert events == []
+
+    def test_list_devices_connection_error_disconnects(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.SERVICE_UNKNOWN, "gone")
+
+        thread._devices_iface.call_list_devices = raise_error
+
+        asyncio.run(thread._do_list_devices("match"))
 
         assert thread._connected is False
         assert events == [False]

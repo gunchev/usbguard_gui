@@ -248,7 +248,7 @@ class _DBusThread(QThread):
             self.list_devices_result.emit(devices)
         except DBusError as e:
             log.error("Failed to list devices (query=%s): %s", query, e)
-            if not _is_permission_error(e):
+            if _is_connection_error(e):
                 self._set_connected(False)
             self.list_devices_result.emit([])
 
