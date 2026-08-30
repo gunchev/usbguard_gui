@@ -74,7 +74,12 @@ class USBGuardTrayApp:
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
         self._hid_pending_devices: set[int] = set()
-        self._screensaver_pending_ids: list[int] | None = None
+        # FIFO queue of pending-id sets, one per in-flight list_devices() call
+        # issued by _on_screensaver_unlocked. A single overwritable slot here
+        # would lose whichever unlock cycle's ids arrived first whenever two
+        # unlock cycles overlap (screen re-locked before the previous
+        # summary's list_devices() result arrived).
+        self._screensaver_pending_id_queue: list[list[int]] = []
         self._permanent_allow_hashes: set[str] = set()
         # Whether screen locking is available (ScreenSaver service reachable).
         # While False, the HID lock-first flow cannot work and the UI must
@@ -206,9 +211,11 @@ class USBGuardTrayApp:
             for device_number in pending_ids:
                 if any(d.number == device_number for d in devices):
                     self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
-        elif self._screensaver_pending_ids is not None:
-            pending_ids = self._screensaver_pending_ids
-            self._screensaver_pending_ids = None
+        elif self._screensaver_pending_id_queue:
+            # FIFO: results are assumed to arrive in the order their
+            # list_devices() calls were issued, so the oldest queued id set
+            # belongs to this result.
+            pending_ids = self._screensaver_pending_id_queue.pop(0)
             pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
 
             if not pending_devices:
@@ -414,7 +421,7 @@ class USBGuardTrayApp:
         if active or not self._screensaver_pending_devices:
             return
 
-        self._screensaver_pending_ids = list(self._screensaver_pending_devices)
+        self._screensaver_pending_id_queue.append(list(self._screensaver_pending_devices))
         self._screensaver_pending_devices.clear()
         self._client.list_devices()
 

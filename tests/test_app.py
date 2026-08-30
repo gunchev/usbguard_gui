@@ -388,10 +388,10 @@ class TestHIDAllowRequiresLockedScreen:
         )
         assert tray_app._screensaver_pending_devices == {10}
 
-        # 2. Screen unlocks -> _screensaver_pending_ids set, list_devices() in flight.
+        # 2. Screen unlocks -> pending-id queue set, list_devices() in flight.
         fake_screensaver._active = False
         tray_app._on_screensaver_unlocked(False)
-        assert tray_app._screensaver_pending_ids == [10]
+        assert tray_app._screensaver_pending_id_queue == [[10]]
 
         # 3. Attacker's keyboard B inserted while the result is in flight.
         fake_client.device_presence_changed.emit(
@@ -419,6 +419,71 @@ class TestHIDAllowRequiresLockedScreen:
         fake_screensaver._active = True
         tray_app._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+
+        for dialog in list(tray_app._open_dialogs.values()):
+            dialog.close()
+
+
+# ---------------------------------------------------------------------------
+# Overlapping screensaver-unlock summary cycles
+# ---------------------------------------------------------------------------
+
+
+class TestOverlappingUnlockCycles:
+    """The screensaver-unlock pending-id state must not be a single
+    overwritable slot.
+
+    Repro:
+    1. Screen locked, device A inserted while away -> deferred.
+    2. Screen unlocks -> list_devices() fired for A (R1 in flight).
+    3. Before R1 returns, the screen locks again and device B is inserted
+       while locked -> deferred.
+    4. Screen unlocks again -> list_devices() fired for B (R2 in flight).
+    5. R1 arrives (FIFO) -> must resolve against A, not whatever the latest
+       pending set happens to be.
+    6. R2 arrives -> must resolve against B, and must not have been dropped
+       by R1 already consuming (and clearing) a shared single slot.
+    """
+
+    _RULE_A = (
+        'block id 04f2:b2ea serial "" name "Device A" '
+        'hash "aaa111" parent-hash "" via-port "1-2" '
+        "with-interface 0e:01:00 with-connect-type hotplug"
+    )
+    _RULE_B = (
+        'block id 04f2:b2eb serial "" name "Device B" '
+        'hash "bbb222" parent-hash "" via-port "1-3" '
+        "with-interface 0e:01:00 with-connect-type hotplug"
+    )
+
+    def test_two_overlapping_unlock_cycles_both_get_prompted(self, tray_app, fake_client, fake_screensaver) -> None:
+        device_a = Device.from_dbus(10, self._RULE_A)
+        device_b = Device.from_dbus(20, self._RULE_B)
+
+        # 1. Screen locked, device A inserted while away -> deferred.
+        tray_app._screensaver_pending_devices = {10}
+
+        # 2. Screen unlocks -> R1 (for A) fired.
+        tray_app._on_screensaver_unlocked(False)
+        assert fake_client.list_devices_calls == 1
+
+        # 3. Screen locks again; device B inserted while locked -> deferred.
+        #    R1 is still "in flight" (its result has not arrived yet).
+        tray_app._screensaver_pending_devices = {20}
+
+        # 4. Screen unlocks again -> R2 (for B) fired, before R1 resolved.
+        tray_app._on_screensaver_unlocked(False)
+        assert fake_client.list_devices_calls == 2
+
+        # 5. R1 arrives first (FIFO) with the snapshot as it was for that
+        #    request — must surface A's prompt.
+        fake_client.list_devices_result.emit([device_a])
+        assert 10 in tray_app._open_dialogs, "A's deferred prompt must not be dropped"
+
+        # 6. R2 arrives — must surface B's prompt too, not be silently
+        #    dropped because R1 already consumed the one shared slot.
+        fake_client.list_devices_result.emit([device_a, device_b])
+        assert 20 in tray_app._open_dialogs, "B's deferred prompt must not be dropped"
 
         for dialog in list(tray_app._open_dialogs.values()):
             dialog.close()
