@@ -4,34 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from collections.abc import Coroutine
 from typing import Any
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
+from usbguard_gui.dbus_common import (
+    DBUS_BUS_NAME,
+    DBUS_BUS_PATH,
+    DBUS_IFACE,
+    THREAD_STOP_TIMEOUT_MS,
+    AsyncWorkerThread,
+    get_introspection,
+    stop_worker_thread,
+)
 from usbguard_gui.device import Device, DeviceTarget
 
 log = logging.getLogger(__name__)
 
-# How long stop() waits for the worker thread to exit on its own before
-# terminate() is used as a last resort.  A healthy worker notices
-# _running=False within its 0.1 s keep-alive tick; a worker stuck in
-# MessageBus.connect() never will, and an unbounded wait() would hang
-# _quit() forever.
-_THREAD_STOP_TIMEOUT_MS = 3000
+# Kept as a module-level alias: existing tests import this name directly.
+_THREAD_STOP_TIMEOUT_MS = THREAD_STOP_TIMEOUT_MS
 
 USBGUARD_BUS_NAME = "org.usbguard1"
 USBGUARD_DEVICES_PATH = "/org/usbguard1/Devices"
 USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
 USBGUARD_DEVICES_IFACE = "org.usbguard.Devices1"
 USBGUARD_POLICY_IFACE = "org.usbguard.Policy1"
-
-DBUS_BUS_NAME = "org.freedesktop.DBus"
-DBUS_BUS_PATH = "/org/freedesktop/DBus"
-DBUS_IFACE = "org.freedesktop.DBus"
 
 _PERMISSION_ERRORS = frozenset(
     [
@@ -72,21 +71,14 @@ def _is_connection_error(e: DBusError) -> bool:
     return (getattr(e, "type", "") or "") in _CONNECTION_ERRORS
 
 
-def _get_introspection(filename: str) -> str:
-    module_dir = os.path.dirname(__file__)
-    path = os.path.join(module_dir, "introspection", filename)
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
-_DEVICES_INTROSPECTION = _get_introspection("org.usbguard.Devices1.xml")
-_POLICY_INTROSPECTION = _get_introspection("org.usbguard.Policy1.xml")
-_DBUS_INTROSPECTION = _get_introspection("org.freedesktop.DBus.xml")
+_DEVICES_INTROSPECTION = get_introspection("org.usbguard.Devices1.xml")
+_POLICY_INTROSPECTION = get_introspection("org.usbguard.Policy1.xml")
+_DBUS_INTROSPECTION = get_introspection("org.freedesktop.DBus.xml")
 
 
-class _DBusThread(QThread):
+class _DBusThread(AsyncWorkerThread):
     finished = pyqtSignal()
     connection_changed = pyqtSignal(bool)
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
@@ -98,12 +90,10 @@ class _DBusThread(QThread):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
         self._bus_iface: Any = None     # ProxyInterface — dbus-fast dynamic API
         self._devices_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._policy_iface: Any = None   # ProxyInterface — dbus-fast dynamic API
-        self._running = True
         self._connected = False
 
     @property
@@ -230,16 +220,6 @@ class _DBusThread(QThread):
         attributes: dict,
     ) -> None:
         self.device_policy_changed.emit(device_id, target_old, target_new, device_rule, rule_id, attributes)
-
-    def _schedule(self, coro: Coroutine[Any, Any, Any]) -> None:
-        if self._loop and self._running:
-            self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
-
-    def stop(self) -> None:
-        # Flip the flag and let _main()'s keep-alive loop exit on its next
-        # iteration so the trailing bus.disconnect() can run. Do NOT call
-        # loop.stop() here — that kills the loop mid-await and skips cleanup.
-        self._running = False
 
     async def _do_list_devices(self, query: str) -> None:
         try:
@@ -368,13 +348,7 @@ class USBGuardClient(QObject):
 
     def stop(self) -> None:
         if self._thread:
-            self._thread.stop()
-            if not self._thread.wait(_THREAD_STOP_TIMEOUT_MS):
-                log.warning(
-                    "D-Bus worker thread did not exit within %d ms — terminating",
-                    _THREAD_STOP_TIMEOUT_MS,
-                )
-                self._thread.terminate()
+            stop_worker_thread(self._thread, "D-Bus", log)
             self._thread = None
 
     def list_devices(self, query: str = "match") -> None:

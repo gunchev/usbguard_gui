@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
-from collections.abc import Coroutine
 from typing import Any
 
 from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
+
+from usbguard_gui.dbus_common import (
+    DBUS_BUS_NAME,
+    DBUS_BUS_PATH,
+    DBUS_IFACE,
+    THREAD_STOP_TIMEOUT_MS,
+    AsyncWorkerThread,
+    get_introspection,
+    stop_worker_thread,
+)
 
 log = logging.getLogger(__name__)
+
+# Kept as a module-level alias: existing tests import this name directly.
+_THREAD_STOP_TIMEOUT_MS = THREAD_STOP_TIMEOUT_MS
 
 SCREENSAVER_BUS_NAME = "org.freedesktop.ScreenSaver"
 SCREENSAVER_PATH = "/org/freedesktop/ScreenSaver"
@@ -22,17 +33,6 @@ SCREENSAVER_IFACE = "org.freedesktop.ScreenSaver"
 LOGIN1_BUS_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER_IFACE = "org.freedesktop.login1.Manager"
-
-DBUS_BUS_NAME = "org.freedesktop.DBus"
-DBUS_BUS_PATH = "/org/freedesktop/DBus"
-DBUS_IFACE = "org.freedesktop.DBus"
-
-# How long stop() waits for the worker thread to exit on its own before
-# terminate() is used as a last resort.  A healthy worker notices
-# _running=False within its 0.1 s keep-alive tick; a worker stuck in
-# MessageBus.connect() never will, and an unbounded wait() would hang
-# _quit() forever.
-_THREAD_STOP_TIMEOUT_MS = 3000
 
 # Seconds between polls of logind's inhibitor list. Short enough that a
 # user-initiated "prevent screen lock" toggle is picked up before the next
@@ -45,21 +45,13 @@ _INHIBIT_POLL_INTERVAL = 2.0
 # app's lifetime (in which case lock() would silently no-op forever).
 _CONNECT_RETRY_INTERVAL = 5.0
 
-
-def _get_introspection(filename: str) -> str:
-    module_dir = os.path.dirname(__file__)
-    path = os.path.join(module_dir, "introspection", filename)
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
-_SCREENSAVER_INTROSPECTION = _get_introspection("org.freedesktop.ScreenSaver.xml")
-_DBUS_INTROSPECTION = _get_introspection("org.freedesktop.DBus.xml")
+_SCREENSAVER_INTROSPECTION = get_introspection("org.freedesktop.ScreenSaver.xml")
+_DBUS_INTROSPECTION = get_introspection("org.freedesktop.DBus.xml")
 
 
-class _ScreensaverThread(QThread):
+class _ScreensaverThread(AsyncWorkerThread):
     finished = pyqtSignal()
     connected = pyqtSignal(bool)
     active_changed = pyqtSignal(bool)
@@ -68,13 +60,11 @@ class _ScreensaverThread(QThread):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
         self._system_bus: MessageBus | None = None
         self._bus_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._proxy: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._logind: Any = None  # ProxyInterface — dbus-fast dynamic API
-        self._running = True
         self._active = False
         self._inhibited = False
         self._connected = False
@@ -252,10 +242,6 @@ class _ScreensaverThread(QThread):
             log.debug("GetActive failed: %s", e)
             self.connected.emit(False)
 
-    def _schedule(self, coro: Coroutine[Any, Any, Any]) -> None:
-        if self._loop and self._running:
-            self._loop.call_soon_threadsafe(asyncio.ensure_future, coro)
-
     async def _sleep(self, seconds: float) -> bool:
         """Sleep in small slices so stop() is noticed promptly.
 
@@ -266,13 +252,6 @@ class _ScreensaverThread(QThread):
                 return False
             await asyncio.sleep(0.1)
         return True
-
-    def stop(self) -> None:
-        # Flip the flag and let _main()'s keep-alive loop (or the connect
-        # retry loop) exit on its next iteration so the trailing
-        # bus.disconnect() can run. Do NOT call loop.stop() here — that
-        # kills the loop mid-await and skips cleanup.
-        self._running = False
 
     async def _do_lock(self) -> None:
         if not self._proxy:
@@ -354,13 +333,7 @@ class ScreensaverMonitor(QObject):
 
     def stop(self) -> None:
         if self._thread:
-            self._thread.stop()
-            if not self._thread.wait(_THREAD_STOP_TIMEOUT_MS):
-                log.warning(
-                    "Screensaver worker thread did not exit within %d ms — terminating",
-                    _THREAD_STOP_TIMEOUT_MS,
-                )
-                self._thread.terminate()
+            stop_worker_thread(self._thread, "Screensaver", log)
             self._thread = None
 
     def lock(self) -> None:
