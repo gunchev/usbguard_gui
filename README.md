@@ -9,7 +9,7 @@ through desktop notifications and a device management window.
 
 <img src="rpm/usbguard_gui.svg" alt="This is the systray icon." width="32" height="32">
 
-![screenshot](screenshot_20260411_091821.png)
+![screenshot](screenshot_20260830_164820.png)
 
 ## How It Works
 

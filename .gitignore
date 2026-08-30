@@ -12,6 +12,7 @@ __pycache__/
 *.py,cover
 site.py
 __pypackages__/
+*.xcf
 
 # uv
 /.venv/
