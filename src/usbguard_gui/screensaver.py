@@ -49,7 +49,7 @@ _CONNECT_RETRY_INTERVAL = 5.0
 def _get_introspection(filename: str) -> str:
     module_dir = os.path.dirname(__file__)
     path = os.path.join(module_dir, "introspection", filename)
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
