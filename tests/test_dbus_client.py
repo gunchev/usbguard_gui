@@ -35,6 +35,8 @@ def mock_thread():
                 self._is_connected = True
                 self._start_called = False
                 self._stop_called = False
+                self._wait_called = False
+                self._wait_timeout = None
                 self._list_devices_calls = []
                 self._apply_policy_calls = []
                 self._list_rules_calls = []
@@ -55,6 +57,8 @@ def mock_thread():
                 self._stop_called = True
 
             def wait(self, timeout=None):
+                self._wait_called = True
+                self._wait_timeout = timeout
                 return True
 
             def list_devices(self, query="match"):
@@ -244,9 +248,15 @@ class TestUSBGuardClient:
         assert emitted == [(1, 2, 3, "rule", 4, {"key": "value"})]
 
     def test_stop_calls_thread_stop_and_wait(self, client, mock_thread):
+        from usbguard_gui.dbus_client import _THREAD_STOP_TIMEOUT_MS
+
         client.connect()
         client.stop()
         assert mock_thread._stop_called is True
+        # wait() must be called with the bounded timeout
+        assert mock_thread._wait_called is True
+        assert mock_thread._wait_timeout == _THREAD_STOP_TIMEOUT_MS
+        assert client._thread is None
 
     def test_list_devices_no_thread(self, client):
         client.list_devices()

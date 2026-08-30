@@ -33,7 +33,7 @@ Features:
 - Per-device popup dialogs (Allow permanently/temporarily, Block, Reject)
 - Desktop notifications for device events
 - HID security: locks the screen when a new keyboard is plugged in after a
-  short delay (4 seconds), provided the screen was unlocked at insertion time.
+  short delay (5 seconds), provided the screen was unlocked at insertion time.
   HID devices inserted while the screen is already locked are allowed temporarily
   so you can use them to unlock the machine. Special HID treatment can be disabled
   via the tray right-click menu.

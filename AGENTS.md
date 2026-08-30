@@ -31,7 +31,7 @@ uv run tox                                          # test across Python version
 
 ```bash
 make test          # run all tests (uv run pytest -v)
-make check         # lint + test
+make check         # lint + typecheck + test
 make lint          # ruff check + autopep8 format check
 make format        # auto-format with autopep8
 make coverage      # test with coverage report

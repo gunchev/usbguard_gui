@@ -20,7 +20,6 @@ class _FakeClient(QObject):
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
     list_devices_result = pyqtSignal(list)
-    apply_policy_result = pyqtSignal(object)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
 
@@ -178,6 +177,7 @@ class TestRefreshFlow:
 
         assert client.receivers(client.list_devices_result) == before_devices
         assert client.receivers(client.list_rules_result) == before_rules
+
 
 class TestApplyDoesNotRemoveRules:
     """Regression: applying 'Allow (Temporary)' used to remove every allow

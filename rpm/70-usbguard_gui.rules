@@ -20,8 +20,7 @@ polkit.addRule(function(action, subject) {
     ];
     if (usbguardActions.indexOf(action.id) !== -1 &&
             subject.active == true &&
-            subject.local == true &&
-            subject.active == true) {
+            subject.local == true) {
         return polkit.Result.YES;
     }
 });

@@ -108,7 +108,7 @@ def release(
 
     cl = top / "CHANGELOG.md"
     cl.write_text(section + cl.read_text())
-    n = len(section.splitlines()) - 4 if last_tag else 0
+    n = sum(1 for line in section.splitlines() if line.startswith("- ")) if last_tag else 0
     print(f"Updated CHANGELOG.md ({n} commit{'s' if n != 1 else ''})")
 
     print(f"▶ Committing and tagging v{version} ...")
@@ -127,7 +127,7 @@ def release(
 
 
 def main() -> None:
-    """The main and only"""
+    """Entry point: parse the version argument and run the release."""
     if len(sys.argv) != 2:
         _fail(f"Usage: python3 {sys.argv[0]} X.Y.Z")
 

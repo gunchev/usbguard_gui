@@ -4,7 +4,7 @@
 
 - d646db1 Integrate `usbguard generate-policy` in the RPM post script.
 - 09b1e35 Add Dependabot configuration (related to issue #3)
-- de6e772 Will this run on fedora?
+- de6e772 ci: verify the build runs on Fedora (issue #2)
 - b2caa3c ci: pin actions/checkout to commit SHA instead of version tag
 
 ## 0.5.1 — 2026-06-22
