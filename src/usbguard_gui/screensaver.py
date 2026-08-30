@@ -23,6 +23,10 @@ LOGIN1_BUS_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER_IFACE = "org.freedesktop.login1.Manager"
 
+DBUS_BUS_NAME = "org.freedesktop.DBus"
+DBUS_BUS_PATH = "/org/freedesktop/DBus"
+DBUS_IFACE = "org.freedesktop.DBus"
+
 # How long stop() waits for the worker thread to exit on its own before
 # terminate() is used as a last resort.  A healthy worker notices
 # _running=False within its 0.1 s keep-alive tick; a worker stuck in
@@ -52,6 +56,7 @@ def _get_introspection(filename: str) -> str:
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
 _SCREENSAVER_INTROSPECTION = _get_introspection("org.freedesktop.ScreenSaver.xml")
+_DBUS_INTROSPECTION = _get_introspection("org.freedesktop.DBus.xml")
 
 
 class _ScreensaverThread(QThread):
@@ -66,6 +71,7 @@ class _ScreensaverThread(QThread):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._bus: MessageBus | None = None
         self._system_bus: MessageBus | None = None
+        self._bus_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._proxy: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._logind: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._running = True
@@ -104,6 +110,16 @@ class _ScreensaverThread(QThread):
             proxy: Any = None
             try:
                 bus = await MessageBus(bus_type=BusType.SESSION).connect()
+                # Watch the session bus for ownership of the ScreenSaver name
+                # so a screen-locker crash/restart is detected immediately
+                # via NameOwnerChanged, instead of staying 'connected' until
+                # the next lock()/GetActive call happens to fail — mirrors
+                # dbus_client.py's daemon-loss watch.
+                dbus_obj = bus.get_proxy_object(
+                    DBUS_BUS_NAME, DBUS_BUS_PATH, _DBUS_INTROSPECTION  # pyright: ignore
+                )
+                self._bus_iface = dbus_obj.get_interface(DBUS_IFACE)
+                self._bus_iface.on_name_owner_changed(self._on_name_owner_changed)
                 proxy_obj = bus.get_proxy_object(
                     SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION  # pyright: ignore
                 )
@@ -117,6 +133,7 @@ class _ScreensaverThread(QThread):
                 if bus is not None:
                     bus.disconnect()
                 self._bus = None
+                self._bus_iface = None
                 self._proxy = None
                 if first_failure:
                     log.warning("Screensaver D-Bus unavailable: %s — retrying", e)
@@ -212,6 +229,20 @@ class _ScreensaverThread(QThread):
         self._active = active
         log.debug("Screensaver active: %s", active)
         self.active_changed.emit(active)
+
+    def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
+        """React to the freedesktop ScreenSaver service taking or releasing
+        its bus name, so a screen-locker crash/restart is detected
+        immediately instead of only on the next lock()/GetActive call that
+        happens to fail.
+        """
+        if name != SCREENSAVER_BUS_NAME:
+            return
+        if new_owner:
+            log.info("Screensaver D-Bus service appeared on the bus (%s)", new_owner)
+        else:
+            log.warning("Screensaver D-Bus service left the bus (was %s)", old_owner)
+        self.connected.emit(bool(new_owner))
 
     async def _sync_active(self) -> None:
         try:

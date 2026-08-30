@@ -268,6 +268,46 @@ class TestScreensaverConnectionState:
             assert events == [True, False]
 
 
+class TestScreensaverNameOwnerChangedHandler:
+    """_on_name_owner_changed must react only to the ScreenSaver bus name,
+    emitting connected(False) on owner loss and connected(True) on owner
+    gain — so a screen-locker crash/restart is detected immediately instead
+    of only on the next lock()/GetActive call that happens to fail."""
+
+    def test_ignores_other_names(self):
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        emitted: list[bool] = []
+        thread.connected.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.example.Other", "", ":1.42")
+
+        assert emitted == []
+
+    def test_service_appearance_emits_connected_true(self):
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        emitted: list[bool] = []
+        thread.connected.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.freedesktop.ScreenSaver", "", ":1.42")
+
+        assert emitted == [True]
+
+    def test_service_disappearance_emits_connected_false(self):
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        emitted: list[bool] = []
+        thread.connected.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed("org.freedesktop.ScreenSaver", ":1.42", "")
+
+        assert emitted == [False]
+
+
 class TestScreensaverThreadRetry:
     """_ScreensaverThread must retry connecting while the session bus /
     ScreenSaver service is unavailable instead of giving up forever:
@@ -291,16 +331,24 @@ class TestScreensaverThreadRetry:
             async def call_lock(self):
                 pass
 
+        class FakeDBusProxy:
+            def on_name_owner_changed(self, handler):
+                pass
+
         class FakeLogindProxy:
             async def call_list_inhibitors(self):
                 return []
 
         class FakeProxyObject:
-            def __init__(self, kind: str) -> None:
-                self._kind = kind
+            def __init__(self, bus_name: str) -> None:
+                self._bus_name = bus_name
 
             def get_interface(self, name: str):
-                return FakeProxy() if self._kind == "screensaver" else FakeLogindProxy()
+                if self._bus_name == sa.DBUS_BUS_NAME:
+                    return FakeDBusProxy()
+                if self._bus_name == sa.SCREENSAVER_BUS_NAME:
+                    return FakeProxy()
+                return FakeLogindProxy()
 
         class FakeBus:
             def __init__(self, kind: str) -> None:
@@ -308,7 +356,7 @@ class TestScreensaverThreadRetry:
                 self.disconnected = False
 
             def get_proxy_object(self, bus_name, path, introspection):
-                return FakeProxyObject(self._kind)
+                return FakeProxyObject(bus_name)
 
             async def introspect(self, bus_name, path):
                 return "<node/>"
