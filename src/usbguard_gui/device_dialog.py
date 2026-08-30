@@ -102,8 +102,15 @@ class DeviceActionDialog(QDialog):
 
         # Track lock availability so the buttons follow it while the dialog
         # is open.  Without the monitor (old callers) no gating happens.
+        # Connected as a bound method (not a lambda) and explicitly torn
+        # down in _on_finished_cleanup: a lambda closing over `self` gives
+        # PyQt no way to auto-disconnect when the dialog is destroyed, which
+        # would otherwise leak every dialog for the life of the long-running
+        # tray process (connection_changed lives on the app's single
+        # long-lived ScreensaverMonitor).
         if self._screensaver is not None:
-            self._screensaver.connection_changed.connect(lambda _available: self._update_actions_enabled())
+            self._screensaver.connection_changed.connect(self._on_connection_changed)
+        self.finished.connect(self._on_finished_cleanup)
         self._update_actions_enabled()
 
     def _actions_enabled(self) -> bool:
@@ -121,6 +128,14 @@ class DeviceActionDialog(QDialog):
         enabled = self._actions_enabled()
         for button in (self._btn_allow, self._btn_allow_temp, self._btn_block, self._btn_close):
             button.setEnabled(enabled)
+
+    def _on_connection_changed(self, _available: bool) -> None:
+        self._update_actions_enabled()
+
+    def _on_finished_cleanup(self) -> None:
+        if self._screensaver is not None:
+            self._screensaver.connection_changed.disconnect(self._on_connection_changed)
+        self.deleteLater()
 
     def _start_timeout(self) -> None:
         self._timer = QTimer(self)
