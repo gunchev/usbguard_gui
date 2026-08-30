@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QEvent, Qt, QTimer
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget
@@ -23,7 +22,8 @@ DEFAULT_TIMEOUT = 30
 class DeviceActionDialog(QDialog):
     """Dialog shown when a new blocked USB device is inserted.
 
-    The user can Allow (permanently), Allow Temporarily, Block, or Reject.
+    The user can Allow (permanently), Allow Temporarily, Block, or Close.
+    'Close' is the default button: pressing Enter dismisses the dialog safely.
     If no action is taken within the timeout, the device remains blocked.
     """
 
@@ -90,11 +90,15 @@ class DeviceActionDialog(QDialog):
         self._btn_block.clicked.connect(self._on_block)
         btn_layout.addButton(self._btn_block, QDialogButtonBox.ButtonRole.RejectRole)
 
-        self._btn_reject = QPushButton("Reject")
-        self._btn_reject.clicked.connect(self._on_reject)
-        btn_layout.addButton(self._btn_reject, QDialogButtonBox.ButtonRole.RejectRole)
+        self._btn_close = QPushButton("Close")
+        self._btn_close.clicked.connect(self._on_close)
+        btn_layout.addButton(self._btn_close, QDialogButtonBox.ButtonRole.AcceptRole)
 
         layout.addWidget(btn_layout)
+
+        # Make 'Close' the default button so Enter dismisses the dialog safely
+        # (sends REJECT) instead of triggering an allow action.
+        self._btn_close.setDefault(True)
 
         # Track lock availability so the buttons follow it while the dialog
         # is open.  Without the monitor (old callers) no gating happens.
@@ -115,7 +119,7 @@ class DeviceActionDialog(QDialog):
 
     def _update_actions_enabled(self) -> None:
         enabled = self._actions_enabled()
-        for button in (self._btn_allow, self._btn_allow_temp, self._btn_block, self._btn_reject):
+        for button in (self._btn_allow, self._btn_allow_temp, self._btn_block, self._btn_close):
             button.setEnabled(enabled)
 
     def _start_timeout(self) -> None:
@@ -123,21 +127,6 @@ class DeviceActionDialog(QDialog):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
-
-    def event(self, event: QEvent) -> bool:
-        # This dialog intentionally has no default button.  Qt assigns the
-        # first AcceptRole button as the default when the dialog is shown
-        # (during the post-show polish wave, where it cannot be reliably
-        # cleared), so swallow Return/Enter here to guarantee that a stray
-        # Enter cannot silently apply "Allow (Permanent)" — a persistent
-        # rule from an accidental keypress.  Esc keeps its cancel semantics.
-        if (
-            isinstance(event, QKeyEvent)
-            and event.type() == QEvent.Type.KeyPress
-            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
-        ):
-            return True
-        return super().event(event)
 
     def _tick(self) -> None:
         self._remaining -= 1
@@ -195,7 +184,7 @@ class DeviceActionDialog(QDialog):
         self._permanent = False
         self.accept()
 
-    def _on_reject(self) -> None:
+    def _on_close(self) -> None:
         if self._action_blocked():
             return
         self._result_target = DeviceTarget.REJECT

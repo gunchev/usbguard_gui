@@ -58,7 +58,7 @@ class TestDialogLockUnavailable:
     @pytest.fixture()
     def buttons(self, dialog_with_screensaver):
         dialog = dialog_with_screensaver[0]
-        return [dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject]
+        return [dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close]
 
     @pytest.fixture()
     def dialog_with_screensaver(self, qapp, qtbot):
@@ -76,7 +76,7 @@ class TestDialogLockUnavailable:
         dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
         qtbot.addWidget(dialog)
 
-        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject):
+        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close):
             assert btn.isEnabled()
 
     def test_buttons_enabled_without_screensaver(self, qapp, qtbot) -> None:
@@ -84,7 +84,7 @@ class TestDialogLockUnavailable:
         dialog = DeviceActionDialog(_make_device(), _FakeClient())
         qtbot.addWidget(dialog)
 
-        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_reject):
+        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close):
             assert btn.isEnabled()
 
     def test_buttons_follow_lock_state_changes(self, dialog_with_screensaver, buttons) -> None:
@@ -101,7 +101,7 @@ class TestDialogLockUnavailable:
         screensaver.connection_changed.emit(False)
         assert all(not btn.isEnabled() for btn in buttons)
 
-    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_reject"])
+    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_close"])
     def test_actions_warn_when_lock_unavailable(self, dialog_with_screensaver, mocker, handler: str) -> None:
         """If a handler runs while lock is unavailable (e.g. the state flips
         after the buttons were enabled), it must warn, not record the choice."""
@@ -115,13 +115,26 @@ class TestDialogLockUnavailable:
         dialog.close()
 
 
-class TestNoDefaultAction:
-    """Enter must not silently pick an action: the dialog has no default
-    button, and a stray Enter used to trigger Qt's auto-assigned default
-    ('Allow (Permanent)') — creating a persistent rule from an accidental
-    keypress."""
+class TestCloseIsDefaultButton:
+    """The 'Close' button is the default: Enter dismisses the dialog safely
+    (sends REJECT so USBGuard forgets the device) instead of triggering an
+    allow action.  This eliminates the need to swallow key events."""
 
-    def test_enter_does_not_trigger_any_action(self, qapp, qtbot) -> None:
+    def test_close_button_text(self, qapp, qtbot) -> None:
+        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        qtbot.addWidget(dialog)
+        assert dialog._btn_close.text() == "Close"
+
+    def test_close_button_is_default(self, qapp, qtbot) -> None:
+        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qapp.processEvents()
+        assert dialog._btn_close.isDefault()
+
+    def test_enter_triggers_close(self, qapp, qtbot) -> None:
+        """Pressing Enter triggers the default 'Close' button: records REJECT
+        and closes the dialog."""
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
 
@@ -131,15 +144,15 @@ class TestNoDefaultAction:
         dialog.show()
         qapp.processEvents()
 
-        for _ in range(3):
-            QTest.keyClick(dialog, Qt.Key.Key_Return)
-            qapp.processEvents()
+        QTest.keyClick(dialog, Qt.Key.Key_Return)
+        qapp.processEvents()
 
-        assert dialog.result_target is None
-        assert client.apply_calls == []
-        assert dialog.isVisible()
+        assert dialog.result_target is DeviceTarget.REJECT
+        assert dialog.permanent is False
+        assert not dialog.isVisible()
 
-    def test_enter_on_both_keys(self, qapp, qtbot) -> None:
+    def test_enter_key_enter_triggers_close(self, qapp, qtbot) -> None:
+        """Key_Enter (numpad Enter) also triggers Close."""
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
 
@@ -152,10 +165,11 @@ class TestNoDefaultAction:
         QTest.keyClick(dialog, Qt.Key.Key_Enter)
         qapp.processEvents()
 
-        assert dialog.result_target is None
-        assert dialog.isVisible()
+        assert dialog.result_target is DeviceTarget.REJECT
+        assert dialog.permanent is False
+        assert not dialog.isVisible()
 
-    def test_escape_still_closes_without_action(self, qapp, qtbot) -> None:
+    def test_escape_closes_without_target(self, qapp, qtbot) -> None:
         """Esc keeps its cancel semantics: close the dialog, record nothing."""
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
@@ -173,6 +187,23 @@ class TestNoDefaultAction:
         assert client.apply_calls == []
         assert not dialog.isVisible()
 
+    def test_enter_does_not_trigger_allow(self, qapp, qtbot) -> None:
+        """Enter must never trigger an allow action — the default is Close."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+
+        client = _FakeClient()
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qapp.processEvents()
+
+        QTest.keyClick(dialog, Qt.Key.Key_Return)
+        qapp.processEvents()
+
+        # The target must be REJECT (Close), never ALLOW.
+        assert dialog.result_target is not DeviceTarget.ALLOW
+
 
 def _make_device() -> Device:
     return Device.from_dbus(1, _RULE)
@@ -184,7 +215,7 @@ class TestDialogConnectionWarning:
     believe their choice was applied.  The dialog stays open so the user
     can retry once the daemon is back."""
 
-    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_reject"])
+    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_close"])
     def test_all_actions_warn_when_disconnected(self, qapp, qtbot, mocker, handler: str) -> None:
         client = _FakeClient(connected=False)
         dialog = DeviceActionDialog(_make_device(), client)
@@ -205,7 +236,7 @@ class TestDialogConnectionWarning:
             ("_on_allow", DeviceTarget.ALLOW, True),
             ("_on_allow_temp", DeviceTarget.ALLOW, False),
             ("_on_block", DeviceTarget.BLOCK, False),
-            ("_on_reject", DeviceTarget.REJECT, False),
+            ("_on_close", DeviceTarget.REJECT, False),
         ],
     )
     def test_all_actions_record_choice_when_connected(
