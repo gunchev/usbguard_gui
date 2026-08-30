@@ -230,6 +230,14 @@ class _ScreensaverThread(AsyncWorkerThread):
             return
         if new_owner:
             log.info("Screensaver D-Bus service appeared on the bus (%s)", new_owner)
+            # No ActiveChanged signals reached us while the service was
+            # down, so the cached active state may be stale (the screen
+            # could have locked/unlocked in the meantime) — re-seed it
+            # from the service, as the initial connect does.  Only when a
+            # loop exists to run it (a not-yet-started thread has none,
+            # and the coroutine would be dropped un-awaited).
+            if self._loop is not None and self._running:
+                self._schedule(self._sync_active())
         else:
             log.warning("Screensaver D-Bus service left the bus (was %s)", old_owner)
         self.connected.emit(bool(new_owner))

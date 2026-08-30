@@ -308,6 +308,102 @@ class TestScreensaverNameOwnerChangedHandler:
         assert emitted == [False]
 
 
+class TestScreensaverReappearanceReseedsActive:
+    """When the ScreenSaver name re-appears on the bus, the cached active
+    state must be re-seeded via GetActive: no ActiveChanged signals reach
+    the app while the service is down, so the screen could have
+    locked/unlocked in the meantime and _active would otherwise stay
+    stale (e.g. the app would keep believing the screen is unlocked
+    after a locker restart that happened while it was locked)."""
+
+    def test_reappearance_refetches_active(self, qapp, qtbot, mocker) -> None:
+        import usbguard_gui.screensaver as sa
+
+        state: dict = {
+            "active": False,
+            "get_active_calls": 0,
+            "name_owner_handler": None,
+        }
+
+        class FakeProxy:
+            def on_active_changed(self, handler):
+                pass
+
+            async def call_get_active(self):
+                state["get_active_calls"] += 1
+                return state["active"]
+
+            async def call_lock(self):
+                pass
+
+        class FakeDBusProxy:
+            def on_name_owner_changed(self, handler):
+                state["name_owner_handler"] = handler
+
+        class FakeLogindProxy:
+            async def call_list_inhibitors(self):
+                return []
+
+        class FakeProxyObject:
+            def __init__(self, bus_name: str) -> None:
+                self._bus_name = bus_name
+
+            def get_interface(self, name: str):
+                if self._bus_name == sa.DBUS_BUS_NAME:
+                    return FakeDBusProxy()
+                if self._bus_name == sa.SCREENSAVER_BUS_NAME:
+                    return FakeProxy()
+                return FakeLogindProxy()
+
+        class FakeBus:
+            def get_proxy_object(self, bus_name, path, introspection):
+                return FakeProxyObject(bus_name)
+
+            async def introspect(self, bus_name, path):
+                return "<node/>"
+
+            def disconnect(self):
+                pass
+
+        class FakeMessageBus:
+            def __init__(self, bus_type=None, **kwargs):
+                self._bus_type = bus_type
+
+            async def connect(self):
+                return FakeBus()
+
+        mocker.patch.object(sa, "MessageBus", FakeMessageBus)
+
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        thread = _ScreensaverThread()
+        active_events: list[bool] = []
+        thread.active_changed.connect(lambda v: active_events.append(v))
+        thread.start()
+
+        # Initial connect seeds active=False from the first GetActive.
+        qtbot.waitUntil(lambda: state["name_owner_handler"] is not None, timeout=5000)
+        qtbot.waitUntil(lambda: state["get_active_calls"] >= 1, timeout=5000)
+        assert active_events == [False]
+
+        # The screen locks while the service is down: no ActiveChanged
+        # signal reaches the app.
+        state["active"] = True
+
+        # The service disappears... the cached state must be re-fetched
+        # when it comes back, not left at the stale False.
+        state["name_owner_handler"](sa.SCREENSAVER_BUS_NAME, ":1.42", "")
+        state["name_owner_handler"](sa.SCREENSAVER_BUS_NAME, "", ":1.43")
+
+        qtbot.waitUntil(lambda: len(active_events) >= 2, timeout=5000)
+        thread.stop()
+        assert thread.wait(2000)
+
+        assert state["get_active_calls"] >= 2
+        assert active_events[-1] is True
+        assert thread._active is True
+
+
 class TestScreensaverThreadRetry:
     """_ScreensaverThread must retry connecting while the session bus /
     ScreenSaver service is unavailable instead of giving up forever:
