@@ -169,7 +169,7 @@ class TestParseDeviceRule:
 
 Before submitting changes:
 
-1. Run `make check` (lint + tests)
+1. Run `make check` (lint + typecheck + tests)
 2. Ensure all new public APIs have type hints
 3. Add tests for new functionality
 4. Update docstrings for user-facing APIs
