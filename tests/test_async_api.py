@@ -333,7 +333,7 @@ class TestScreensaverThreadRetry:
         return state
 
     def test_retries_until_service_available(self, qapp, qtbot, mocker) -> None:
-        state = self._fake_stack(mocker, fail_times=2)
+        self._fake_stack(mocker, fail_times=2)
         from usbguard_gui.screensaver import _ScreensaverThread
 
         thread = _ScreensaverThread()
@@ -341,7 +341,12 @@ class TestScreensaverThreadRetry:
         thread.connected.connect(lambda v: events.append(v))
         thread.start()
 
-        qtbot.waitUntil(lambda: state["attempts"] >= 3, timeout=5000)
+        # Wait for the actual connected(True) emission, not just the attempt
+        # count: attempts is incremented before connect() resolves, and
+        # there's a `self._running` check between the successful connect and
+        # the emit — stopping the thread as soon as attempts hits 3 can race
+        # ahead of that emit and make it never happen.
+        qtbot.waitUntil(lambda: True in events, timeout=5000)
         thread.stop()
         assert thread.wait(2000)
 
