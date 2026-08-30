@@ -363,6 +363,13 @@ class USBGuardClient(QObject):
         if self._thread:
             self._thread.list_rules(label)
 
+    # Not currently called from application code — the GUI deliberately never
+    # removes rules (see DeviceListWindow._apply: permanent and temporary
+    # rules are indistinguishable from the rule string, so removing one could
+    # silently revoke persistent authorization).  Kept for interface
+    # completeness: it may get used in the future (e.g. an explicit, user-
+    # initiated "Remove rule" action in a rules view), so do not treat it as
+    # dead code.
     def remove_rule(self, rule_id: int) -> None:
         if self._thread:
             self._thread.remove_rule(rule_id)
