@@ -140,7 +140,7 @@ class USBGuardTrayApp:
 
     def _show_about(self) -> None:
         QMessageBox.about(
-            self._tray,
+            None,
             "About USBGuard GUI",
             f"<b>USBGuard GUI</b> v{usbguard_gui.__version__}<br>"
             "KDE/Qt system tray GUI for USBGuard.<br><br>"

@@ -779,3 +779,48 @@ class TestLockAvailability:
 
         assert 1 in tray_app._hid_pending_devices
         qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
+
+
+# ---------------------------------------------------------------------------
+# About dialog: QMessageBox.about() expects a QWidget parent, not a
+# QSystemTrayIcon.  Passing the tray icon raises a TypeError inside the
+# slot, which PyQt6 escalates to qFatal → abort on the second invocation.
+# ---------------------------------------------------------------------------
+
+
+class TestShowAbout:
+    """The About dialog must not pass a non-QWidget as parent to
+    QMessageBox.about() — QSystemTrayIcon is a QObject, not a QWidget.
+    On the first click the TypeError is printed to stderr (dialog never
+    appears); on the second click PyQt6's error handler itself hits a
+    deleted object and aborts the process."""
+
+    def test_about_parent_is_widget_or_none(self, tray_app, mocker) -> None:
+        """QMessageBox.about must be called with None or a QWidget as parent.
+        Calling it twice matches the user's crash repro (first is a no-op,
+        second aborts)."""
+        from PyQt6.QtWidgets import QWidget
+
+        mock_about = mocker.patch("usbguard_gui.app.QMessageBox.about")
+
+        # Trigger the About action twice — the second call is what aborts
+        # in production.
+        tray_app._show_about()
+        tray_app._show_about()
+
+        assert mock_about.call_count == 2
+        for call in mock_about.call_args_list:
+            parent = call.args[0]
+            assert parent is None or isinstance(parent, QWidget), (
+                f"QMessageBox.about called with {type(parent).__name__} as parent, "
+                "expected None or QWidget"
+            )
+
+    def test_about_dialog_shows(self, tray_app, mocker) -> None:
+        """The About action must actually show a message box (not silently
+        fail due to a type error)."""
+        mock_about = mocker.patch("usbguard_gui.app.QMessageBox.about", return_value=0)
+
+        tray_app._show_about()
+
+        mock_about.assert_called_once()
