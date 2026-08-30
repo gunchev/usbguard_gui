@@ -115,6 +115,9 @@ class Device:
     def class_description_string(self) -> str:
         return ", ".join(sorted(self.class_descriptions()))
 
+    # Not currently called from application code beyond their own test —
+    # kept intentionally as public accessors for vendor/product id (e.g. for
+    # a future device-list column or USB-ID-database lookups), not dead code.
     @property
     def vendor_id(self) -> str | None:
         parts = self.id.split(":")
