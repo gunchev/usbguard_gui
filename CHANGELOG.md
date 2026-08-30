@@ -1,3 +1,21 @@
+## 0.7.0 — 2026-08-30
+
+### Changes since v0.6.0
+
+- 55d9786 ci: test against all available Python versions (3.10–3.15)
+- 623a49b Fix test suite problems and minor issues from review
+- f3f8f0d refactor(app): rename screensaver slots to what they actually do
+- 6a8afd6 fix(screensaver): disable all allow/deny functionality while lock is unavailable
+- 652c6fb fix(device_dialog): no default button — Enter can no longer pick an action
+- cf1e7ca fix(lifecycle): bound worker-thread wait in stop() with terminate() fallback
+- d1c613b feat(dbus_client): detect daemon loss/appearance via NameOwnerChanged
+- 74d658a fix(ui): warn instead of silently dropping actions while daemon is disconnected
+- cee07d5 fix(device_list): do not remove permanent allow rules on temporary allow
+- 945c742 fix(dbus_client): recycle worker thread on reconnect, make backoff real
+- 2f7e823 fix(app): only auto-allow pending HID devices while the screen is locked
+- 3b4cf54 Bump actions/checkout from 7.0.0 to 7.0.1
+- 8106029 Bump actions/checkout from 4.3.1 to 7.0.0
+
 ## 0.6.0 — 2026-06-24
 
 ### Changes since v0.5.1
