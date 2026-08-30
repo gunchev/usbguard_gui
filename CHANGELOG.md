@@ -1,3 +1,10 @@
+## 0.7.2 — 2026-08-30
+
+### Changes since v0.7.1
+
+- 22f891c refactor: rename Reject button to Close and make it the default
+- 86b481d ci: install -devel packages for all Python versions
+
 ## 0.7.1 — 2026-08-30
 
 ### Changes since v0.7.0
