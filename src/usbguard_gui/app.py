@@ -65,8 +65,13 @@ HID_LOCK_NOTIFY_DELAY_MS = 5000
 class USBGuardTrayApp:
     """System tray application for USBGuard."""
 
-    def __init__(self, app: QApplication) -> None:
+    def __init__(self, app: QApplication, lock_file: QLockFile | None = None) -> None:
         self._app = app
+        # Single-instance QLockFile, if any: held here (rather than left as
+        # a local in main(), kept alive only by app.exec() blocking in the
+        # same stack frame) so _quit() can explicitly release it instead of
+        # relying on process exit.
+        self._instance_lock = lock_file
         self._client = USBGuardClient()
         self._screensaver = ScreensaverMonitor()
         self._settings = Settings()
@@ -485,6 +490,8 @@ class USBGuardTrayApp:
         self._tray.hide()
         self._client.stop()
         self._screensaver.stop()
+        if self._instance_lock is not None:
+            self._instance_lock.unlock()
         self._app.quit()
 
 
@@ -514,8 +521,8 @@ def main() -> None:
     runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.RuntimeLocation)
     if not runtime_dir:
         runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
-    _lock = QLockFile(f"{runtime_dir}/usbguard_gui.lock")
-    if not _lock.tryLock():
+    lock_file = QLockFile(f"{runtime_dir}/usbguard_gui.lock")
+    if not lock_file.tryLock():
         QMessageBox.warning(None, "USBGuard GUI", "Another instance is already running.")
         sys.exit(0)
 
@@ -523,7 +530,7 @@ def main() -> None:
         QMessageBox.critical(None, "USBGuard GUI", "System tray is not available.")
         sys.exit(1)
 
-    tray_app = USBGuardTrayApp(app)
+    tray_app = USBGuardTrayApp(app, lock_file=lock_file)
     tray_app.start()
 
     sys.exit(app.exec())

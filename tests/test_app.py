@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -205,6 +205,37 @@ def tray_app(qapp, fake_client, fake_screensaver, qtbot):
     ):
         app = USBGuardTrayApp(qapp)
     return app
+
+
+# ---------------------------------------------------------------------------
+# Single-instance lock lifetime
+# ---------------------------------------------------------------------------
+
+
+class TestQuitUnlocksInstanceLock:
+    """_quit() must explicitly unlock() the single-instance QLockFile rather
+    than relying on process exit to release it — so a future refactor that
+    moves _quit()'s callers out of the stack frame holding the lock can't
+    silently skip releasing it."""
+
+    def test_quit_unlocks_instance_lock(self, qapp, fake_client, fake_screensaver) -> None:
+        from usbguard_gui.app import USBGuardTrayApp
+
+        mock_lock = MagicMock()
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp, lock_file=mock_lock)
+
+        app._quit()
+
+        mock_lock.unlock.assert_called_once()
+
+    def test_quit_without_lock_file_does_not_raise(self, tray_app) -> None:
+        """Callers that don't pass a lock_file (e.g. existing tests) must
+        still be able to call _quit() safely."""
+        tray_app._quit()
 
 
 # ---------------------------------------------------------------------------
