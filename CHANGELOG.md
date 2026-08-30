@@ -1,3 +1,9 @@
+## 0.7.3 — 2026-08-30
+
+### Changes since v0.7.2
+
+- 6757fb8 fix: About dialog passes QSystemTrayIcon as QWidget parent
+
 ## 0.7.2 — 2026-08-30
 
 ### Changes since v0.7.1
