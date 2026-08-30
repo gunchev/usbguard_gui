@@ -1,3 +1,10 @@
+## 0.7.1 — 2026-08-30
+
+### Changes since v0.7.0
+
+- 2e415d1 feat: add About entry to tray context menu
+- 73545c9 docs: fix remaining 'lint + tests' reference in pre-commit checklist
+
 ## 0.7.0 — 2026-08-30
 
 ### Changes since v0.6.0
