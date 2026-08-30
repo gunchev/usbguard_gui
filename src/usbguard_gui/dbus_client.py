@@ -50,6 +50,28 @@ def _is_permission_error(e: DBusError) -> bool:
     return "Not authorized" in msg or "AccessDenied" in msg
 
 
+# D-Bus error types that indicate the transport/session itself is broken
+# (daemon gone, bus torn down) rather than an ordinary per-call failure
+# (bad device id, unknown rule id, ...). Only these should flip the
+# connection state and trigger a full reconnect.
+_CONNECTION_ERRORS = frozenset(
+    [
+        "org.freedesktop.DBus.Error.ServiceUnknown",
+        "org.freedesktop.DBus.Error.NameHasNoOwner",
+        "org.freedesktop.DBus.Error.NoReply",
+        "org.freedesktop.DBus.Error.Disconnected",
+        "org.freedesktop.DBus.Error.Timeout",
+        "org.freedesktop.DBus.Error.IOError",
+        "org.freedesktop.DBus.Error.NoServer",
+        "org.freedesktop.DBus.Error.NoNetwork",
+    ]
+)
+
+
+def _is_connection_error(e: DBusError) -> bool:
+    return (getattr(e, "type", "") or "") in _CONNECTION_ERRORS
+
+
 def _get_introspection(filename: str) -> str:
     module_dir = os.path.dirname(__file__)
     path = os.path.join(module_dir, "introspection", filename)
@@ -250,7 +272,8 @@ class _DBusThread(QThread):
                     permanent,
                     e,
                 )
-                self._set_connected(False)
+                if _is_connection_error(e):
+                    self._set_connected(False)
 
     async def _do_list_rules(self, label: str) -> None:
         try:
@@ -259,7 +282,7 @@ class _DBusThread(QThread):
             self.list_rules_result.emit(rules)
         except DBusError as e:
             log.error("Failed to list rules (label='%s'): %s", label, e)
-            if not _is_permission_error(e):
+            if _is_connection_error(e):
                 self._set_connected(False)
             self.list_rules_result.emit([])
 
@@ -273,7 +296,8 @@ class _DBusThread(QThread):
                 log.error("Not authorized to remove rule %d", rule_id)
             else:
                 log.error("Failed to remove rule %d: %s", rule_id, e)
-                self._set_connected(False)
+                if _is_connection_error(e):
+                    self._set_connected(False)
             self.remove_rule_result.emit(False)
 
     def list_devices(self, query: str = "match") -> None:

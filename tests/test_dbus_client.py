@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from usbguard_gui.dbus_client import USBGuardClient, _DBusThread, _is_permission_error
+from usbguard_gui.dbus_client import USBGuardClient, _DBusThread, _is_connection_error, _is_permission_error
 from usbguard_gui.device import DeviceTarget
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -126,6 +126,52 @@ class TestIsPermissionError:
 
         e = DBusError(ErrorType.SERVICE_UNKNOWN, "Service unavailable")
         assert _is_permission_error(e) is False
+
+
+class TestIsConnectionError:
+    """Test _is_connection_error function: only errors that indicate the
+    transport/session itself is broken (daemon gone, bus torn down) should
+    be classified as connection errors — ordinary per-call failures (bad
+    device id, unknown rule id) must not be."""
+
+    def test_service_unknown_is_connection_error(self):
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.SERVICE_UNKNOWN, "The name is not owned")
+        assert _is_connection_error(e) is True
+
+    def test_name_has_no_owner_is_connection_error(self):
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.NAME_HAS_NO_OWNER, "no owner")
+        assert _is_connection_error(e) is True
+
+    def test_no_reply_is_connection_error(self):
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.NO_REPLY, "no reply")
+        assert _is_connection_error(e) is True
+
+    def test_disconnected_is_connection_error(self):
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.DISCONNECTED, "connection closed")
+        assert _is_connection_error(e) is True
+
+    def test_business_logic_error_is_not_connection_error(self):
+        """A generic 'Failed' error for an ordinary per-call failure (e.g.
+        applying policy to a device that was just unplugged) must not be
+        mistaken for a broken transport."""
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.FAILED, "No such device")
+        assert _is_connection_error(e) is False
+
+    def test_permission_error_is_not_connection_error(self):
+        from dbus_fast import DBusError, ErrorType
+
+        e = DBusError(ErrorType.ACCESS_DENIED, "test")
+        assert _is_connection_error(e) is False
 
 
 class TestUSBGuardClient:
@@ -689,3 +735,136 @@ class TestDBusThreadFastFail:
         assert emitted == [[]]  # still just the earlier fast-fail
         thread._loop.call_soon_threadsafe.assert_called_once()
         self._close_captured_coros(thread._loop)
+
+
+class TestConnectionDropNarrowing:
+    """_do_apply_policy/_do_list_rules/_do_remove_rule must only flip
+    _connected on errors that indicate a broken transport/session — an
+    ordinary per-call failure (e.g. applying policy to a device that was
+    unplugged a moment earlier) must not trigger a full reconnect."""
+
+    def _thread(self) -> _DBusThread:
+        thread = _DBusThread()
+        thread._connected = True
+        thread._devices_iface = MagicMock()
+        thread._policy_iface = MagicMock()
+        return thread
+
+    def _events(self, thread: _DBusThread) -> list[bool]:
+        events: list[bool] = []
+        thread.connection_changed.connect(lambda v: events.append(v))
+        return events
+
+    # -- apply_device_policy --------------------------------------------
+
+    def test_apply_policy_business_error_does_not_disconnect(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.FAILED, "No such device")
+
+        thread._devices_iface.call_apply_device_policy = raise_error
+
+        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, False))
+
+        assert thread._connected is True
+        assert events == []
+
+    def test_apply_policy_connection_error_disconnects(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.SERVICE_UNKNOWN, "gone")
+
+        thread._devices_iface.call_apply_device_policy = raise_error
+
+        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, False))
+
+        assert thread._connected is False
+        assert events == [False]
+
+    # -- list_rules -------------------------------------------------------
+
+    def test_list_rules_business_error_does_not_disconnect(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.FAILED, "bad label")
+
+        thread._policy_iface.call_list_rules = raise_error
+
+        asyncio.run(thread._do_list_rules(""))
+
+        assert thread._connected is True
+        assert events == []
+
+    def test_list_rules_connection_error_disconnects(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.NO_REPLY, "gone")
+
+        thread._policy_iface.call_list_rules = raise_error
+
+        asyncio.run(thread._do_list_rules(""))
+
+        assert thread._connected is False
+        assert events == [False]
+
+    # -- remove_rule --------------------------------------------------------
+
+    def test_remove_rule_business_error_does_not_disconnect(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.FAILED, "unknown rule id")
+
+        thread._policy_iface.call_remove_rule = raise_error
+
+        asyncio.run(thread._do_remove_rule(42))
+
+        assert thread._connected is True
+        assert events == []
+
+    def test_remove_rule_connection_error_disconnects(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        events = self._events(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.DISCONNECTED, "gone")
+
+        thread._policy_iface.call_remove_rule = raise_error
+
+        asyncio.run(thread._do_remove_rule(42))
+
+        assert thread._connected is False
+        assert events == [False]
