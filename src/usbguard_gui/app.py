@@ -217,6 +217,16 @@ class USBGuardTrayApp:
                 if any(d.number == device_number for d in devices):
                     self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
         elif self._screensaver_pending_id_queue:
+            if not devices:
+                # An empty snapshot means the list call fast-failed (daemon
+                # disconnected) or hit a DBusError — do NOT consume the
+                # queued id set: the pending devices may still be present,
+                # and the next real snapshot must still get the chance to
+                # surface them.  A legitimately empty device list just
+                # defers consumption until the next non-empty result, at
+                # which point stale ids (device unplugged) fail to match
+                # and are dropped harmlessly.
+                return
             # FIFO: results are assumed to arrive in the order their
             # list_devices() calls were issued, so the oldest queued id set
             # belongs to this result.

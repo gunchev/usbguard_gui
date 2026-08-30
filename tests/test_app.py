@@ -519,6 +519,46 @@ class TestOverlappingUnlockCycles:
         for dialog in list(tray_app._open_dialogs.values()):
             dialog.close()
 
+    def test_failed_result_does_not_consume_queued_ids(self, tray_app, fake_client, fake_screensaver) -> None:
+        """An empty snapshot — the list call fast-failed while the daemon
+        was disconnected, or hit a DBusError — must not consume the queued
+        id set: the next real snapshot must still surface the prompt."""
+        device_a = Device.from_dbus(10, self._RULE_A)
+
+        tray_app._screensaver_pending_devices = {10}
+        tray_app._on_screensaver_unlocked(False)
+        assert fake_client.list_devices_calls == 1
+
+        # The in-flight list call fails (e.g. daemon briefly disconnected):
+        # an empty snapshot arrives.
+        fake_client.list_devices_result.emit([])
+        assert 10 not in tray_app._open_dialogs
+        assert tray_app._screensaver_pending_id_queue == [[10]], (
+            "a failed result must not consume the queued id set"
+        )
+
+        # The next real snapshot surfaces A's prompt after all:
+        fake_client.list_devices_result.emit([device_a])
+        assert 10 in tray_app._open_dialogs
+
+        for dialog in list(tray_app._open_dialogs.values()):
+            dialog.close()
+
+    def test_stale_ids_dropped_when_device_gone(self, tray_app, fake_client, fake_screensaver) -> None:
+        """If the deferred device is gone by the time the next real snapshot
+        arrives (unplugged during the failed window), the stale queued id
+        set is consumed and dropped without prompting."""
+
+        tray_app._screensaver_pending_devices = {10}
+        tray_app._on_screensaver_unlocked(False)
+
+        fake_client.list_devices_result.emit([])
+        # Next real snapshot does not contain A (it was unplugged):
+        fake_client.list_devices_result.emit([Device.from_dbus(30, self._RULE_B)])
+
+        assert 10 not in tray_app._open_dialogs
+        assert tray_app._screensaver_pending_id_queue == []
+
 
 # ---------------------------------------------------------------------------
 # HID handling when screen lock is inhibited
