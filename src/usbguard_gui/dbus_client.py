@@ -199,11 +199,11 @@ class _DBusThread(AsyncWorkerThread):
         self._set_connected(bool(new_owner))
 
     def _on_device_presence_changed(self, device_id: int, event: int, target: int, device_rule: str,
-                                    attributes: dict) -> None:
+                                    attributes: dict[str, str]) -> None:
         self.device_presence_changed.emit(device_id, event, target, device_rule, attributes)
 
     def _on_device_policy_changed(self, device_id: int, target_old: int, target_new: int, device_rule: str,
-                                  rule_id: int, attributes: dict) -> None:
+                                  rule_id: int, attributes: dict[str, str]) -> None:
         self.device_policy_changed.emit(device_id, target_old, target_new, device_rule, rule_id, attributes)
 
     async def _do_list_devices(self, query: str) -> None:
