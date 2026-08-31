@@ -124,12 +124,8 @@ class DeviceTableModel(QAbstractTableModel):
 class DeviceListWindow(QMainWindow):
     """Window displaying all USB devices with context-menu actions."""
 
-    def __init__(
-        self,
-        client: USBGuardClient,
-        parent: QWidget | None = None,
-        screensaver: ScreensaverMonitor | None = None,
-    ) -> None:
+    def __init__(self, client: USBGuardClient, parent: QWidget | None = None,
+                 screensaver: ScreensaverMonitor | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._screensaver = screensaver

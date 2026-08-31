@@ -10,15 +10,8 @@ from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.dbus_common import (
-    DBUS_BUS_NAME,
-    DBUS_BUS_PATH,
-    DBUS_IFACE,
-    THREAD_STOP_TIMEOUT_MS,
-    AsyncWorkerThread,
-    get_introspection,
-    stop_worker_thread,
-)
+from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
+    AsyncWorkerThread, get_introspection, stop_worker_thread
 from usbguard_gui.device import Device, DeviceTarget
 
 log = logging.getLogger(__name__)
@@ -205,20 +198,12 @@ class _DBusThread(AsyncWorkerThread):
             log.warning("USBGuard daemon left the bus (was %s)", old_owner)
         self._set_connected(bool(new_owner))
 
-    def _on_device_presence_changed(
-        self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
-    ) -> None:
+    def _on_device_presence_changed(self, device_id: int, event: int, target: int, device_rule: str,
+                                    attributes: dict) -> None:
         self.device_presence_changed.emit(device_id, event, target, device_rule, attributes)
 
-    def _on_device_policy_changed(
-        self,
-        device_id: int,
-        target_old: int,
-        target_new: int,
-        device_rule: str,
-        rule_id: int,
-        attributes: dict,
-    ) -> None:
+    def _on_device_policy_changed(self, device_id: int, target_old: int, target_new: int, device_rule: str,
+                                  rule_id: int, attributes: dict) -> None:
         self.device_policy_changed.emit(device_id, target_old, target_new, device_rule, rule_id, attributes)
 
     async def _do_list_devices(self, query: str) -> None:

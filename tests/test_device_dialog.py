@@ -239,9 +239,8 @@ class TestDialogConnectionWarning:
             ("_on_close", DeviceTarget.REJECT, False),
         ],
     )
-    def test_all_actions_record_choice_when_connected(
-        self, qapp, qtbot, mocker, handler: str, target: DeviceTarget, permanent: bool
-    ) -> None:
+    def test_all_actions_record_choice_when_connected(self, qapp, qtbot, mocker, handler: str, target: DeviceTarget,
+                                                      permanent: bool) -> None:
         client = _FakeClient(connected=True)
         dialog = DeviceActionDialog(_make_device(), client)
         qtbot.addWidget(dialog)

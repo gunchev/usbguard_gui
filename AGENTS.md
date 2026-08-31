@@ -53,6 +53,21 @@ make run           # sync dev deps and run app
 - **Final newline**: required
 - See `.editorconfig` for additional editor-specific settings
 
+### Function Signature Wrapping
+
+Prefer dense signatures: pack as many parameters as fit on the `def` line
+(max 120 cols) rather than one parameter per line. Wrap the remainder on
+continuation lines, visually aligned under the first parameter, keeping
+the closing paren and return annotation on the last parameter line:
+
+```python
+def _on_device_policy_changed(self, device_id: int, target_old: int, target_new: int, device_rule: str,
+                              rule_id: int, attributes: dict[str, str]) -> None:
+```
+
+autopep8 enforces the visual alignment (`make lint` flags it, `make
+format` fixes it); the density preference is enforced by review.
+
 ### Linter/Formatter Configuration (pyproject.toml)
 
 ```toml

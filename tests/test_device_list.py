@@ -247,9 +247,8 @@ class TestApplyLockUnavailable:
 
     @pytest.mark.parametrize("target,permanent", [(DeviceTarget.ALLOW, True), (DeviceTarget.ALLOW, False),
                                                   (DeviceTarget.BLOCK, False), (DeviceTarget.REJECT, False)])
-    def test_apply_warns_and_does_not_apply_when_lock_unavailable(
-        self, window, client, screensaver, mocker, target: DeviceTarget, permanent: bool
-    ) -> None:
+    def test_apply_warns_and_does_not_apply_when_lock_unavailable(self, window, client, screensaver, mocker,
+                                                                  target: DeviceTarget, permanent: bool) -> None:
         from PyQt6.QtWidgets import QMessageBox
 
         screensaver._connected = False

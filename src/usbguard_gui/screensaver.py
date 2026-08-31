@@ -11,15 +11,8 @@ from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.dbus_common import (
-    DBUS_BUS_NAME,
-    DBUS_BUS_PATH,
-    DBUS_IFACE,
-    THREAD_STOP_TIMEOUT_MS,
-    AsyncWorkerThread,
-    get_introspection,
-    stop_worker_thread,
-)
+from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
+    AsyncWorkerThread, get_introspection, stop_worker_thread
 
 log = logging.getLogger(__name__)
 

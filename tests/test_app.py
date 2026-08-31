@@ -572,9 +572,7 @@ class TestHIDWhenLockInhibited:
     device must go through the same prompt path as the 'Disable special HID
     device treatment' setting."""
 
-    def test_hid_insert_triggers_prompt_when_inhibited(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_hid_insert_triggers_prompt_when_inhibited(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         fake_screensaver._inhibited = True
 
         with patch.object(tray_app, "_show_device_dialog") as show_dialog:
@@ -591,9 +589,7 @@ class TestHIDWhenLockInhibited:
         assert fake_screensaver.lock_calls == 0
         assert tray_app._hid_pending_devices == set()
 
-    def test_hid_insert_auto_allows_when_not_inhibited(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_hid_insert_auto_allows_when_not_inhibited(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """Regression guard: the inhibit check must not break the default HID path."""
         fake_screensaver._inhibited = False
 
@@ -612,9 +608,8 @@ class TestHIDWhenLockInhibited:
         assert fake_client.apply_policy_calls == []
         qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
-    def test_hid_insert_while_locked_and_inhibited_prompts(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_hid_insert_while_locked_and_inhibited_prompts(self, tray_app, fake_client, fake_screensaver,
+                                                           qtbot) -> None:
         """Even with the screen already locked, an inhibit must block the auto-allow."""
         fake_screensaver._inhibited = True
         fake_screensaver._active = True
@@ -647,9 +642,7 @@ class TestHIDPermanentlyAllowed:
     skipped.
     """
 
-    def test_allowed_hid_skipped_when_target_allow(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_allowed_hid_skipped_when_target_allow(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """When target=ALLOW, the device is skipped entirely (existing behaviour)."""
         fake_client.device_presence_changed.emit(
             1, 1, int(DeviceTarget.ALLOW),
@@ -662,9 +655,7 @@ class TestHIDPermanentlyAllowed:
         assert tray_app._hid_pending_devices == set()
         assert fake_screensaver.lock_calls == 0
 
-    def test_allowed_hid_skipped_when_hash_in_cache(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_allowed_hid_skipped_when_hash_in_cache(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """A HID device whose hash matches _permanent_allow_hashes must not
         trigger the screen lock, even though target=BLOCK."""
         tray_app._permanent_allow_hashes.add("abc123")
@@ -681,9 +672,8 @@ class TestHIDPermanentlyAllowed:
         assert fake_screensaver.lock_calls == 0
         assert fake_client.apply_policy_calls == []
 
-    def test_allowed_hid_skipped_when_hash_in_cache_multiple(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_allowed_hid_skipped_when_hash_in_cache_multiple(self, tray_app, fake_client, fake_screensaver,
+                                                             qtbot) -> None:
         """Multiple hashes in the cache: matching device is skipped,
         non-matching device still triggers lock."""
         tray_app._permanent_allow_hashes.add("abc123")
@@ -700,9 +690,8 @@ class TestHIDPermanentlyAllowed:
         assert tray_app._hid_pending_devices == set()
         assert fake_screensaver.lock_calls == 0
 
-    def test_allowed_hid_without_hash_in_cache_triggers_lock(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_allowed_hid_without_hash_in_cache_triggers_lock(self, tray_app, fake_client, fake_screensaver,
+                                                             qtbot) -> None:
         """A HID device whose hash is NOT in the cache triggers the lock."""
         tray_app._permanent_allow_hashes.add("other_hash")
 
@@ -717,9 +706,7 @@ class TestHIDPermanentlyAllowed:
         assert 1 in tray_app._hid_pending_devices
         qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
-    def test_allowed_hid_empty_hash_not_matched(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_allowed_hid_empty_hash_not_matched(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """A device with an empty hash (malformed rule) must not be skipped
         even if the cache has entries."""
         tray_app._permanent_allow_hashes.add("abc123")
@@ -735,9 +722,7 @@ class TestHIDPermanentlyAllowed:
         assert 1 in tray_app._hid_pending_devices
         qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
-    def test_blocked_hid_device_still_triggers_lock(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_blocked_hid_device_still_triggers_lock(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """Regression guard: a blocked HID device (not in cache) triggers the
         screen lock immediately."""
         fake_client.device_presence_changed.emit(
@@ -751,9 +736,7 @@ class TestHIDPermanentlyAllowed:
         assert 2 in tray_app._hid_pending_devices
         qtbot.waitUntil(lambda: fake_screensaver.lock_calls == 1, timeout=8000)
 
-    def test_cache_seeded_by_policy_changed_with_rule_id(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_cache_seeded_by_policy_changed_with_rule_id(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         """When DevicePolicyChanged fires with ALLOW and rule_id>0, the
         device's hash is added to the cache for future insertions."""
         fake_client.device_policy_changed.emit(
@@ -769,9 +752,8 @@ class TestHIDPermanentlyAllowed:
 
         assert "abc123" in tray_app._permanent_allow_hashes
 
-    def test_cache_not_seeded_by_policy_changed_without_rule_id(
-        self, tray_app, fake_client, fake_screensaver, qtbot
-    ) -> None:
+    def test_cache_not_seeded_by_policy_changed_without_rule_id(self, tray_app, fake_client, fake_screensaver,
+                                                                qtbot) -> None:
         """PolicyChanged with ALLOW but rule_id==0 (temporary rule) must not
         seed the cache."""
         fake_client.device_policy_changed.emit(

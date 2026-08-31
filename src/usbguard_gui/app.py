@@ -277,9 +277,8 @@ class USBGuardTrayApp:
         log.debug("Connection attempt failed, retrying in %d seconds", backoff)
         self._reconnect_timer.start()
 
-    def _on_device_presence_changed(
-        self, device_id: int, event: int, target: int, device_rule: str, attributes: dict
-    ) -> None:
+    def _on_device_presence_changed(self, device_id: int, event: int, target: int, device_rule: str,
+                                    attributes: dict) -> None:
         try:
             log.debug(
                 "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
@@ -388,9 +387,8 @@ class USBGuardTrayApp:
         except Exception as e:
             log.exception("Error in _on_device_presence_changed for device %d: %s", device_id, e)
 
-    def _on_device_policy_changed(
-        self, device_id: int, target_old: int, target_new: int, device_rule: str, rule_id: int, attributes: dict
-    ) -> None:
+    def _on_device_policy_changed(self, device_id: int, target_old: int, target_new: int, device_rule: str,
+                                  rule_id: int, attributes: dict) -> None:
         try:
             log.debug(
                 "DevicePolicyChanged: id=%d %s->%s",

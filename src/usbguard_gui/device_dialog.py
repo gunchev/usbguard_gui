@@ -27,14 +27,8 @@ class DeviceActionDialog(QDialog):
     If no action is taken within the timeout, the device remains blocked.
     """
 
-    def __init__(
-        self,
-        device: Device,
-        client: USBGuardClient,
-        parent: QWidget | None = None,
-        timeout: int = DEFAULT_TIMEOUT,
-        screensaver: ScreensaverMonitor | None = None,
-    ) -> None:
+    def __init__(self, device: Device, client: USBGuardClient, parent: QWidget | None = None,
+                 timeout: int = DEFAULT_TIMEOUT, screensaver: ScreensaverMonitor | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self._client = client
