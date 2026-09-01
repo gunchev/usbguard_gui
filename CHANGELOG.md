@@ -1,3 +1,28 @@
+## 0.7.4 — 2026-09-01
+
+### Changes since v0.7.3
+
+- d97bade docs: versioned TODO roadmap; move DESIGN/AUDIT/REVIEW into docs/
+- 2ff14b5 refactor: annotate D-Bus signal attributes as dict[str, str]
+- b0b9210 style: dense function signatures and compact imports; codify in AGENTS.md
+- 3acb414 docs: update DESIGN.md for dbus_common, NameOwnerChanged watches, and connection-error narrowing
+- 0320f25 fix: re-seed screensaver active state when the service re-appears
+- 930ec5e fix: empty list result no longer consumes queued unlock-cycle ids
+- e97e22a docs: note that USBGuardClient.remove_rule is intentionally kept
+- 3789216 chore: remove stale REVIEW.md
+- 5b0dfe2 fix: make QLockFile lifetime explicit, unlock it in _quit()
+- d2a6104 docs: note that Device.vendor_id/product_id are intentionally kept
+- 414a05b refactor: extract shared D-Bus worker-thread helpers into dbus_common.py
+- 437399b fix: specify utf-8 encoding when reading bundled introspection XML
+- 19353e0 fix: detect screensaver service loss proactively via NameOwnerChanged
+- 6a3b81f fix: narrow connection-drop trigger in _do_list_devices too
+- 114a735 fix: narrow connection-drop trigger to real transport errors
+- b42eb33 fix: overlapping screensaver-unlock cycles no longer drop device prompts
+- 5ad7454 test: fix race in screensaver retry test
+- 84efcd5 fix: DeviceActionDialog no longer leaks itself via connection_changed
+- f3fc284 Credit pi and qwen.
+- 8cea7c6 New screenshot.
+
 ## 0.7.3 — 2026-08-30
 
 ### Changes since v0.7.2
