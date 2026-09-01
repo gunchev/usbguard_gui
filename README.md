@@ -145,6 +145,9 @@ usbguard_gui
   - `device_list.py` — Device management window.
   - `device_dialog.py` — Device action dialog.
 
+Architecture details: [docs/DESIGN.md](docs/DESIGN.md). Past audit and review
+reports live in `docs/`.
+
 ## Development
 
 ```bash

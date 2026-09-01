@@ -1,9 +1,32 @@
-# TODO
+# Roadmap
 
-- [ ] [Integrate with COPR](https://docs.pagure.org/copr.copr/user_documentation.html#make-srpm) (see .copr/Makefile).
-  - Partially done, source RPM upload works.
-- [x] Any local users and a wheel only users packages plus core (polkit).
-- [x] Fix the screen locking inhibition. (Claude Opus 4.6)
-  - `systemd-inhibit --what=idle --who=test --why=test sleep 8` works.
-- [x] Option to stop the special HID Device handling. (Co-authored-by: OpenCode big-pickle, Claude Sonnet 4.6?)
-- [x] Circuit Breaker Pattern for USBGuard Client. (Claude Opus 4.6)
+## 1.0
+
+- [x] COPR integration (src-rpm upload, rebuild flow)
+  - [ ] Verify GitHub→COPR webhook fires a build on tag (test on the v1.0 release; fallback: manual rebuild from the packages page)
+- [ ] Unlock-queue race: correlated per-call device fetch (Option 3) — `fetch_devices()` + `list_devices_correlated(id, devices)`,
+      id→id-set dict in the app, device-list window untouched. Closes AUDIT follow-up items 2 & 3.
+- [ ] Polkit policy subpackages: `usbguard_gui-policy-open` (recommended default, all local console sessions) +
+      `usbguard_gui-policy-strict` (wheel-only), mutual Conflicts, README trade-off section, both rules kept in `rpm/`
+      for non-RPM installs. No-policy mode = admin password per action (fail-closed, documented).
+- [ ] Catch-all policy detection: bare `allow`/`reject` rule in the ruleset → persistent tray-tooltip warning +
+      one notification per session + "dead" tray icon variant (second SVG in RPM/theme + dev-mode fallback).
+- [ ] Lock-gate refinement: gate HID-capable devices only, and only while special HID treatment is enabled and
+      screen locking is unavailable (DESIGN.md contract + dialog/device-list gating + notification text + tests).
+      Treatment disabled ⇒ no gating at all; lock-availability changes are log-only then.
+- [ ] Test on LXQT (and XFCE if that machine is reachable).
+- [x] Docs reorg: `DESIGN.md`, `AUDIT.md`, `REVIEW-2026-08-28.md`, `REVIEW-2026-08-30.md` → `docs/` (tracked), README pointer.
+- [ ] Release v1.0 (`release.py`; doubles as the first webhook verification).
+
+## Post-1.0
+
+- [ ] Broader DE testing: GNOME (with systray extension), XFCE, others.
+- [ ] UI to manage permanent rules (edit/disable).
+- [ ] Warn when an action would disable the last keyboard/mouse HID.
+
+## Completed (pre-1.0)
+
+- [x] Any local users and a wheel-only users packages plus core (polkit) — realized as the 1.0 subpackages above.
+- [x] Fix the screen locking inhibition.
+- [x] Option to stop the special HID device handling.
+- [x] Circuit Breaker Pattern for USBGuard Client.

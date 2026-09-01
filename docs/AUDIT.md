@@ -1,0 +1,146 @@
+# Audit Report for usbguard_gui
+
+**Date:** 2026-06-15
+**Auditor:** opencode (grok-build-0.1)
+**Scope:** Full project audit for bugs, errors, flaws (static analysis, tests, manual code review, style, security, patterns per AGENTS.md).
+**Commands run:** `uv run ruff check`, `uv run autopep8 --diff`, `uv run pytest -v --cov`, syntax/AST checks, file greps, source reads of all modules + tests + configs + intros + CI + docs.
+
+## Summary
+
+**No critical bugs or runtime errors found.**
+All 145 tests pass (`uv run pytest`).
+Ruff lint: clean ("All checks passed").
+autopep8: clean (no diffs).
+Coverage: 80%.
+Code largely follows AGENTS.md (types on public APIs, `from __future__ import annotations`, LF + final newline, dataclasses + IntEnum, logging, Qt/PyQt6 patterns, D-Bus error handling, etc.).
+Introspection XMLs are correctly packaged and loadable from the installed wheel.
+Strong, well-tested HID + screensaver + lock logic with many edge cases covered.
+
+## Strengths
+- Excellent D-Bus permission error handling (`_is_permission_error`, special logging for polkit).
+- Robust signal-based architecture (QThread + asyncio for dbus-fast, no GLib dep).
+- Defensive coding for HID (keystroke injection defense), screensaver deferral, inhibitor detection (logind), permanent allow hash caching, race conditions (device removal before lock).
+- Tests are comprehensive for logic (parametrized, good use of mocks, no connection leaks in refresh tests).
+- Follows pre-commit checklist patterns; no bare `except:`, no `print()`, no secrets in logs.
+- Lockfile singleton guard, SIGUSR1 restart for updates, settings singleton (thread-safe).
+- CI uses podman/Fedora + tox + offscreen Qt for headless testing.
+
+## Issues / Flaws / Risks (prioritized)
+
+### High / Correctness / Type Issues
+- **Incorrect type annotation (2 locations):** ✅ RESOLVED 2026-06-15
+  `coro: asyncio.coroutine` in `dbus_client.py:141` and `screensaver.py:185`.
+  `asyncio.coroutine` does not exist in Python 3.11+ (the attribute was removed). The annotation is stringified due to `from __future__ import annotations`, so no runtime crash, but it is wrong for type checkers, IDEs, and documentation.
+  **Fix:** Use `collections.abc.Coroutine[Any, Any, Any]` (or `asyncio.Future[object]` etc.).
+- **_has_idle_block_inhibitor missing type:** ✅ RESOLVED 2026-06-15
+  `def _has_idle_block_inhibitor(inhibitors) -> bool:` (screensaver.py:151). Parameter is untyped (should be `list | tuple | None` or similar).
+  **Fix:** Annotated as `list[Any] | None`.
+
+### Style / Config / Maintainability
+- **Import sorting not enforced:** ✅ RESOLVED 2026-06-15
+  `I` (isort) rule is missing from `[tool.ruff.lint] select` in pyproject.toml (even though AGENTS.md explicitly says "Sort imports with ruff (I001)").
+  Two files had issues: `src/usbguard_gui/device_list.py` and `tests/test_device_list.py` (stdlib imports after local, PyQt before stdlib, etc.). `ruff check --select I` reports I001. (Temporarily fixed during audit then reverted.)
+  **Fix:** Added `"I"` to ruff select; ran `ruff check --fix --select I` to correct both files.
+- **open() without encoding (best practice violation):** ✅ RESOLVED 2026-08-30
+  `dbus_client.py:43` and `screensaver.py:33` (`_get_introspection`): `with open(path) as f:`. Although the XML files are ASCII, this can cause issues under unusual locales. Add `encoding="utf-8"`.
+  **Fix:** Both reads now go through the shared `dbus_common.get_introspection()`, which opens with `encoding="utf-8"` (`437399b`).
+- **Code duplication:** ✅ RESOLVED 2026-08-30
+  `_get_introspection` helper + module-level preloaded `_*_INTROSPECTION` constants are duplicated between `dbus_client.py` and `screensaver.py`. Minor extraction opportunity.
+  **Fix:** The helper now lives in `dbus_common.get_introspection()` (shared, `414a05b`); each module keeps only its own preloaded XML constants (the sole overlap, `_DBUS_INTROSPECTION`, is a single 3-line constant — not worth further deduplication).
+- **Long import continuations:** `device_list.py` uses `\` line continuations for Qt imports (within 120 cols but ugly).
+- **Outdated DESIGN.md:** ✅ RESOLVED 2026-06-15
+  Still references the abandoned `dev-glib` branch as "recommended" and has some stale signal names.
+  **Fix:** `67dc7d3` rewrote DESIGN.md for the shipped QThread + asyncio architecture; no `dev-glib` reference remains.
+
+### Robustness / Lifetime Issues
+- **QLockFile guard fragility (app.py:429):** ✅ RESOLVED 2026-08-30
+  `_lock = QLockFile(...)` is a local variable in `main()`. The lock is held only as long as the object lives (during `app.exec()`). On GC, exceptions before exec, or certain shutdown paths the lock can be released prematurely, allowing multiple instances. Common pattern but not robust.
+  **Better:** Store on the QApplication instance or as a module/global that lives for process lifetime. Call explicit `.unlock()` in `_quit()`.
+  **Fix:** `5b0dfe2` — the lock is held on `USBGuardTrayApp._instance_lock` (lives as long as the app object) and `.unlock()` is called explicitly in `_quit()`; covered by `TestQuitUnlocksInstanceLock`.
+- **Low coverage on UI code (inherent but notable):**
+  `device_dialog.py`: 24%, `screensaver.py`: 47%, `app.py`: 58%, `dbus_client.py`: 62%.
+  Dialog flows, tray activations, full error paths, and some reconnect logic are not exercised by unit tests (pytest-qt helps but interactive bits are hard). Core logic paths are well covered.
+- **Loose signal types:** Many Qt signals declared with bare `dict`, `list`, `int` instead of `dict[str, str]`, `list[Device]`, etc. (visible in dbus_client + app). Works at runtime.
+- **No static type checking in lint/CI:** ✅ RESOLVED 2026-06-15
+  pyqt6-stubs is in dev deps but never invoked. Ruff only (no mypy, pyright, or pyrefly). Several places would benefit (e.g. the coroutine annotation above).
+  **Fix:** Added `pyright` to dev deps, `[tool.pyright]` config in pyproject.toml, `make typecheck` target, and added `typecheck` to `make check`. 0 errors.
+
+### Minor / Hygiene
+- `enum: type` in `_enum_name(enum: type, ...)` (app.py:43) shadows the builtin `type`. Use `type[object]` or `Enum`. ✅ RESOLVED 2026-06-15 — changed to `type[Enum]`.
+- `vendor_id` / `product_id` properties (device.py:119-126) have slightly fragile split logic on malformed `id` strings (return partial strings instead of None in some cases).
+- Threaded D-Bus objects (`_DBusThread`, `_ScreensaverThread`) duplicate a lot of boilerplate (loop management, `_schedule`, stop flags, error emission). A small base class could help. ✅ RESOLVED 2026-08-30 — extracted `AsyncWorkerThread` (`_loop`/`_running`/`_schedule()`/`stop()`) plus `get_introspection()` and `stop_worker_thread()` into `dbus_common.py`.
+- `release.py` + Makefile RPM logic assume certain git state; shallow clones or missing tags can produce odd RPM_VER (but unit tests cover the helpers).
+- No explicit cleanup of QTimers / QLock in all paths (relies on QObject parent + process exit). ✅ PARTIALLY RESOLVED 2026-08-30 — the QLockFile is now held explicitly and unlocked in `_quit()` (`5b0dfe2`); the QTimers (`_reconnect_timer`, `_hid_lock_timer`, dialog/refresh timers) still rely on QObject parents + process exit.
+- `attributes: dict` everywhere from D-Bus (should be `dict[str, str]`).
+
+## Recommendations (for future work)
+1. ✅ Add `"I"` to ruff select in pyproject.toml + run `ruff check --fix`. DONE 2026-06-15.
+2. ✅ Fix the `asyncio.coroutine` annotations. DONE 2026-06-15. (open() encoding: DONE 2026-08-30.)
+3. ✅ Make QLockFile more robust (attach to app or use context). DONE 2026-08-30 (`5b0dfe2`: held on `USBGuardTrayApp`, unlocked in `_quit()`).
+4. ✅ Add pyright to dev deps + `make typecheck` / `make check`. 0 errors. DONE 2026-06-15.
+5. ✅ Consider a small `_AsyncDBusThreadBase` to dedupe the two thread classes. DONE 2026-08-30 (`dbus_common.AsyncWorkerThread`).
+6. Increase coverage for device_dialog and screensaver (more qtbot tests or pure logic extraction).
+7. ✅ Update DESIGN.md to reflect current qthread architecture. DONE 2026-06-15 (`67dc7d3` rewrote it for the shipped architecture).
+8. Before releases: always `make check` + verify wheel contains the `introspection/*.xml` files.
+
+## Follow-up: screensaver-unlock queue ordering (from REVIEW-2026-08-30.md #2)
+
+**Status:** open — partially mitigated 2026-08-30, deeper fix deferred for later review.
+
+The FIFO queue introduced in `b42eb33` (the #2 fix) attributes the k-th
+queued id-set to the k-th `list_devices_result` emission that arrives while
+the queue is non-empty. That attribution assumes:
+
+- **A1 — FIFO:** results arrive in the order their calls were issued. Holds
+  in practice (all calls funnel through one worker-thread asyncio loop and
+  one `MessageBus` connection to a serial daemon).
+- **A2 — no foreign callers shift the order.** Not fully true: the
+  device-list window (`device_list.py` `_do_refresh`) issues its own
+  `list_devices()` calls, and *failure* results land on the same signal
+  (`list_devices()` fast-fails with `[]` while the daemon is disconnected;
+  `_do_list_devices` emits `[]` on any `DBusError`).
+
+Failure modes (worst case in each is a *missed prompt* — the device stays
+blocked, fail-safe, no security impact; double-prompting is impossible
+because queued id-sets are disjoint by construction):
+
+1. **Empty/failed result consumed the queued id set** (most reachable: a
+   transient daemon disconnect at the moment of unlock) — prompt silently
+   dropped with no retry. ✅ RESOLVED 2026-08-30 — `_on_list_devices_result`
+   no longer pops the queue on an empty snapshot; the entry survives until
+   the next real snapshot, where stale ids (device unplugged) simply fail to
+   match and are dropped. Tests:
+   `TestOverlappingUnlockCycles::test_failed_result_does_not_consume_queued_ids`
+   and `::test_stale_ids_dropped_when_device_gone`. Note: this gap predates
+   the queue (the old single slot had the same consume-on-empty behavior).
+2. **Foreign-call interleave between two overlapping unlock cycles** — a
+   device-list refresh result can serve the second queued id-set against a
+   snapshot taken before the deferred device existed → prompt dropped.
+   ⏳ OPEN — requires a triple coincidence (two overlapping unlock cycles +
+   a foreign call wedged between them + snapshot divergence); low frequency,
+   fail-safe outcome.
+3. **Out-of-order D-Bus responses** — ⏳ OPEN (theoretical); effectively
+   ruled out by the single-loop/single-connection architecture.
+
+**Deferred deeper fixes** (pick one if this ever misbehaves in the field):
+- **Option 2 — per-call correlation:** carry a request id in the result
+  signal (`list_devices_result(int, list)`); the unlock path ignores results
+  with foreign ids. Closes 1–3; touches the public signal contract and both
+  consumers (app + device-list window).
+- **Option 3 — dedicated fetch:** the unlock path schedules its own
+  coroutine that awaits `call_list_devices` and hands the list to a per-call
+  closure, bypassing the shared signal entirely (the "closures per call"
+  variant suggested in REVIEW-2026-08-30.md). Cleanest semantics — no shared
+  mutable field at all — slightly more plumbing.
+
+## Files Reviewed
+- All `src/usbguard_gui/*.py` (app, dbus_client, device, device_dialog, device_list, screensaver, settings, __init__, __main__)
+- All `tests/*.py`
+- pyproject.toml, Makefile, tox.ini, .editorconfig, .github/workflows/makefile.yml
+- README, AGENTS.md, DESIGN.md, TODO.md, CHANGELOG.md, CLAUDE.md, release.py
+- Introspection XMLs (3 files)
+- Runtime verification of package data in site-packages
+
+**Verdict:** The project is in good shape — production-ready for its niche, with thoughtful security design around HID devices and screen lock. The issues above are mostly maintainability / type hygiene items rather than functional bugs.
+
+(End of audit — generated by opencode audit session.)
