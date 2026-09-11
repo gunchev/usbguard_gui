@@ -537,7 +537,10 @@ class USBGuardTrayApp:
             permanent = dialog.permanent
             self._open_dialogs.pop(device_number, None)
             if target is not None:
-                self._client.apply_device_policy(device_number, target, permanent)
+                # Pass the exact reported rule so a permanent decision appends it
+                # verbatim, keeping this device's topology (see dbus_client).
+                self._client.apply_device_policy(device_number, target, permanent,
+                                                 device.raw_rule if permanent else None)
 
         dialog.finished.connect(on_finished)
         dialog.show()

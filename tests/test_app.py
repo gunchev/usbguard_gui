@@ -128,7 +128,8 @@ class _FakeClient(QObject):
     def fetch_devices(self, request_id: int, query: str = "match") -> None:
         self.fetch_devices_calls.append(request_id)
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+                            device_rule: str | None = None) -> None:
         self.apply_policy_calls.append((device_id, target, permanent))
 
     def list_rules(self, label: str = "") -> None:

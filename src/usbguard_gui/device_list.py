@@ -297,7 +297,8 @@ class DeviceListWindow(QMainWindow):
                 "Devices remain blocked by USBGuard's policy.",
             )
             return
-        self._client.apply_device_policy(device.number, target, permanent)
+        self._client.apply_device_policy(device.number, target, permanent,
+                                         device.raw_rule if permanent else None)
         self._request_refresh()
 
 
