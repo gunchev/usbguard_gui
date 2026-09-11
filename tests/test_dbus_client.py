@@ -69,7 +69,7 @@ def mock_thread():
             def fetch_devices(self, request_id, query="match"):
                 self._fetch_devices_calls.append((request_id, query))
 
-            def apply_device_policy(self, device_id, target, permanent=False):
+            def apply_device_policy(self, device_id, target, permanent=False, device_rule=None):
                 self._apply_policy_calls.append((device_id, target, permanent))
 
             def list_rules(self, label=""):

@@ -25,6 +25,11 @@ USBGUARD_POLICY_PATH = "/org/usbguard1/Policy"
 USBGUARD_DEVICES_IFACE = "org.usbguard.Devices1"
 USBGUARD_POLICY_IFACE = "org.usbguard.Policy1"
 
+# Policy1.appendRule() takes the id of the rule to insert after; UINT32_MAX-2
+# means "append at the end".  Verified against usbguard 1.1.4: the rule landed
+# after the last existing one and came back with a fresh id.
+_APPEND_RULE_AT_END = (1 << 32) - 3
+
 _PERMISSION_ERRORS = frozenset(
     [
         "org.freedesktop.DBus.Error.AccessDenied",
@@ -66,6 +71,19 @@ def _is_connection_error(e: DBusError) -> bool:
 
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
+def _retarget_device_rule(rule: str, target: DeviceTarget) -> str:
+    """Return `rule` with only its target verb replaced.
+
+    Every attribute is preserved verbatim — crucially parent-hash and via-port,
+    which identify *which* instance of an identical device this is.  A KVM or
+    dock presents the same hardware under different topologies, and those must
+    coexist as separate permanent rules rather than be collapsed into one rule
+    broad enough to match them all.
+    """
+    parts = rule.strip().split(None, 1)
+    return target.name.lower() + (f" {parts[1]}" if len(parts) == 2 else "")
+
+
 _DEVICES_INTROSPECTION = get_introspection("org.usbguard.Devices1.xml")
 _POLICY_INTROSPECTION = get_introspection("org.usbguard.Policy1.xml")
 _DBUS_INTROSPECTION = get_introspection("org.freedesktop.DBus.xml")
@@ -233,10 +251,29 @@ class _DBusThread(AsyncWorkerThread):
             return
         self.list_devices_correlated.emit(request_id, devices)
 
-    async def _do_apply_policy(self, device_id: int, target: DeviceTarget, permanent: bool) -> None:
+    async def _do_apply_policy(self, device_id: int, target: DeviceTarget, permanent: bool,
+                               device_rule: str | None = None) -> None:
         try:
-            rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
-            log.info("Applied %s to device %d (permanent=%s) → rule %d", target.name, device_id, permanent, rule_id)
+            if permanent and device_rule and self._policy_iface is not None:
+                # applyDevicePolicy(permanent=True) makes USBGuard *upsert* the
+                # rule it generates for this device, keyed on the device hash.
+                # Chained identical hubs — what a KVM switch produces — hash
+                # alike, so allowing one silently replaces the other's rule and
+                # every switch cycle prompts again (observed: rule id 16 removed
+                # and re-added with a different parent-hash, back and forth).
+                #
+                # Authorize the connected instance temporarily instead, then
+                # append the exact topology-specific rule permanently.  Once each
+                # topology has been seen, all of them stay valid at the same time.
+                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                rule = _retarget_device_rule(device_rule, target)
+                rule_id = await self._policy_iface.call_append_rule(rule, _APPEND_RULE_AT_END, False)
+                log.info("Applied %s to device %d and appended permanent rule %d",
+                         target.name, device_id, rule_id)
+            else:
+                rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
+                log.info("Applied %s to device %d (permanent=%s) → rule %d",
+                         target.name, device_id, permanent, rule_id)
         except DBusError as e:
             if _is_permission_error(e):
                 log.error(
@@ -303,11 +340,12 @@ class _DBusThread(AsyncWorkerThread):
         if self._devices_iface and self._loop:
             self._schedule(self._do_fetch_devices(request_id, query))
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+                            device_rule: str | None = None) -> None:
         if not self._connected:
             return
         if self._devices_iface and self._loop:
-            self._schedule(self._do_apply_policy(device_id, target, permanent))
+            self._schedule(self._do_apply_policy(device_id, target, permanent, device_rule))
 
     def list_rules(self, label: str = "") -> None:
         if not self._connected:
@@ -390,9 +428,10 @@ class USBGuardClient(QObject):
         else:
             self.list_devices_correlated.emit(request_id, [])
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+                            device_rule: str | None = None) -> None:
         if self._thread:
-            self._thread.apply_device_policy(device_id, target, permanent)
+            self._thread.apply_device_policy(device_id, target, permanent, device_rule)
 
     def list_rules(self, label: str = "") -> None:
         if self._thread:

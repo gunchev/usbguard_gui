@@ -31,7 +31,8 @@ class _FakeClient:
     def connected(self) -> bool:
         return self._connected
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
+    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+                            device_rule: str | None = None) -> None:
         self.apply_calls.append((device_id, target, permanent))
 
 

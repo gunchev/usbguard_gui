@@ -67,11 +67,15 @@ class Device:
     via_port: str = ""
     with_interface: list[str] = field(default_factory=list)
     with_connect_type: str = ""
+    # The exact rule string USBGuard reported, kept so a permanent decision can
+    # append it verbatim instead of letting USBGuard regenerate (and upsert)
+    # its own.  Carried data, not identity — excluded from equality and repr.
+    raw_rule: str = field(default="", repr=False, compare=False)
 
     @classmethod
     def from_dbus(cls, device_id: int, rule_string: str) -> Device:
         """Create a Device from a D-Bus (id, rule_string) tuple."""
-        return cls(number=device_id, **parse_device_rule(rule_string))
+        return cls(number=device_id, raw_rule=rule_string, **parse_device_rule(rule_string))
 
     def is_allowed(self) -> bool:
         return self.rule.lower() == "allow"

@@ -29,6 +29,7 @@ class _FakeClient(QObject):
         self.list_devices_calls: int = 0
         self.list_rules_calls: int = 0
         self.apply_policy_calls: list[tuple] = []
+        self.apply_policy_rules: list[str | None] = []
         self.remove_rule_calls: list[int] = []
 
     @property
@@ -41,8 +42,10 @@ class _FakeClient(QObject):
     def list_rules(self, label: str = "") -> None:
         self.list_rules_calls += 1
 
-    def apply_device_policy(self, device_id: int, target, permanent: bool = False) -> None:
+    def apply_device_policy(self, device_id: int, target, permanent: bool = False,
+                            device_rule: str | None = None) -> None:
         self.apply_policy_calls.append((device_id, target, permanent))
+        self.apply_policy_rules.append(device_rule)
 
     def remove_rule(self, rule_id: int) -> None:
         self.remove_rule_calls.append(rule_id)
