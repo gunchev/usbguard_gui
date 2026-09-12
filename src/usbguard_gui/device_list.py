@@ -125,10 +125,15 @@ class DeviceListWindow(QMainWindow):
     """Window displaying all USB devices with context-menu actions."""
 
     def __init__(self, client: USBGuardClient, parent: QWidget | None = None,
-                 screensaver: ScreensaverMonitor | None = None) -> None:
+                 screensaver: ScreensaverMonitor | None = None,
+                 settings: QSettings | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._screensaver = screensaver
+        # Window-geometry store, injected so tests can point it at a temp file
+        # instead of the developer's ~/.config/usbguard_gui/device_list.conf
+        # (which test runs would otherwise overwrite with offscreen geometry).
+        self._settings = settings if settings is not None else QSettings("usbguard_gui", "device_list")
         self._refresh_pending = False
         self._pending_devices: list[Device] = []
         self.setWindowTitle("USBGuard — Devices")
@@ -156,7 +161,6 @@ class DeviceListWindow(QMainWindow):
         assert vh is not None
         vh.setVisible(False)
 
-        self._settings = QSettings("usbguard_gui", "device_list")
         saved_geometry = self._settings.value("geometry")
         if isinstance(saved_geometry, QByteArray) and not saved_geometry.isEmpty():
             self.restoreGeometry(saved_geometry)

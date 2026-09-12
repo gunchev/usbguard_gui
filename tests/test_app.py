@@ -185,6 +185,27 @@ def _make_hid_device(number: int = 1) -> Device:
 import pytest  # noqa: E402 — after QObject subclasses so pyqtSignal is defined first
 
 
+class _FakeSettings:
+    """In-memory SettingsProtocol implementation.
+
+    Injected into USBGuardTrayApp so no test ever reads or writes the real
+    per-user config (~/.config/usbguard_gui/general.conf).  A preference
+    toggled in the running app used to flip HID test outcomes here; with the
+    seam, the suite controls its own settings.
+    """
+
+    def __init__(self, disable_hid_treatment: bool = False) -> None:
+        self._disable_hid: bool = disable_hid_treatment
+        self.write_calls: list[bool] = []
+
+    def disable_hid_treatment(self) -> bool:
+        return self._disable_hid
+
+    def set_disable_hid_treatment(self, value: bool) -> None:
+        self.write_calls.append(value)
+        self._disable_hid = value
+
+
 @pytest.fixture()
 def fake_client(qapp) -> _FakeClient:
     return _FakeClient()
@@ -196,14 +217,19 @@ def fake_screensaver() -> _FakeScreensaver:
 
 
 @pytest.fixture()
-def tray_app(qapp, fake_client, fake_screensaver, qtbot):
+def fake_settings() -> _FakeSettings:
+    return _FakeSettings()
+
+
+@pytest.fixture()
+def tray_app(qapp, fake_client, fake_screensaver, fake_settings, qtbot):
     from usbguard_gui.app import USBGuardTrayApp
 
     with (
         patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
         patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
     ):
-        app = USBGuardTrayApp(qapp)
+        app = USBGuardTrayApp(qapp, settings=fake_settings)
     return app
 
 
@@ -218,7 +244,7 @@ class TestQuitUnlocksInstanceLock:
     moves _quit()'s callers out of the stack frame holding the lock can't
     silently skip releasing it."""
 
-    def test_quit_unlocks_instance_lock(self, qapp, fake_client, fake_screensaver) -> None:
+    def test_quit_unlocks_instance_lock(self, qapp, fake_client, fake_screensaver, fake_settings) -> None:
         from usbguard_gui.app import USBGuardTrayApp
 
         mock_lock = MagicMock()
@@ -226,7 +252,7 @@ class TestQuitUnlocksInstanceLock:
             patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
             patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
         ):
-            app = USBGuardTrayApp(qapp, lock_file=mock_lock)
+            app = USBGuardTrayApp(qapp, lock_file=mock_lock, settings=fake_settings)
 
         app._quit()
 
@@ -236,6 +262,95 @@ class TestQuitUnlocksInstanceLock:
         """Callers that don't pass a lock_file (e.g. existing tests) must
         still be able to call _quit() safely."""
         tray_app._quit()
+
+
+# ---------------------------------------------------------------------------
+# Settings injection (tests must not read/write the real user config)
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsInjection:
+    """The tray app takes its settings by injection.
+
+    Regression guard: the QSettings-backed Settings singleton resolves to the
+    developer's own ~/.config/usbguard_gui/general.conf, so a value toggled
+    in the GUI (disable_hid_treatment=true) silently changed what the suite
+    asserted — the HID pending/lock flow was skipped and the HID tests failed
+    only on that machine.  Injecting a fake removes the coupling.
+    """
+
+    _RULE = (
+        'block id 1234:abcd serial "" name "Test Keyboard" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        'with-interface 03:00:00 with-connect-type hotplug'
+    )
+
+    def test_app_uses_the_injected_settings_object(self, tray_app, fake_settings) -> None:
+        assert tray_app._settings is fake_settings
+
+    def test_real_settings_class_is_never_constructed_when_injected(self, qapp, fake_client, fake_screensaver,
+                                                                    fake_settings) -> None:
+        from usbguard_gui.app import USBGuardTrayApp
+
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+            patch("usbguard_gui.app.Settings") as real_settings_cls,
+        ):
+            USBGuardTrayApp(qapp, settings=fake_settings)
+
+        real_settings_cls.assert_not_called()
+
+    def test_default_falls_back_to_the_qsettings_singleton(self, qapp, fake_client, fake_screensaver) -> None:
+        """Production (main()) injects nothing and must still get the real store."""
+        from usbguard_gui.app import USBGuardTrayApp
+        from usbguard_gui.settings import Settings, SettingsProtocol
+
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp)
+
+        assert isinstance(app._settings, Settings)
+        assert isinstance(app._settings, SettingsProtocol)
+
+    def test_toggle_writes_through_to_the_injected_settings(self, tray_app, fake_settings) -> None:
+        tray_app._on_disable_hid_toggled(True)
+
+        assert fake_settings.write_calls == [True]
+        assert fake_settings.disable_hid_treatment() is True
+
+    def test_tray_menu_reflects_injected_initial_state(self, qapp, fake_client, fake_screensaver) -> None:
+        from usbguard_gui.app import USBGuardTrayApp
+
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp, settings=_FakeSettings(disable_hid_treatment=True))
+
+        assert app._action_disable_hid.isChecked() is True
+
+    def test_disabled_hid_treatment_comes_from_settings_not_user_config(self, qapp, fake_client,
+                                                                        fake_screensaver) -> None:
+        """With treatment disabled via the injected fake, a HID insert must skip
+        the pending/lock flow — proving the flag drives behaviour from the
+        injected object rather than from whatever the user's config holds."""
+        from usbguard_gui.app import USBGuardTrayApp
+
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp, settings=_FakeSettings(disable_hid_treatment=True))
+
+        fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        assert app._hid_pending_devices == set()
+        assert not app._hid_lock_timer.isActive()
+        assert fake_client.apply_policy_calls == []
+        app._quit()
 
 
 # ---------------------------------------------------------------------------

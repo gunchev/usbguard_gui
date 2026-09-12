@@ -129,6 +129,20 @@ max_line_length = 120
 - Connect signals in `_connect_signals()` method
 - Use `QTimer.singleShot()` for deferred actions
 
+### Settings & Test Isolation
+
+- App settings are read through `SettingsProtocol` (`settings.py`), injected as
+  `USBGuardTrayApp(..., settings=...)`; `DeviceListWindow(..., settings=...)`
+  takes its `QSettings` geometry store the same way.
+- Production (`main()`) injects nothing and gets the real `Settings` singleton
+  (`~/.config/usbguard_gui/general.conf`). Tests always inject a fake
+  (`_FakeSettings` in `tests/test_app.py`, a `tmp_path`-backed `QSettings` in
+  `tests/test_device_list.py`). Never let a test read or write the developer's
+  real config: a GUI preference toggled once in the running app otherwise
+  silently changes what the suite asserts (a `disable_hid_treatment=true` in
+  the user's config skipped the whole HID pending/lock flow and failed the HID
+  tests only on that machine).
+
 ## Project Structure
 
 ```

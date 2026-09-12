@@ -19,7 +19,7 @@ from usbguard_gui.device import Device, DeviceTarget, PresenceEvent, parse_devic
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
-from usbguard_gui.settings import Settings
+from usbguard_gui.settings import Settings, SettingsProtocol
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +65,8 @@ HID_LOCK_NOTIFY_DELAY_MS = 5000
 class USBGuardTrayApp:
     """System tray application for USBGuard."""
 
-    def __init__(self, app: QApplication, lock_file: QLockFile | None = None) -> None:
+    def __init__(self, app: QApplication, lock_file: QLockFile | None = None,
+                 settings: SettingsProtocol | None = None) -> None:
         self._app = app
         # Single-instance QLockFile, if any: held here (rather than left as
         # a local in main(), kept alive only by app.exec() blocking in the
@@ -74,7 +75,10 @@ class USBGuardTrayApp:
         self._instance_lock = lock_file
         self._client = USBGuardClient()
         self._screensaver = ScreensaverMonitor()
-        self._settings = Settings()
+        # Settings are injected so tests never touch the real per-user config
+        # file; production (main()) passes nothing and gets the QSettings
+        # singleton.  See SettingsProtocol for why this seam exists.
+        self._settings: SettingsProtocol = settings if settings is not None else Settings()
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()

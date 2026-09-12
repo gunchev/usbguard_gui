@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, pyqtSignal
 
 from usbguard_gui.device import Device, DeviceTarget
 from usbguard_gui.device_list import DeviceListWindow
@@ -82,10 +82,40 @@ def screensaver(qapp):
 
 
 @pytest.fixture()
-def window(client, screensaver, qtbot):
-    w = DeviceListWindow(client, screensaver=screensaver)
+def settings_store(tmp_path) -> QSettings:
+    """Temp-file-backed geometry store.
+
+    Injected into DeviceListWindow so test runs never overwrite the developer's
+    own ~/.config/usbguard_gui/device_list.conf with offscreen-Qt geometry.
+    """
+    return QSettings(str(tmp_path / "device_list.conf"), QSettings.Format.IniFormat)
+
+
+@pytest.fixture()
+def window(client, screensaver, settings_store, qtbot):
+    w = DeviceListWindow(client, screensaver=screensaver, settings=settings_store)
     qtbot.addWidget(w)
     return w
+
+
+class TestSettingsInjection:
+    """The window's geometry store is injected, not hard-wired to the user's config."""
+
+    def test_window_uses_the_injected_store(self, window, settings_store) -> None:
+        assert window._settings is settings_store
+
+    def test_store_resolves_under_tmp_not_the_user_config(self, window, tmp_path) -> None:
+        assert str(window._settings.fileName()).startswith(str(tmp_path))
+
+    def test_close_saves_geometry_to_the_injected_store(self, window, settings_store, tmp_path, qtbot) -> None:
+        window.show()
+        qtbot.waitExposed(window)
+        window.close()
+        settings_store.sync()
+
+        saved = QSettings(str(tmp_path / "device_list.conf"), QSettings.Format.IniFormat)
+        assert saved.value("geometry") is not None
+        assert saved.value("header_state") is not None
 
 
 class TestDoRefreshSetsFlag:
