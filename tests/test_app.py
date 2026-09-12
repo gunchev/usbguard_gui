@@ -1057,3 +1057,75 @@ class TestShowAbout:
         tray_app._show_about()
 
         mock_about.assert_called_once()
+
+
+class TestHIDLockTimerNotExtendedByLaterInserts:
+    """The deferred lock is one shared single-shot timer.  A second HID insert
+    must not restart it, or every additional keyboard would push the first
+    device's lock back by another full HID_LOCK_NOTIFY_DELAY_MS."""
+
+    _RULE_A = (
+        'block id 1234:abcd serial "" name "Keyboard A" '
+        'hash "aaa111" parent-hash "" via-port "1-1" '
+        'with-interface 03:00:00 with-connect-type hotplug'
+    )
+    _RULE_B = (
+        'block id 5678:ef01 serial "" name "Keyboard B" '
+        'hash "bbb222" parent-hash "" via-port "2-1" '
+        'with-interface 03:00:00 with-connect-type hotplug'
+    )
+
+    def _insert(self, fake_client, number: int, rule: str) -> None:
+        fake_client.device_presence_changed.emit(number, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), rule, {})
+
+    def test_second_insert_does_not_push_the_lock_back(self, tray_app, fake_client) -> None:
+        self._insert(fake_client, 1, self._RULE_A)
+        first_remaining = tray_app._hid_lock_timer.remainingTime()
+        assert first_remaining > 0
+
+        self._insert(fake_client, 2, self._RULE_B)
+
+        assert tray_app._hid_pending_devices == {1, 2}
+        assert tray_app._hid_lock_timer.remainingTime() <= first_remaining, (
+            "a later HID insert must not extend the first device's lock delay"
+        )
+        tray_app._hid_lock_timer.stop()  # don't leak a 5 s timer into later tests
+
+    def test_the_earliest_scheduled_lock_covers_every_pending_device(self, tray_app, fake_client,
+                                                                  fake_screensaver) -> None:
+        self._insert(fake_client, 1, self._RULE_A)
+        self._insert(fake_client, 2, self._RULE_B)
+        tray_app._hid_lock_timer.stop()
+
+        tray_app._lock_for_pending_hid()
+        assert fake_screensaver.lock_calls == 1
+
+        tray_app._on_screensaver_locked(True)
+        assert sorted(fake_client.apply_policy_calls) == sorted(
+            [(1, DeviceTarget.ALLOW, False), (2, DeviceTarget.ALLOW, False)]
+        )
+
+
+class TestUnlockQueueCap:
+    """Queued unlock cycles are only consumed by a non-empty snapshot, so a
+    daemon that stays down across many lock/unlock cycles must not grow the
+    queue without bound."""
+
+    def test_oldest_cycle_is_dropped_once_the_cap_is_reached(self, tray_app, monkeypatch) -> None:
+        monkeypatch.setattr("usbguard_gui.app.MAX_PENDING_UNLOCK_CYCLES", 3)
+
+        for i in range(1, 7):
+            tray_app._screensaver_pending_devices = {i}
+            tray_app._on_screensaver_unlocked(False)
+
+        assert len(tray_app._screensaver_pending_id_queue) == 3
+        assert tray_app._screensaver_pending_id_queue == [[4], [5], [6]]
+
+    def test_nothing_dropped_below_the_cap(self, tray_app, monkeypatch) -> None:
+        monkeypatch.setattr("usbguard_gui.app.MAX_PENDING_UNLOCK_CYCLES", 10)
+
+        for i in range(1, 4):
+            tray_app._screensaver_pending_devices = {i}
+            tray_app._on_screensaver_unlocked(False)
+
+        assert tray_app._screensaver_pending_id_queue == [[1], [2], [3]]

@@ -61,6 +61,14 @@ RECONNECT_MAX_INTERVAL = 60
 # the tray notification time to appear before the screen blanks.
 HID_LOCK_NOTIFY_DELAY_MS = 5000
 
+# Cap on queued screensaver-unlock cycles.  Entries are only consumed by a
+# non-empty list_devices() result (a failed/empty snapshot deliberately does not
+# consume one, so a transient daemon disconnect cannot drop a prompt), which means
+# a daemon that stays down while the user keeps locking/unlocking would otherwise
+# grow the queue for the life of the process.  Dropping the oldest cycle loses only
+# a prompt; the devices stay blocked.
+MAX_PENDING_UNLOCK_CYCLES = 32
+
 
 class USBGuardTrayApp:
     """System tray application for USBGuard."""
@@ -369,7 +377,12 @@ class USBGuardTrayApp:
                     QSystemTrayIcon.MessageIcon.Warning,
                     5000,
                 )
-                self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
+                # Never restart an already-running lock timer: a second HID insert
+                # would push the first device's lock back by another full delay.
+                # _hid_pending_devices already covers every waiting device, so the
+                # earliest scheduled lock serves them all.
+                if not self._hid_lock_timer.isActive():
+                    self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
                 return
             elif is_hid and hid_treatment_enabled:
                 # lock_inhibited or not lock_available — fall through to the
@@ -440,6 +453,14 @@ class USBGuardTrayApp:
 
         self._screensaver_pending_id_queue.append(list(self._screensaver_pending_devices))
         self._screensaver_pending_devices.clear()
+        if len(self._screensaver_pending_id_queue) > MAX_PENDING_UNLOCK_CYCLES:
+            dropped = self._screensaver_pending_id_queue.pop(0)
+            log.warning(
+                "Unlock-cycle queue full (%d) — dropping the oldest pending set (%d id(s)); "
+                "those devices stay blocked",
+                MAX_PENDING_UNLOCK_CYCLES,
+                len(dropped),
+            )
         self._client.list_devices()
 
     def _on_screensaver_locked(self, active: bool) -> None:
