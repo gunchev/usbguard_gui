@@ -107,6 +107,31 @@ In both cases the failure direction is the safe one: the device stays blocked.
 
 ## Installation
 
+### Read this before installing the polkit rule
+
+The app applies USBGuard policy over D-Bus, and polkit gates those calls. The shipped
+`rpm/70-usbguard_gui.rules` — installed by the RPM to `/usr/share/polkit-1/rules.d/`, or
+copied by hand to `/etc/polkit-1/rules.d/` on a manual install — grants **without a password**:
+
+- `org.usbguard.Devices1.applyDevicePolicy` — allow / block / reject any device
+- `org.usbguard.Policy1.listRules`, `appendRule`, `removeRule`, `getRule` — read and rewrite
+  the entire permanent ruleset
+- `org.usbguard.Devices1.listDevices`
+
+The match condition is `subject.active == true && subject.local == true` — that is **every
+logged-in local user, not only administrators**. On a single-user laptop that is the intended
+convenience: one click per device, no polkit prompt. On a shared or multi-user machine it means
+any local user can authorize any USB device and edit the permanent policy, which defeats the
+point of gating USB access at all.
+
+- **Single-user machine:** the rule as shipped is fine.
+- **Multi-user machine:** tighten it before installing — the file's own header shows the edit
+  (`subject.active == true` → `subject.isInGroup("wheel")`).
+- **No rule at all:** polkit falls back to USBGuard's default and every action prompts for an
+  admin password. The app still works, it just prompts.
+
+Splitting this into a permissive and a strict policy subpackage is tracked for 1.0 in `TODO.md`.
+
 ### Fedora
 
 On Fedora installing the RPM package will start the app on session start in KDE.
@@ -146,11 +171,15 @@ Install the app itself.
 uv tool install .
 ```
 
-Add the policy kit rules.
+Add the polkit rule — read *Read this before installing the polkit rule* above first; the
+definition grants passwordless USB control to every active local user.
 
 ```bash
-sudo cp rpm/70-usbguard_gui.rules /usr/share/polkit-1/rules.d/
+sudo cp rpm/70-usbguard_gui.rules /etc/polkit-1/rules.d/
 ```
+
+(`/etc/polkit-1/rules.d/` is the admin-authored location and takes precedence over the
+packaged `/usr/share/polkit-1/rules.d/`, so a tightened copy there overrides the RPM's rule.)
 
 You may also want to install the `dist/usbguard_gui*.desktop' files and the icon.
 
