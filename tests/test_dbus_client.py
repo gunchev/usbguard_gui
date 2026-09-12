@@ -27,6 +27,7 @@ def mock_thread():
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
             list_devices_result = pyqtSignal(list)
+            list_devices_correlated = pyqtSignal(int, list)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
 
@@ -38,6 +39,7 @@ def mock_thread():
                 self._wait_called = False
                 self._wait_timeout = None
                 self._list_devices_calls = []
+                self._fetch_devices_calls = []
                 self._apply_policy_calls = []
                 self._list_rules_calls = []
                 self._remove_rule_calls = []
@@ -63,6 +65,9 @@ def mock_thread():
 
             def list_devices(self, query="match"):
                 self._list_devices_calls.append(query)
+
+            def fetch_devices(self, request_id, query="match"):
+                self._fetch_devices_calls.append((request_id, query))
 
             def apply_device_policy(self, device_id, target, permanent=False):
                 self._apply_policy_calls.append((device_id, target, permanent))
@@ -333,6 +338,7 @@ class TestConnectRecyclesPreviousThread:
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
             list_devices_result = pyqtSignal(list)
+            list_devices_correlated = pyqtSignal(int, list)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
 
@@ -907,3 +913,111 @@ class TestConnectionDropNarrowing:
 
         assert thread._connected is False
         assert events == [False]
+
+
+class TestCorrelatedFetchDevices:
+    """fetch_devices() returns the snapshot tagged with the caller's request id on
+    list_devices_correlated, so concurrent fetches can never be mistaken for each
+    other and answers may arrive in any order.  Transport semantics are the same
+    as list_devices(); only the delivery differs."""
+
+    def _thread(self) -> _DBusThread:
+        thread = _DBusThread()
+        thread._connected = True
+        thread._devices_iface = MagicMock()
+        thread._policy_iface = MagicMock()
+        return thread
+
+    def _emitted(self, thread: _DBusThread) -> list:
+        emitted: list = []
+        thread.list_devices_correlated.connect(lambda rid, devs: emitted.append((rid, devs)))
+        return emitted
+
+    def test_success_emits_the_request_id_with_the_snapshot(self):
+        import asyncio
+
+        thread = self._thread()
+        emitted = self._emitted(thread)
+
+        async def fake_list(query):
+            return [("10", 'allow id 1234:abcd serial "" name "A" hash "h1" with-interface 03:00:00')]
+
+        thread._devices_iface.call_list_devices = fake_list
+        asyncio.run(thread._do_fetch_devices(7, "match"))
+
+        assert len(emitted) == 1
+        assert emitted[0][0] == 7
+        assert emitted[0][1][0].number == 10
+
+    def test_business_error_emits_empty_for_that_id_and_stays_connected(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        emitted = self._emitted(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.FAILED, "malformed query")
+
+        thread._devices_iface.call_list_devices = raise_error
+        asyncio.run(thread._do_fetch_devices(5, "match"))
+
+        assert emitted == [(5, [])]
+        assert thread._connected is True
+
+    def test_connection_error_emits_empty_and_disconnects(self):
+        import asyncio
+
+        from dbus_fast import DBusError, ErrorType
+
+        thread = self._thread()
+        emitted = self._emitted(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise DBusError(ErrorType.SERVICE_UNKNOWN, "gone")
+
+        thread._devices_iface.call_list_devices = raise_error
+        asyncio.run(thread._do_fetch_devices(5, "match"))
+
+        assert emitted == [(5, [])]
+        assert thread._connected is False
+
+    def test_thread_fast_fails_when_disconnected_but_still_answers(self):
+        thread = self._thread()
+        thread._connected = False
+        emitted = self._emitted(thread)
+
+        thread.fetch_devices(9)
+
+        assert emitted == [(9, [])]
+
+    def test_client_delegates_with_the_request_id(self, client, mock_thread):
+        client.connect()
+        client.fetch_devices(7)
+        assert mock_thread._fetch_devices_calls == [(7, "match")]
+
+    def test_client_honours_a_custom_query(self, client, mock_thread):
+        client.connect()
+        client.fetch_devices(3, query="match blocked")
+        assert mock_thread._fetch_devices_calls == [(3, "match blocked")]
+
+    def test_client_without_a_thread_still_terminates_the_request(self, client):
+        """No worker thread means nothing to ask, but the caller must still get its
+        (request_id, []) so no request is left permanently outstanding."""
+        emitted = []
+        client.list_devices_correlated.connect(lambda rid, devs: emitted.append((rid, devs)))
+
+        client.fetch_devices(11)
+
+        assert emitted == [(11, [])]
+
+    def test_correlated_signal_is_wired_from_the_thread(self, client, mock_thread):
+        client.connect()
+        emitted = []
+        client.list_devices_correlated.connect(lambda rid, devs: emitted.append((rid, devs)))
+
+        mock_thread.list_devices_correlated.emit(4, [MagicMock()])
+
+        assert len(emitted) == 1
+        assert emitted[0][0] == 4

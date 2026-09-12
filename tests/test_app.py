@@ -107,6 +107,7 @@ class _FakeClient(QObject):
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
     list_devices_result = pyqtSignal(list)
+    list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
 
@@ -114,6 +115,7 @@ class _FakeClient(QObject):
         super().__init__()
         self.apply_policy_calls: list[tuple] = []
         self.list_devices_calls: int = 0
+        self.fetch_devices_calls: list[int] = []
         self._connected = True
 
     @property
@@ -122,6 +124,9 @@ class _FakeClient(QObject):
 
     def list_devices(self, query: str = "match") -> None:
         self.list_devices_calls += 1
+
+    def fetch_devices(self, request_id: int, query: str = "match") -> None:
+        self.fetch_devices_calls.append(request_id)
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
         self.apply_policy_calls.append((device_id, target, permanent))
@@ -534,10 +539,10 @@ class TestHIDAllowRequiresLockedScreen:
         )
         assert tray_app._screensaver_pending_devices == {10}
 
-        # 2. Screen unlocks -> pending-id queue set, list_devices() in flight.
+        # 2. Screen unlocks -> unlock cycle registered, its fetch in flight.
         fake_screensaver._active = False
         tray_app._on_screensaver_unlocked(False)
-        assert tray_app._screensaver_pending_id_queue == [[10]]
+        assert tray_app._pending_unlock_cycles == {0: {10}}
 
         # 3. Attacker's keyboard B inserted while the result is in flight.
         fake_client.device_presence_changed.emit(
@@ -553,7 +558,7 @@ class TestHIDAllowRequiresLockedScreen:
         # 4. In-flight result arrives; the screen is still unlocked.
         device_a = Device.from_dbus(10, self._RULE_NON_HID)
         device_b = _make_hid_device(1)
-        fake_client.list_devices_result.emit([device_a, device_b])
+        fake_client.list_devices_correlated.emit(0, [device_a, device_b])
 
         # B must stay blocked and pending — the pre-fix code allowed it here.
         assert fake_client.apply_policy_calls == []
@@ -609,70 +614,71 @@ class TestOverlappingUnlockCycles:
         # 1. Screen locked, device A inserted while away -> deferred.
         tray_app._screensaver_pending_devices = {10}
 
-        # 2. Screen unlocks -> R1 (for A) fired.
+        # 2. Screen unlocks -> cycle 0 registered, its fetch in flight.
         tray_app._on_screensaver_unlocked(False)
-        assert fake_client.list_devices_calls == 1
+        assert fake_client.fetch_devices_calls == [0]
 
         # 3. Screen locks again; device B inserted while locked -> deferred.
-        #    R1 is still "in flight" (its result has not arrived yet).
+        #    Cycle 0's fetch is still "in flight" (its result has not arrived).
         tray_app._screensaver_pending_devices = {20}
 
-        # 4. Screen unlocks again -> R2 (for B) fired, before R1 resolved.
+        # 4. Screen unlocks again -> cycle 1 registered and fetched, before
+        #    cycle 0 resolved.
         tray_app._on_screensaver_unlocked(False)
-        assert fake_client.list_devices_calls == 2
+        assert fake_client.fetch_devices_calls == [0, 1]
 
-        # 5. R1 arrives first (FIFO) with the snapshot as it was for that
-        #    request — must surface A's prompt.
-        fake_client.list_devices_result.emit([device_a])
+        # 5. Cycle 0's answer arrives first, carrying the snapshot taken for
+        #    that request — must surface A's prompt.
+        fake_client.list_devices_correlated.emit(0, [device_a])
         assert 10 in tray_app._open_dialogs, "A's deferred prompt must not be dropped"
 
-        # 6. R2 arrives — must surface B's prompt too, not be silently
-        #    dropped because R1 already consumed the one shared slot.
-        fake_client.list_devices_result.emit([device_a, device_b])
+        # 6. Cycle 1's answer arrives — must surface B's prompt too.
+        fake_client.list_devices_correlated.emit(1, [device_a, device_b])
         assert 20 in tray_app._open_dialogs, "B's deferred prompt must not be dropped"
 
         for dialog in list(tray_app._open_dialogs.values()):
             dialog.close()
 
-    def test_failed_result_does_not_consume_queued_ids(self, tray_app, fake_client, fake_screensaver) -> None:
-        """An empty snapshot — the list call fast-failed while the daemon
-        was disconnected, or hit a DBusError — must not consume the queued
-        id set: the next real snapshot must still surface the prompt."""
+    def test_failed_result_does_not_consume_the_cycle(self, tray_app, fake_client, fake_screensaver) -> None:
+        """An empty snapshot — the fetch fast-failed while the daemon was
+        disconnected, or hit a DBusError — must not consume the registered
+        cycle: it stays put so it can be retried."""
         device_a = Device.from_dbus(10, self._RULE_A)
 
         tray_app._screensaver_pending_devices = {10}
         tray_app._on_screensaver_unlocked(False)
-        assert fake_client.list_devices_calls == 1
+        assert fake_client.fetch_devices_calls == [0]
 
-        # The in-flight list call fails (e.g. daemon briefly disconnected):
-        # an empty snapshot arrives.
-        fake_client.list_devices_result.emit([])
+        # The in-flight fetch fails (e.g. daemon briefly disconnected):
+        # an empty snapshot arrives for cycle 0.
+        fake_client.list_devices_correlated.emit(0, [])
         assert 10 not in tray_app._open_dialogs
-        assert tray_app._screensaver_pending_id_queue == [[10]], (
-            "a failed result must not consume the queued id set"
+        assert tray_app._pending_unlock_cycles == {0: {10}}, (
+            "a failed result must not consume the registered cycle"
         )
 
-        # The next real snapshot surfaces A's prompt after all:
-        fake_client.list_devices_result.emit([device_a])
+        # The retry's answer surfaces A's prompt after all:
+        fake_client.list_devices_correlated.emit(0, [device_a])
         assert 10 in tray_app._open_dialogs
+        assert tray_app._pending_unlock_cycles == {}
 
         for dialog in list(tray_app._open_dialogs.values()):
             dialog.close()
 
     def test_stale_ids_dropped_when_device_gone(self, tray_app, fake_client, fake_screensaver) -> None:
-        """If the deferred device is gone by the time the next real snapshot
-        arrives (unplugged during the failed window), the stale queued id
-        set is consumed and dropped without prompting."""
+        """If the deferred device is gone by the time the snapshot arrives
+        (unplugged during the failed window), the stale id is resolved and
+        dropped without prompting."""
 
         tray_app._screensaver_pending_devices = {10}
         tray_app._on_screensaver_unlocked(False)
 
-        fake_client.list_devices_result.emit([])
+        fake_client.list_devices_correlated.emit(0, [])
         # Next real snapshot does not contain A (it was unplugged):
-        fake_client.list_devices_result.emit([Device.from_dbus(30, self._RULE_B)])
+        fake_client.list_devices_correlated.emit(0, [Device.from_dbus(30, self._RULE_B)])
 
         assert 10 not in tray_app._open_dialogs
-        assert tray_app._screensaver_pending_id_queue == []
+        assert tray_app._pending_unlock_cycles == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1118,8 +1124,8 @@ class TestUnlockQueueCap:
             tray_app._screensaver_pending_devices = {i}
             tray_app._on_screensaver_unlocked(False)
 
-        assert len(tray_app._screensaver_pending_id_queue) == 3
-        assert tray_app._screensaver_pending_id_queue == [[4], [5], [6]]
+        assert len(tray_app._pending_unlock_cycles) == 3
+        assert tray_app._pending_unlock_cycles == {3: {4}, 4: {5}, 5: {6}}
 
     def test_nothing_dropped_below_the_cap(self, tray_app, monkeypatch) -> None:
         monkeypatch.setattr("usbguard_gui.app.MAX_PENDING_UNLOCK_CYCLES", 10)
@@ -1128,7 +1134,7 @@ class TestUnlockQueueCap:
             tray_app._screensaver_pending_devices = {i}
             tray_app._on_screensaver_unlocked(False)
 
-        assert tray_app._screensaver_pending_id_queue == [[1], [2], [3]]
+        assert tray_app._pending_unlock_cycles == {0: {1}, 1: {2}, 2: {3}}
 
 
 class TestModuleEntryPoint:
@@ -1145,17 +1151,17 @@ class TestModuleEntryPoint:
 
 
 class TestUnlockQueueRaceReproductions:
-    """AUDIT follow-ups #2 and #3, reproduced against the FIFO unlock queue.
+    """AUDIT follow-ups #2 and #3 — regression guards for the correlated fetch.
 
-    The queue attributes the k-th queued id-set to the k-th
-    ``list_devices_result`` that arrives while it is non-empty.  That holds only
-    if every result on that signal belongs to an unlock cycle and the results
-    arrive in call order.  Neither assumption survives: the device-list window
-    issues its own ``list_devices()`` calls on the same signal, and D-Bus gives
-    no ordering guarantee.  Both cases silently drop a user-facing prompt.
+    Both were verified red against the old FIFO unlock queue, which attributed
+    the k-th queued id-set to the k-th ``list_devices_result`` arriving while it
+    was non-empty.  That held only if every result on that signal belonged to an
+    unlock cycle and answers arrived in call order; the device-list window issues
+    its own ``list_devices()`` on the same signal, and D-Bus gives no ordering
+    guarantee, so prompts were silently dropped.
 
-    Marked xfail(strict=True): they must start passing when the unlock path moves
-    to per-call correlated fetches, at which point the marker is removed.
+    Fixed by giving each unlock cycle its own ``fetch_devices(request_id)`` and
+    resolving answers from ``list_devices_correlated(request_id, devices)``.
     """
 
     _RULE_A = (
@@ -1175,42 +1181,70 @@ class TestUnlockQueueRaceReproductions:
         tray_app._screensaver_pending_devices = {20}
         tray_app._on_screensaver_unlocked(False)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="AUDIT follow-up #2: a foreign device-list refresh result is consumed as if it "
-               "answered the queued unlock cycle, dropping that cycle's prompt",
-    )
     def test_foreign_refresh_must_not_consume_a_queued_cycle(self, tray_app, fake_client) -> None:
+        """AUDIT follow-up #2: a foreign device-list refresh must not be taken
+        as the answer to a queued unlock cycle."""
         a = Device.from_dbus(10, self._RULE_A)
         b = Device.from_dbus(20, self._RULE_B)
         self._queue_two_cycles(tray_app)
 
-        # Cycle 1's own result arrives and resolves A.
-        fake_client.list_devices_result.emit([a])
+        # Cycle 0's own answer arrives and resolves A.
+        fake_client.list_devices_correlated.emit(0, [a])
         assert 10 in tray_app._open_dialogs
 
         # A foreign refresh, snapshotted before B was ever plugged in, lands
-        # between the two cycle results.
+        # between the two cycle answers.  It arrives on the uncorrelated signal
+        # the device-list window uses, so it cannot touch the unlock cycles.
         fake_client.list_devices_result.emit([a])
 
-        # Cycle 2's result arrives, and it does contain B.
-        fake_client.list_devices_result.emit([a, b])
+        # Cycle 1's answer arrives, and it does contain B.
+        fake_client.list_devices_correlated.emit(1, [a, b])
         assert 20 in tray_app._open_dialogs, "B's prompt must survive a foreign snapshot"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="AUDIT follow-up #3: results arriving out of call order are attributed to the "
-               "wrong unlock cycle, dropping both prompts",
-    )
     def test_out_of_order_results_must_not_cross_cycles(self, tray_app, fake_client) -> None:
+        """AUDIT follow-up #3: answers may arrive in any order and still resolve
+        their own cycle."""
         a = Device.from_dbus(10, self._RULE_A)
         b = Device.from_dbus(20, self._RULE_B)
         self._queue_two_cycles(tray_app)
 
-        # Cycle 2's answer arrives first: cycle 1's ids are matched against a
-        # snapshot that only holds B, and cycle 2's against one that only holds A.
-        fake_client.list_devices_result.emit([b])
-        fake_client.list_devices_result.emit([a])
+        # Cycle 1's answer arrives first.  Matching is by request id, so cycle 0
+        # is never matched against a snapshot that only holds B, or vice versa.
+        fake_client.list_devices_correlated.emit(1, [b])
+        fake_client.list_devices_correlated.emit(0, [a])
 
-        assert 10 in tray_app._open_dialogs, "A (cycle 1) must be prompted"
-        assert 20 in tray_app._open_dialogs, "B (cycle 2) must be prompted"
+        assert 10 in tray_app._open_dialogs, "A (cycle 0) must be prompted"
+        assert 20 in tray_app._open_dialogs, "B (cycle 1) must be prompted"
+
+    def test_unknown_request_id_is_ignored(self, tray_app, fake_client) -> None:
+        """A correlated answer for a request nobody registered must be dropped,
+        not guessed at."""
+        a = Device.from_dbus(10, self._RULE_A)
+
+        fake_client.list_devices_correlated.emit(99, [a])
+
+        assert tray_app._open_dialogs == {}
+        assert tray_app._pending_unlock_cycles == {}
+
+    def test_outstanding_cycles_are_retried_on_reconnect(self, tray_app, fake_client) -> None:
+        """A cycle whose fetch failed while the daemon was down is re-fetched when
+        the connection returns, so the prompt is not lost with the outage."""
+        device_a = Device.from_dbus(10, self._RULE_A)
+
+        tray_app._screensaver_pending_devices = {10}
+        tray_app._on_screensaver_unlocked(False)
+        fake_client.list_devices_correlated.emit(0, [])  # daemon was down
+        assert tray_app._pending_unlock_cycles == {0: {10}}
+
+        fake_client.connection_changed.emit(True)
+        assert fake_client.fetch_devices_calls == [0, 0], "the outstanding cycle must be re-fetched"
+
+        fake_client.list_devices_correlated.emit(0, [device_a])
+        assert 10 in tray_app._open_dialogs
+
+        for dialog in list(tray_app._open_dialogs.values()):
+            dialog.close()
+
+    def test_reconnect_with_no_outstanding_cycles_fetches_nothing(self, tray_app, fake_client) -> None:
+        fake_client.connection_changed.emit(True)
+        assert fake_client.fetch_devices_calls == []

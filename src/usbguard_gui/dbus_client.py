@@ -77,6 +77,7 @@ class _DBusThread(AsyncWorkerThread):
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     list_devices_result = pyqtSignal(list)
+    list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
@@ -217,6 +218,21 @@ class _DBusThread(AsyncWorkerThread):
                 self._set_connected(False)
             self.list_devices_result.emit([])
 
+    async def _do_fetch_devices(self, request_id: int, query: str) -> None:
+        """List devices for one specific caller and hand the snapshot back tagged
+        with that caller's request id, so concurrent fetches can never be
+        mistaken for each other (see fetch_devices())."""
+        try:
+            raw = await self._devices_iface.call_list_devices(query)
+            devices = [Device.from_dbus(int(dev_id), str(rule_str)) for dev_id, rule_str in raw]
+        except DBusError as e:
+            log.error("Failed to fetch devices (request=%d, query=%s): %s", request_id, query, e)
+            if _is_connection_error(e):
+                self._set_connected(False)
+            self.list_devices_correlated.emit(request_id, [])
+            return
+        self.list_devices_correlated.emit(request_id, devices)
+
     async def _do_apply_policy(self, device_id: int, target: DeviceTarget, permanent: bool) -> None:
         try:
             rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
@@ -272,6 +288,21 @@ class _DBusThread(AsyncWorkerThread):
         if self._devices_iface and self._loop:
             self._schedule(self._do_list_devices(query))
 
+    def fetch_devices(self, request_id: int, query: str = "match") -> None:
+        """Request a device snapshot tagged with ``request_id``.
+
+        Identical to list_devices() except that the result comes back on
+        list_devices_correlated with the same id, so the caller can tell its own
+        answer from anybody else's and does not care what order the answers
+        arrive in.  Always terminates: a fast-fail or a D-Bus error still emits
+        ``(request_id, [])`` rather than leaving the caller waiting.
+        """
+        if not self._connected:
+            self.list_devices_correlated.emit(request_id, [])
+            return
+        if self._devices_iface and self._loop:
+            self._schedule(self._do_fetch_devices(request_id, query))
+
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
         if not self._connected:
             return
@@ -304,6 +335,7 @@ class USBGuardClient(QObject):
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
     list_devices_result = pyqtSignal(list)
+    list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
 
@@ -331,6 +363,7 @@ class USBGuardClient(QObject):
         self._thread.device_presence_changed.connect(self.device_presence_changed)
         self._thread.device_policy_changed.connect(self.device_policy_changed)
         self._thread.list_devices_result.connect(self.list_devices_result)
+        self._thread.list_devices_correlated.connect(self.list_devices_correlated)
         self._thread.list_rules_result.connect(self.list_rules_result)
         self._thread.remove_rule_result.connect(self.remove_rule_result)
         self._thread.start()
@@ -344,6 +377,18 @@ class USBGuardClient(QObject):
     def list_devices(self, query: str = "match") -> None:
         if self._thread:
             self._thread.list_devices(query)
+
+    def fetch_devices(self, request_id: int, query: str = "match") -> None:
+        """Correlated variant of list_devices(); the answer arrives on
+        list_devices_correlated(request_id, devices).
+
+        With no worker thread there is nothing to ask, but the caller still gets
+        its (request_id, []) so no request can be left permanently outstanding.
+        """
+        if self._thread:
+            self._thread.fetch_devices(request_id, query)
+        else:
+            self.list_devices_correlated.emit(request_id, [])
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False) -> None:
         if self._thread:

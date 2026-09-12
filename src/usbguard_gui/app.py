@@ -91,12 +91,17 @@ class USBGuardTrayApp:
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._screensaver_pending_devices: set[int] = set()
         self._hid_pending_devices: set[int] = set()
-        # FIFO queue of pending-id sets, one per in-flight list_devices() call
-        # issued by _on_screensaver_unlocked. A single overwritable slot here
-        # would lose whichever unlock cycle's ids arrived first whenever two
-        # unlock cycles overlap (screen re-locked before the previous
-        # summary's list_devices() result arrived).
-        self._screensaver_pending_id_queue: list[list[int]] = []
+        # Outstanding screensaver-unlock cycles, keyed by the request id of the
+        # fetch_devices() call whose snapshot answers that cycle.  A FIFO list
+        # here had to assume that every list_devices_result on the shared signal
+        # belonged to an unlock cycle, and that answers arrived in call order.
+        # Neither holds: the device-list window issues its own list_devices()
+        # calls on that same signal, and D-Bus makes no ordering promise, so a
+        # cycle could be matched against somebody else's (or a later cycle's)
+        # snapshot and its prompt silently dropped.  Keyed by id, a cycle is
+        # resolved only by its own snapshot, arriving in any order.
+        self._pending_unlock_cycles: dict[int, set[int]] = {}
+        self._next_unlock_cycle_id: int = 0
         self._permanent_allow_hashes: set[str] = set()
         # Whether screen locking is available (ScreenSaver service reachable).
         # While False, the HID lock-first flow cannot work and the UI must
@@ -204,6 +209,7 @@ class USBGuardTrayApp:
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._on_list_devices_result)
+        self._client.list_devices_correlated.connect(self._on_correlated_devices)
         self._client.list_rules_result.connect(self._on_list_rules_result)
 
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
@@ -214,47 +220,21 @@ class USBGuardTrayApp:
                 self._permanent_allow_hashes.add(str(parsed["hash"]))
 
     def _on_list_devices_result(self, devices: list[Device]) -> None:
-        # Pending HID devices may only be allowed while the screen is actually
-        # locked — that is the moment a newly-attached keyboard is safe to
-        # activate (unlocking requires a password).  If the screen is still
-        # unlocked, the deferred lock may not have fired yet: keep the devices
-        # pending so they are allowed by _on_screensaver_locked() once
-        # the screen locks.  Allowing them here would hand a just-plugged
-        # keyboard keystrokes on an unlocked session (race between this result
-        # and the lock timer).
+        # Opportunistic HID safety net: a fresh snapshot taken while the screen
+        # is actually locked lets any pending HID device in — that is the moment
+        # a newly-attached keyboard is safe to activate (unlocking requires a
+        # password).  The primary path is _on_screensaver_locked(); this only
+        # matters if that signal was missed.  Allowing them while the screen is
+        # still unlocked would hand a just-plugged keyboard keystrokes on an
+        # unlocked session, so the active check stays.  Deferred-unlock cycles
+        # are NOT resolved here — they need the snapshot fetched specifically
+        # for them, see _on_correlated_devices.
         if self._hid_pending_devices and self._screensaver.active:
             pending_ids = self._hid_pending_devices
             self._hid_pending_devices = set()
             for device_number in pending_ids:
                 if any(d.number == device_number for d in devices):
                     self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, permanent=False)
-        elif self._screensaver_pending_id_queue:
-            if not devices:
-                # An empty snapshot means the list call fast-failed (daemon
-                # disconnected) or hit a DBusError — do NOT consume the
-                # queued id set: the pending devices may still be present,
-                # and the next real snapshot must still get the chance to
-                # surface them.  A legitimately empty device list just
-                # defers consumption until the next non-empty result, at
-                # which point stale ids (device unplugged) fail to match
-                # and are dropped harmlessly.
-                return
-            # FIFO: results are assumed to arrive in the order their
-            # list_devices() calls were issued, so the oldest queued id set
-            # belongs to this result.
-            pending_ids = self._screensaver_pending_id_queue.pop(0)
-            pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
-
-            if not pending_devices:
-                return
-
-            count = len(pending_devices)
-            names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
-            info = QSystemTrayIcon.MessageIcon.Information
-            self._tray.showMessage(f"{count} USB device(s) connected during absence", names, info, 10000)
-
-            for device in pending_devices:
-                self._show_device_dialog(device)
 
     def start(self) -> None:
         """Initialize D-Bus connections and start the application.
@@ -278,6 +258,7 @@ class USBGuardTrayApp:
             self._reconnect_timer.stop()
             self._reconnect_attempts = 0  # Reset on successful connection
             self._client.list_rules()
+            self._retry_pending_unlock_cycles()
             return
 
         self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
@@ -451,17 +432,78 @@ class USBGuardTrayApp:
         if active or not self._screensaver_pending_devices:
             return
 
-        self._screensaver_pending_id_queue.append(list(self._screensaver_pending_devices))
+        cycle_id = self._register_unlock_cycle(self._screensaver_pending_devices)
         self._screensaver_pending_devices.clear()
-        if len(self._screensaver_pending_id_queue) > MAX_PENDING_UNLOCK_CYCLES:
-            dropped = self._screensaver_pending_id_queue.pop(0)
+        self._client.fetch_devices(cycle_id)
+
+    def _register_unlock_cycle(self, device_ids: set[int]) -> int:
+        """Record one deferred-unlock cycle and return the request id its fetch
+        must carry.
+
+        Past MAX_PENDING_UNLOCK_CYCLES the oldest cycle is dropped, so a daemon
+        that stays down across many lock/unlock cycles cannot grow the map for
+        the life of the process.  A dropped cycle loses only its prompt — the
+        devices stay blocked by USBGuard's policy.
+        """
+        cycle_id = self._next_unlock_cycle_id
+        self._next_unlock_cycle_id += 1
+        self._pending_unlock_cycles[cycle_id] = set(device_ids)
+        while len(self._pending_unlock_cycles) > MAX_PENDING_UNLOCK_CYCLES:
+            oldest = next(iter(self._pending_unlock_cycles))
+            dropped = self._pending_unlock_cycles.pop(oldest)
             log.warning(
                 "Unlock-cycle queue full (%d) — dropping the oldest pending set (%d id(s)); "
                 "those devices stay blocked",
                 MAX_PENDING_UNLOCK_CYCLES,
                 len(dropped),
             )
-        self._client.list_devices()
+        return cycle_id
+
+    def _retry_pending_unlock_cycles(self) -> None:
+        """Re-fetch every cycle still outstanding once the daemon is back.
+
+        A cycle keeps its id across retries, so a late answer to the failed
+        attempt resolves it just as well, while an answer for a cycle that has
+        already been resolved is ignored.
+        """
+        if not self._pending_unlock_cycles:
+            return
+        log.info("Reconnected — retrying %d outstanding unlock cycle(s)", len(self._pending_unlock_cycles))
+        for cycle_id in list(self._pending_unlock_cycles):
+            self._client.fetch_devices(cycle_id)
+
+    def _on_correlated_devices(self, request_id: int, devices: list[Device]) -> None:
+        """Resolve one unlock cycle against the snapshot fetched for it.
+
+        Anything that is not a cycle still waiting — another caller's fetch, or a
+        late answer for a cycle already resolved — is ignored.  That is the whole
+        point of the correlation: the device-list window's refreshes can no
+        longer consume an unlock cycle, and answers may arrive in any order.
+        """
+        pending_ids = self._pending_unlock_cycles.pop(request_id, None)
+        if pending_ids is None:
+            return
+
+        if not devices:
+            # An empty snapshot means the fetch fast-failed (daemon
+            # disconnected) or hit a DBusError.  Put the cycle back: the
+            # devices may still be present, and dropping the entry here is how a
+            # transient disconnect silently lost the prompt.  It gets retried
+            # when the daemon returns — see _retry_pending_unlock_cycles().
+            self._pending_unlock_cycles[request_id] = pending_ids
+            return
+
+        pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
+        if not pending_devices:
+            return
+
+        count = len(pending_devices)
+        names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
+        info = QSystemTrayIcon.MessageIcon.Information
+        self._tray.showMessage(f"{count} USB device(s) connected during absence", names, info, 10000)
+
+        for device in pending_devices:
+            self._show_device_dialog(device)
 
     def _on_screensaver_locked(self, active: bool) -> None:
         """Screen locked: auto-allow pending HID devices so the newly-attached
