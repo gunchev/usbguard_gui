@@ -28,11 +28,17 @@ Click the tray icon to open the device list showing all connected USB devices. C
   - **Device is already allowed** by an existing rule — no UI, nothing to do.
   - **Device has at least one HID interface** — see *HID Devices* below.
   - **Screen is locked** (non-HID device) — the device is deferred (see *Screensaver Integration* below).
-  - **Anything else** — a popup dialog appears with options:
-    - **Allow (Permanent)** — allow device and create persistent rule.
-    - **Allow (Temporary)** — allow device until it's disconnected.
-    - **Block** — keep device blocked.
-    - **Reject** — electrically disconnect the device.
+  - **Anything else** — a popup dialog appears with these buttons:
+    - **Allow (Permanent)** — allow the device and create a persistent rule.
+    - **Allow (Temporary)** — allow the device until it is disconnected.
+    - **Block** — keep the device blocked.
+    - **Close** — applies **Reject**: the device is electrically disconnected and
+      USBGuard forgets it. Despite the label this is a decision, not a dismissal.
+
+  `Close` is the default button, so **Enter** applies Reject rather than an allow.
+  Letting the dialog time out (30 s) is different: no action is applied at all and
+  the device simply stays blocked. If you want "do nothing for now", let it time
+  out or pick **Block**.
 
 ### HID Devices
 
@@ -41,9 +47,9 @@ device such as HID + Mass Storage — is handled specially to defend against "Ba
 keystroke-injection attacks:
 
 1. A tray warning appears: *"New keyboard/HID attached"*.
-2. After a short delay (5 seconds) the device is temporarily allowed and the screen is locked —
-   provided the device is still connected. If it was unplugged before the delay expired, the
-   lock is skipped.
+2. After a short delay (5 seconds) the screen is locked, and **only once the lock is
+   confirmed** is the device temporarily allowed — never the other way round. If the device
+   was unplugged before the delay expired, the lock is skipped.
 3. You must enter your password with the newly-attached device to unlock it, which prevents
    an unattended unlocked machine from being hijacked by an injected keystroke device.
 
@@ -52,10 +58,31 @@ plugged in while the screen is already **locked** is instead temporarily allowed
 without the warning/delay/lock dance — so you can use a newly-attached keyboard to unlock the
 machine. The temporary allow lasts only until the device is unplugged.
 
-The entire HID special-treatment flow can be disabled via **Disable special HID device treatment**
-in the tray right-click menu (persisted in `~/.config/usbguard_gui/general.conf`). When disabled,
-HID devices receive the same prompt dialog as any other device — more secure, but a newly-attached
-keyboard cannot be used to unlock the screen.
+The entire HID special-treatment flow can be disabled via **Disable special HID device
+treatment** in the tray right-click menu (persisted in `~/.config/usbguard_gui/general.conf`).
+When disabled, HID devices get the same prompt dialog as any other device: nothing is
+allowed automatically, **but the lock-first guarantee goes with it** — you can then allow
+a keyboard while the session stays unlocked, and a newly-attached keyboard cannot be used
+to unlock the screen. "Different", not "more secure": keep the treatment enabled unless
+you specifically want prompt-driven HID handling.
+
+### When Screen Locking Is Not Possible
+
+The lock-first design assumes the screen *can* be locked. Two situations break that
+assumption and the app refuses to act rather than pretending:
+
+- **No screen-lock service** (the `org.freedesktop.ScreenSaver` service is unreachable —
+  a locker-less or unusual session). The tray shows *"Screen locking unavailable"* and
+  **all allow/deny actions are disabled** — in the dialog and in the device list. Allowing
+  a keyboard without being able to lock first would hand an attacker an unlocked session,
+  so the app will not touch the policy at all. Devices stay blocked by USBGuard's own
+  policy. The tray announces it again when locking becomes available.
+- **A logind idle/block inhibitor is held** (a `dnf`/`rpm` transaction, a *"Prevent screen
+  lock"* toggle, `systemd-inhibit --what=idle`, …). The auto-allow-then-lock flow is
+  skipped — locking would be a no-op, so the app does not claim it happened — and the HID
+  device falls through to the normal prompt path, where it is **not** auto-allowed.
+
+In both cases the failure direction is the safe one: the device stays blocked.
 
 ### Screensaver Integration
 
