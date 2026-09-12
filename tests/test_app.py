@@ -1142,3 +1142,75 @@ class TestModuleEntryPoint:
             runpy.run_module("usbguard_gui.__main__", run_name="__main__")
 
         main.assert_called_once_with()
+
+
+class TestUnlockQueueRaceReproductions:
+    """AUDIT follow-ups #2 and #3, reproduced against the FIFO unlock queue.
+
+    The queue attributes the k-th queued id-set to the k-th
+    ``list_devices_result`` that arrives while it is non-empty.  That holds only
+    if every result on that signal belongs to an unlock cycle and the results
+    arrive in call order.  Neither assumption survives: the device-list window
+    issues its own ``list_devices()`` calls on the same signal, and D-Bus gives
+    no ordering guarantee.  Both cases silently drop a user-facing prompt.
+
+    Marked xfail(strict=True): they must start passing when the unlock path moves
+    to per-call correlated fetches, at which point the marker is removed.
+    """
+
+    _RULE_A = (
+        'block id 04f2:b2ea serial "" name "Device A" hash "aaa111" '
+        'parent-hash "" via-port "1-2" with-interface 0e:01:00 with-connect-type hotplug'
+    )
+    _RULE_B = (
+        'block id 04f2:b2eb serial "" name "Device B" hash "bbb222" '
+        'parent-hash "" via-port "1-3" with-interface 0e:01:00 with-connect-type hotplug'
+    )
+
+    def _queue_two_cycles(self, tray_app) -> None:
+        """Cycle 1 defers device 10 and unlocks; then cycle 2 defers device 20
+        and unlocks, before cycle 1's result has arrived."""
+        tray_app._screensaver_pending_devices = {10}
+        tray_app._on_screensaver_unlocked(False)
+        tray_app._screensaver_pending_devices = {20}
+        tray_app._on_screensaver_unlocked(False)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="AUDIT follow-up #2: a foreign device-list refresh result is consumed as if it "
+               "answered the queued unlock cycle, dropping that cycle's prompt",
+    )
+    def test_foreign_refresh_must_not_consume_a_queued_cycle(self, tray_app, fake_client) -> None:
+        a = Device.from_dbus(10, self._RULE_A)
+        b = Device.from_dbus(20, self._RULE_B)
+        self._queue_two_cycles(tray_app)
+
+        # Cycle 1's own result arrives and resolves A.
+        fake_client.list_devices_result.emit([a])
+        assert 10 in tray_app._open_dialogs
+
+        # A foreign refresh, snapshotted before B was ever plugged in, lands
+        # between the two cycle results.
+        fake_client.list_devices_result.emit([a])
+
+        # Cycle 2's result arrives, and it does contain B.
+        fake_client.list_devices_result.emit([a, b])
+        assert 20 in tray_app._open_dialogs, "B's prompt must survive a foreign snapshot"
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="AUDIT follow-up #3: results arriving out of call order are attributed to the "
+               "wrong unlock cycle, dropping both prompts",
+    )
+    def test_out_of_order_results_must_not_cross_cycles(self, tray_app, fake_client) -> None:
+        a = Device.from_dbus(10, self._RULE_A)
+        b = Device.from_dbus(20, self._RULE_B)
+        self._queue_two_cycles(tray_app)
+
+        # Cycle 2's answer arrives first: cycle 1's ids are matched against a
+        # snapshot that only holds B, and cycle 2's against one that only holds A.
+        fake_client.list_devices_result.emit([b])
+        fake_client.list_devices_result.emit([a])
+
+        assert 10 in tray_app._open_dialogs, "A (cycle 1) must be prompted"
+        assert 20 in tray_app._open_dialogs, "B (cycle 2) must be prompted"
