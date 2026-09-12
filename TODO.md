@@ -13,8 +13,10 @@
 
 ## 1.0
 
-- [ ] Unlock-queue race: correlated per-call device fetch (Option 3) — `fetch_devices()` + `list_devices_correlated(id, devices)`,
-      id→id-set dict in the app, device-list window untouched. Closes AUDIT follow-up items 2 & 3.
+- [x] Unlock-queue race: correlated per-call device fetch (Option 3) — `fetch_devices()` +
+      `list_devices_correlated(id, devices)`, id→id-set dict in the app, device-list window
+      untouched. Closes AUDIT follow-up items 2 & 3 (both reproduced red, then fixed;
+      `TestUnlockQueueRaceReproductions`). Done 2026-09-12.
 - [ ] Polkit policy subpackages: `usbguard_gui-policy-open` (recommended default, all local console sessions) +
       `usbguard_gui-policy-strict` (wheel-only), mutual Conflicts, README trade-off section, both rules kept in `rpm/`
       for non-RPM installs. No-policy mode = admin password per action (fail-closed, documented).

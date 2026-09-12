@@ -120,8 +120,18 @@ src/usbguard_gui/introspection/
 | `device_presence_changed` | `int, int, int, str, dict`              | D-Bus DevicePresenceChanged  |
 | `device_policy_changed`   | `int, int, int, str, int, dict`         | D-Bus DevicePolicyChanged    |
 | `list_devices_result`     | `list[Device]`                          | result of `list_devices()`   |
+| `list_devices_correlated` | `int, list[Device]`                     | result of `fetch_devices(request_id)` |
 | `list_rules_result`       | `list[tuple[int, str]]`                 | result of `list_rules()`     |
 | `remove_rule_result`      | `bool`                                  | result of `remove_rule()`    |
+
+`list_devices()` and `fetch_devices()` hit the same D-Bus call; they differ in
+delivery.  `list_devices()` answers on the shared, untagged `list_devices_result`
+— fine for a consumer that always wants "the latest snapshot" (the device-list
+window).  `fetch_devices(request_id)` answers on `list_devices_correlated` with
+the caller's id, which is what the screensaver-unlock path needs: each deferred
+cycle resolves only against the snapshot it asked for, so another consumer's
+refresh can never consume it and answers may arrive in any order.  Both always
+terminate — a fast-fail or a `DBusError` still emits an empty list.
 
 `apply_device_policy()` is fire-and-forget (no result signal); callers follow
 up with `list_rules()` to confirm the new policy state.
