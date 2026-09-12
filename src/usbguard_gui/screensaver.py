@@ -12,7 +12,7 @@ from dbus_fast.aio import MessageBus
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
-    AsyncWorkerThread, get_introspection, stop_worker_thread
+    AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
 
 log = logging.getLogger(__name__)
 
@@ -305,6 +305,14 @@ class ScreensaverMonitor(QObject):
         return self._connected
 
     def connect(self) -> bool:
+        # Symmetric with USBGuardClient.connect(): retire any previous worker
+        # before starting a new one.  Without this, a repeated connect() would
+        # leave the old thread alive with its own session-bus connection and
+        # ActiveChanged subscription, so every screen lock/unlock would be
+        # delivered twice.
+        old, self._thread = self._thread, None
+        if old is not None:
+            recycle_worker_thread(old, "Screensaver", log)
         self._thread = _ScreensaverThread(self)
         self._thread.connected.connect(self._on_connected)
         self._thread.active_changed.connect(self._on_active_changed)

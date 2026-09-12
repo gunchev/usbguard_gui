@@ -11,7 +11,7 @@ from dbus_fast.aio import MessageBus
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
-    AsyncWorkerThread, get_introspection, stop_worker_thread
+    AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
 from usbguard_gui.device import Device, DeviceTarget
 
 log = logging.getLogger(__name__)
@@ -320,7 +320,12 @@ class USBGuardClient(QObject):
         # reconnect attempt, and leaving the old thread running would leak a
         # live QThread (with its D-Bus connection and signal subscriptions)
         # that keeps delivering duplicate events after a daemon restart.
-        self.stop()
+        # The non-blocking recycle variant is used deliberately: this runs on
+        # the Qt main thread on every backoff retry, so a wedged worker must
+        # cost a short grace period, not the full THREAD_STOP_TIMEOUT_MS.
+        old, self._thread = self._thread, None
+        if old is not None:
+            recycle_worker_thread(old, "D-Bus", log)
         self._thread = _DBusThread(self)
         self._thread.connection_changed.connect(self.connection_changed)
         self._thread.device_presence_changed.connect(self.device_presence_changed)

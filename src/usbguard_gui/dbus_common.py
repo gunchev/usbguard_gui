@@ -13,7 +13,7 @@ import os
 from collections.abc import Coroutine
 from typing import Any
 
-from PyQt6.QtCore import QObject, QThread
+from PyQt6.QtCore import QObject, QThread, QTimer
 
 # How long stop() waits for a worker thread to exit on its own before
 # terminate() is used as a last resort.  A healthy worker notices
@@ -21,6 +21,14 @@ from PyQt6.QtCore import QObject, QThread
 # MessageBus.connect() never will, and an unbounded wait() would hang
 # _quit() forever.
 THREAD_STOP_TIMEOUT_MS = 3000
+
+# How long a worker that is being *replaced* gets to exit on its own.  Much
+# shorter than THREAD_STOP_TIMEOUT_MS because the recycle happens on the Qt
+# main thread on every reconnect attempt: a healthy worker still exits
+# inside its 0.1 s keep-alive tick, so the old bus connection and its
+# signal subscriptions are gone before the replacement starts, while a
+# wedged one costs 250 ms of UI instead of 3 s.
+RECYCLE_GRACE_MS = 250
 
 # The standard freedesktop D-Bus interface, used to watch NameOwnerChanged
 # for proactive service-loss detection (both the USBGuard daemon on the
@@ -69,3 +77,39 @@ def stop_worker_thread(thread: AsyncWorkerThread, label: str, log: logging.Logge
     if not thread.wait(THREAD_STOP_TIMEOUT_MS):
         log.warning("%s worker thread did not exit within %d ms — terminating", label, THREAD_STOP_TIMEOUT_MS)
         thread.terminate()
+
+
+def recycle_worker_thread(thread: AsyncWorkerThread, label: str, log: logging.Logger) -> None:
+    """Retire a worker that is being replaced, without stalling the Qt UI thread.
+
+    Used by the connect()/reconnect path, which runs on the Qt main thread on
+    every backoff retry.  Blocking there for the full THREAD_STOP_TIMEOUT_MS
+    would freeze the tray for 3 s per attempt, so the worker is given only
+    RECYCLE_GRACE_MS — enough for a healthy worker to leave its keep-alive
+    loop, which is what guarantees the old D-Bus connection and its signal
+    subscriptions are gone before the replacement starts (no device event is
+    ever delivered twice).
+
+    A worker still running after the grace period is wedged — typically inside
+    MessageBus.connect(), i.e. holding no live bus connection and therefore no
+    ability to emit device events — so finishing it off is deferred to a
+    single-shot timer instead of being waited on here.
+    """
+    thread.stop()
+    if thread.wait(RECYCLE_GRACE_MS):
+        thread.deleteLater()
+        return
+
+    log.warning(
+        "%s worker thread did not exit within %d ms — deferring teardown to keep the UI responsive",
+        label,
+        RECYCLE_GRACE_MS,
+    )
+
+    def _finish() -> None:
+        if thread.isRunning():
+            log.warning("%s worker thread never exited — terminating", label)
+            thread.terminate()
+        thread.deleteLater()
+
+    QTimer.singleShot(THREAD_STOP_TIMEOUT_MS, _finish)

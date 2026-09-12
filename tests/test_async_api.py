@@ -6,7 +6,8 @@ and that client methods return None (fire-and-forget) while results come via sig
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import logging
+from unittest.mock import ANY, MagicMock, patch
 
 from usbguard_gui.device import DeviceTarget
 
@@ -560,3 +561,100 @@ class TestHasIdleBlockInhibitor:
             ("idle", "ok", "ok", "block", 0, 1),
         ]
         assert self._f(rows) is True
+
+
+class TestRecycleWorkerThread:
+    """connect() recycles the previous worker on the Qt main thread, so the
+    teardown must not block for the full THREAD_STOP_TIMEOUT_MS — a wedged worker
+    would otherwise freeze the tray for 3 s on every backoff retry."""
+
+    @staticmethod
+    def _thread(*, exited_in_grace: bool, still_running: bool = False) -> MagicMock:
+        thread = MagicMock()
+        thread.wait.return_value = exited_in_grace
+        thread.isRunning.return_value = still_running
+        return thread
+
+    def test_grace_period_is_shorter_than_the_quit_timeout(self) -> None:
+        from usbguard_gui.dbus_common import RECYCLE_GRACE_MS, THREAD_STOP_TIMEOUT_MS
+
+        assert RECYCLE_GRACE_MS < THREAD_STOP_TIMEOUT_MS
+
+    def test_worker_that_exits_in_grace_is_deleted_without_a_timer(self) -> None:
+        from usbguard_gui.dbus_common import RECYCLE_GRACE_MS, recycle_worker_thread
+
+        thread = self._thread(exited_in_grace=True)
+        with patch("usbguard_gui.dbus_common.QTimer.singleShot") as single_shot:
+            recycle_worker_thread(thread, "Test", logging.getLogger(__name__))
+
+        thread.stop.assert_called_once_with()
+        thread.wait.assert_called_once_with(RECYCLE_GRACE_MS)
+        thread.deleteLater.assert_called_once_with()
+        single_shot.assert_not_called()
+        thread.terminate.assert_not_called()
+
+    def test_wedged_worker_is_deferred_instead_of_blocked_on(self) -> None:
+        from usbguard_gui.dbus_common import RECYCLE_GRACE_MS, THREAD_STOP_TIMEOUT_MS, recycle_worker_thread
+
+        thread = self._thread(exited_in_grace=False, still_running=True)
+        with patch("usbguard_gui.dbus_common.QTimer.singleShot") as single_shot:
+            recycle_worker_thread(thread, "Test", logging.getLogger(__name__))
+
+        # Only the short grace wait happens inline — never the full quit timeout.
+        thread.wait.assert_called_once_with(RECYCLE_GRACE_MS)
+        assert THREAD_STOP_TIMEOUT_MS not in [c.args[0] for c in thread.wait.call_args_list]
+        # Nothing is terminated while the UI thread is still inside recycle().
+        thread.terminate.assert_not_called()
+        thread.deleteLater.assert_not_called()
+
+        single_shot.assert_called_once()
+        assert single_shot.call_args.args[0] == THREAD_STOP_TIMEOUT_MS
+        single_shot.call_args.args[1]()  # deferred teardown fires
+        thread.terminate.assert_called_once_with()
+        thread.deleteLater.assert_called_once_with()
+
+    def test_deferred_teardown_does_not_terminate_a_worker_that_recovered(self) -> None:
+        from usbguard_gui.dbus_common import recycle_worker_thread
+
+        thread = self._thread(exited_in_grace=False, still_running=False)
+        with patch("usbguard_gui.dbus_common.QTimer.singleShot") as single_shot:
+            recycle_worker_thread(thread, "Test", logging.getLogger(__name__))
+
+        single_shot.call_args.args[1]()
+        thread.terminate.assert_not_called()
+        thread.deleteLater.assert_called_once_with()
+
+
+class TestConnectRecyclesWithoutBlocking:
+    """Both facades must retire a previous worker through the non-blocking path,
+    and ScreensaverMonitor must do it too — an un-retired screensaver thread keeps
+    its own ActiveChanged subscription, so every lock/unlock would be delivered
+    twice."""
+
+    def test_client_connect_recycles_the_previous_worker(self) -> None:
+        from usbguard_gui.dbus_client import USBGuardClient
+
+        first, second = MagicMock(), MagicMock()
+        with patch("usbguard_gui.dbus_client._DBusThread", side_effect=[first, second]), \
+                patch("usbguard_gui.dbus_client.recycle_worker_thread") as recycle:
+            client = USBGuardClient()
+            client.connect()
+            assert recycle.call_count == 0  # nothing to retire yet
+            client.connect()
+
+        recycle.assert_called_once_with(first, "D-Bus", ANY)
+        assert client._thread is second
+
+    def test_screensaver_monitor_connect_recycles_the_previous_worker(self) -> None:
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        first, second = MagicMock(), MagicMock()
+        with patch("usbguard_gui.screensaver._ScreensaverThread", side_effect=[first, second]), \
+                patch("usbguard_gui.screensaver.recycle_worker_thread") as recycle:
+            monitor = ScreensaverMonitor()
+            monitor.connect()
+            assert recycle.call_count == 0
+            monitor.connect()
+
+        recycle.assert_called_once_with(first, "Screensaver", ANY)
+        assert monitor._thread is second
