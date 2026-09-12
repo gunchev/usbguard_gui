@@ -11,8 +11,13 @@ Instructions for agentic coding agents working in this repository.
    opening a security bug, not just a functional one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
    not done.
-3. **Graft before grep.** The `graft/` context graph (see the Graft section)
-   answers "where does X live" and "what breaks if I change X" exactly, for free.
+3. **Graft before grep** — but build it first. The `graft/` context graph (see
+   the Graft section) answers "where does X live" and "what breaks if I change
+   X" exactly, for free. It is **generated and local-only**: `graft/` is
+   gitignored, so a fresh clone has none. Check with `ls graft/`; if it is
+   missing (or `graft check` reports stale), run `graft build --deep` before
+   relying on it. Never assume a hit is current just because the section below
+   describes the tool.
 
 ## Project Overview
 
@@ -176,7 +181,7 @@ tests/
 | `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, dasbus→dbus-fast mapping |
 | `docs/AUDIT-*.md`, `docs/REVIEW-*.md` | past audit/review findings and how each was resolved |
 | `TODO.md` | versioned roadmap, including deferred race fixes for 1.0 |
-| `graft/` | generated repo context graph (see the Graft section) |
+| `graft/` | generated repo context graph — **local-only, gitignored**; build with `graft build --deep` (see the Graft section) |
 
 ## Testing Conventions
 
@@ -221,8 +226,9 @@ Before submitting changes:
 4. Update docstrings for user-facing APIs
 5. Update `README.md` when user-facing behaviour changes — the HID flow, the
    lock delay, polkit rules and install steps all live there
-6. Run `graft build` after structural changes so the context graph matches the
-   code
+6. Run `graft build` after structural changes so the local context graph matches
+   the code (the graph is not committed — this refreshes it for the next agent on
+   this machine)
 7. No commented-out code in final submissions
 
 ## Releasing
@@ -233,10 +239,19 @@ the GitHub → COPR webhook (verified on v0.7.4, build 10928231). Release throug
 that target rather than hand-editing `__version__` or the CHANGELOG.
 
 <!-- graft:start -->
+
+> **The graph itself is not committed.** `graft/` and `/.graft/` are gitignored,
+> so the nodes described below exist only on the machine that built them. On a
+> fresh clone there is no graph: run `graft build --deep` before using any graft
+> command, and `graft check` to see whether an existing local graph has drifted
+> from the code. If graft is unavailable, fall back to reading the source — do
+> not treat a missing or stale graph as an answer.
+
 ## Graft — repo context graph
 
 This repo is indexed in `graft/`: small linked markdown nodes that explain each
-system and carry exact file:line spans, kept in sync with the code through git.
+system and carry exact file:line spans, kept in sync with the code by rebuilding
+with `graft build` (generated locally, never committed).
 
 For ANY task here — understanding how something works, finding where code lives,
 or scoping a change — get context from the graph before grepping or opening

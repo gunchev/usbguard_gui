@@ -36,3 +36,6 @@ __pypackages__/
 
 # Claude Code personal permission log — per-machine, per-session grants.
 .claude/settings.local.json
+
+# graft's local repository settings — not committed.
+/.graft/
