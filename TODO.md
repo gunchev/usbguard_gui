@@ -3,6 +3,9 @@
 
 ## Post-1.0
 
+- [ ] Rename the dialog's **Close** button (it applies Reject — electrical disconnect, device
+      forgotten). Label it **Reject** to match the device-list menu, or split into
+      "Reject" + a real dismiss that applies nothing; README now has to explain the mismatch.
 - [ ] Broader DE testing: GNOME (with systray extension), LXQT, LXDE, XFCE, others.
 - [ ] UI to manage permanent rules (edit/disable).
 - [ ] Warn when an action would disable the last keyboard/mouse HID.
