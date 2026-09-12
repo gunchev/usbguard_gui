@@ -39,3 +39,6 @@ __pypackages__/
 
 # graft's local repository settings — not committed.
 /.graft/
+
+# graft config template — may hold an API key, never commit.
+.env
