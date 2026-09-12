@@ -31,7 +31,7 @@ dependencies = [
 | `app.py`           | `USBGuardTrayApp`                           | Qt event loop, tray, routing               |
 | `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow / Block / Reject prompt   |
 | `device_list.py`   | `DeviceListWindow` (+ table models)         | Device list window                         |
-| `settings.py`      | `Settings`                                  | QSettings wrapper                          |
+| `settings.py`      | `SettingsProtocol`, `Settings`              | Settings seam (Protocol) + QSettings-backed singleton |
 
 ## Architecture
 
@@ -149,12 +149,34 @@ reconnect (worker-thread teardown + rebuild).  Ordinary per-call failures
 (e.g. applying a policy to a device that was unplugged a moment earlier) are
 logged and swallowed without touching connection state.
 
+## Testability seams
+
+Two dependencies are injected rather than constructed in place, so the suite
+never touches the developer's real per-user state:
+
+- **Settings** — `USBGuardTrayApp(..., settings=SettingsProtocol)`. The
+  protocol (`settings.py`) is the contract; tests pass an in-memory fake.
+  Without the seam, a GUI preference toggled once in the running app
+  (`disable_hid_treatment=true` in `~/.config/usbguard_gui/general.conf`)
+  would silently change what the suite asserts — it can skip the entire HID
+  pending/lock flow. Production passes nothing and gets the `Settings`
+  singleton. Adding a setting means extending **both** the protocol and the
+  fake.
+- **Window-geometry store** — `DeviceListWindow(..., settings=QSettings)`, so
+  each test brings a `tmp_path`-backed store instead of overwriting
+  `device_list.conf` with offscreen geometry.
+
 ## Tooling
 
 | Tool      | Purpose                        | Command                    |
 |-----------|--------------------------------|----------------------------|
 | isort     | Import sorting                 | `make lint` / `make format`|
-| ruff      | Lint (E/F/W/UP/B/SIM/RUF/I)   | `make lint`                |
+| ruff      | Lint (E/F/W/UP/B/SIM/RUF)     | `make lint`                |
 | autopep8  | Code formatting                | `make lint` / `make format`|
 | pyright   | Static type checking           | `make typecheck`           |
-| pytest    | Tests (226 tests)              | `make test`                |
+| pytest    | Tests (238 collected cases from 226 test methods) | `make test`  |
+
+**Import order is owned by isort, not ruff.** Ruff's `I` rules are deliberately
+*not* enabled in `[tool.ruff.lint]` (see `pyproject.toml`), so `ruff check
+--fix` will not sort imports — `make format` runs isort for that. AGENTS.md
+carries the same rule.
