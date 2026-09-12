@@ -197,9 +197,13 @@ usbguard_gui
 - **Key Components**:
   - `app.py` — Main tray application and signal handlers.
   - `dbus_client.py` — USBGuard daemon communication.
-  - `screensaver.py` — Screensaver state monitoring.
+  - `dbus_common.py` — Shared QThread + asyncio worker base for both D-Bus subsystems.
+  - `screensaver.py` — Screensaver / logind lock-state and inhibitor monitoring.
+  - `device.py` — Device model and USBGuard rule-string parsing.
   - `device_list.py` — Device management window.
   - `device_dialog.py` — Device action dialog.
+  - `settings.py` — Settings seam (`SettingsProtocol`) and the QSettings-backed store.
+  - `introspection/` — Bundled D-Bus introspection XML (ships in the wheel).
 
 Architecture details: [docs/DESIGN.md](docs/DESIGN.md). Past audit and review
 reports live in `docs/`.

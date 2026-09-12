@@ -24,7 +24,7 @@ dependencies = [
 
 | Module             | Class(es)                                   | Role                                       |
 |--------------------|---------------------------------------------|--------------------------------------------|
-| `dbus_common.py`   | `AsyncWorkerThread`, `stop_worker_thread()` | Shared QThread + asyncio worker base, introspection loading |
+| `dbus_common.py`   | `AsyncWorkerThread`, `stop_worker_thread()`, `recycle_worker_thread()` | Shared QThread + asyncio worker base, introspection loading |
 | `dbus_client.py`   | `_DBusThread`, `USBGuardClient`             | USBGuard system-bus D-Bus client           |
 | `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | ScreenSaver + logind session-bus monitor   |
 | `device.py`        | `Device`, `DeviceTarget`, `parse_device_rule` | Device model and rule-string parsing    |
@@ -82,6 +82,20 @@ Results flow worker → Qt as Qt signals, connected in the public facade's
 Shutdown goes through `stop_worker_thread()` (`dbus_common.py`): bounded
 `wait(THREAD_STOP_TIMEOUT_MS)` with a `QThread.terminate()` fallback, so a
 worker stuck in `MessageBus.connect()` cannot hang `_quit()`.
+
+Replacing a worker (the reconnect path) uses `recycle_worker_thread()`
+instead, because `connect()` runs on the Qt main thread on every backoff
+retry and must not freeze the tray for the full timeout.  It waits only
+`RECYCLE_GRACE_MS` (250 ms) — enough for a healthy worker to leave its
+0.1 s keep-alive loop, which is what guarantees the old bus connection and
+its signal subscriptions are gone before the replacement starts, so no
+device event is ever delivered twice.  A worker still running after the
+grace period is wedged inside `MessageBus.connect()`, i.e. holding no live
+bus connection and therefore no ability to emit events, so finishing it off
+is deferred to a single-shot timer rather than blocked on.  Both facades
+recycle: `USBGuardClient.connect()` always has, and `ScreensaverMonitor.connect()`
+now does too — an un-retired screensaver thread keeps its own
+`ActiveChanged` subscription and would deliver every lock/unlock twice.
 
 ## Introspection XML
 
@@ -174,7 +188,7 @@ never touches the developer's real per-user state:
 | ruff      | Lint (E/F/W/UP/B/SIM/RUF)     | `make lint`                |
 | autopep8  | Code formatting                | `make lint` / `make format`|
 | pyright   | Static type checking           | `make typecheck`           |
-| pytest    | Tests (238 collected cases from 226 test methods) | `make test`  |
+| pytest    | Tests (`tests/`, headless via `QT_QPA_PLATFORM=offscreen`) | `make test`     |
 
 **Import order is owned by isort, not ruff.** Ruff's `I` rules are deliberately
 *not* enabled in `[tool.ruff.lint]` (see `pyproject.toml`), so `ruff check
