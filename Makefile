@@ -69,7 +69,7 @@ check: lint typecheck test
 
 .PHONY: coverage
 coverage:
-	uv run pytest -v --cov . --cov-report=term-missing
+	uv run pytest -v --cov=usbguard_gui --cov-report=term-missing
 
 
 .PHONY: format

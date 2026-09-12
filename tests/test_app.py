@@ -1129,3 +1129,16 @@ class TestUnlockQueueCap:
             tray_app._on_screensaver_unlocked(False)
 
         assert tray_app._screensaver_pending_id_queue == [[1], [2], [3]]
+
+
+class TestModuleEntryPoint:
+    """python -m usbguard_gui must reach app.main() (the module was previously
+    at 0% coverage, so nothing proved the entry point was wired up)."""
+
+    def test_run_module_calls_main(self) -> None:
+        import runpy
+
+        with patch("usbguard_gui.app.main") as main:
+            runpy.run_module("usbguard_gui.__main__", run_name="__main__")
+
+        main.assert_called_once_with()
