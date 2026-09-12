@@ -2,6 +2,18 @@
 
 Instructions for agentic coding agents working in this repository.
 
+## Read this first
+
+1. **Preserve the HID lock-first contract.** A device exposing a HID interface may
+   only be allowed while the screen is locked — that is the invariant this whole
+   app exists to enforce, and the flow is specified in `README.md` → *How It
+   Works → HID Devices*. Touch `app.py` without it in hand and you risk re-
+   opening a security bug, not just a functional one.
+2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
+   not done.
+3. **Graft before grep.** The `graft/` context graph (see the Graft section)
+   answers "where does X live" and "what breaks if I change X" exactly, for free.
+
 ## Project Overview
 
 KDE/Qt system tray GUI for USBGuard — responds to USB device insertions with Allow, Block, or Reject actions.
@@ -13,45 +25,35 @@ KDE/Qt system tray GUI for USBGuard — responds to USB device insertions with A
 
 ## Build & Run Commands
 
-### Using uv (recommended)
+`make` carries the canonical verbs; `make help` describes every target (RPM/mock,
+PyPI upload, clean/distclean).
 
 ```bash
-uv run usbguard_gui                                 # run the app
-uv run python -m usbguard_gui                       # alternative entry point
-uv run pytest                                       # run all tests
-uv run pytest tests/test_file.py                    # run single test file
-uv run pytest -k test_name                          # run single test by name
-uv run pytest -v --cov . --cov-report=term-missing  # coverage
-uv run ruff check src/ tests/                       # lint
-uv run autopep8 --in-place --recursive src/ tests/  # format
-uv run tox                                          # test across Python versions
+make check         # lint + typecheck + tests — the gate
+make lint          # isort --check-only + ruff + autopep8 --diff
+make typecheck     # pyright
+make test          # pytest -v
+make format        # isort + autopep8 --in-place + ruff --fix
+make coverage      # tests + term-missing coverage report
+make run           # uv sync dev deps, then run the app
+make build         # wheel + sdist into dist/
 ```
 
-### Using Make
+Ad-hoc work goes through uv directly:
 
 ```bash
-make test          # run all tests (uv run pytest -v)
-make check         # lint + typecheck + test
-make lint          # ruff check + autopep8 format check
-make format        # auto-format with autopep8
-make coverage      # test with coverage report
-make build         # build wheel package
-make clean         # clean build artifacts
-make run           # sync dev deps and run app
+uv run pytest tests/test_app.py      # one test file
+uv run pytest -k test_name           # one test by name
+uv run tox                          # every supported Python (CI runs this on Fedora 43/44)
 ```
 
 ## Code Style Guidelines
 
 ### Formatting
 
-- **Line length**: 120 characters maximum
-- **Indentation**: 4 spaces for Python files
-- **Line endings**: LF
-- **Formatter**: autopep8
-- **Charset**: UTF-8
-- **Trailing whitespace**: trimmed
-- **Final newline**: required
-- See `.editorconfig` for additional editor-specific settings
+`.editorconfig` and `pyproject.toml` are the source of truth: 4-space indent,
+LF, UTF-8, 120-column limit, trailing whitespace trimmed, final newline.
+`make lint` checks all of it; `make format` applies it.
 
 ### Function Signature Wrapping
 
@@ -68,26 +70,20 @@ def _on_device_policy_changed(self, device_id: int, target_old: int, target_new:
 autopep8 enforces the visual alignment (`make lint` flags it, `make
 format` fixes it); the density preference is enforced by review.
 
-### Linter/Formatter Configuration (pyproject.toml)
+### Linters in play
 
-```toml
-[tool.ruff]
-line-length = 120
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "UP", "B", "SIM", "RUF"]
-
-[tool.autopep8]
-max_line_length = 120
-```
+`ruff` (rule set lives in `[tool.ruff.lint]`, `pyproject.toml`), `isort`
+(import order), `autopep8` (whitespace and continuation layout), `pyright`
+(types). `make lint` runs the first three, `make typecheck` runs pyright.
 
 ### Imports
 
 - Always use `from __future__ import annotations` for postponed annotations
-- Group imports in order: stdlib, third-party, local
-- Use absolute imports: `from usbguard_gui.device import ...`
-- Sort imports with ruff (I001)
+- Group in order: stdlib, third-party, local; absolute imports only
+  (`from usbguard_gui.device import ...`)
+- **isort owns import order** — `make lint` runs `isort --check-only`, `make
+  format` runs `isort`. Ruff's `I` rules are deliberately not enabled, so
+  `ruff check --fix` will not sort imports for you.
 
 ### Type Hints
 
@@ -111,9 +107,13 @@ max_line_length = 120
 ### Error Handling
 
 - Use logging (`log = logging.getLogger(__name__)`) for errors and warnings
-- D-Bus errors: catch `DBusError` from `dbus_fast.error`
-- Permission errors: check error names via `_is_permission_error()` pattern
-- Never expose secrets or credentials in logs
+- D-Bus errors: `from dbus_fast import DBusError` (there is no `dbus_fast.error`
+  module) alongside `from dbus_fast.aio import MessageBus`
+- Two D-Bus error classes, and the split matters: `_is_permission_error()` is a
+  polkit denial, `_is_connection_error()` is a broken transport. Only the second
+  may flip `_connected` and trigger a reconnect — an ordinary per-call failure
+  (device unplugged a moment before the action) must leave the connection alone.
+- Keep credentials out of log output.
 
 ### Dataclasses & Enums
 
@@ -131,40 +131,52 @@ max_line_length = 120
 
 ### Settings & Test Isolation
 
-- App settings are read through `SettingsProtocol` (`settings.py`), injected as
+- App settings go through `SettingsProtocol` (`settings.py`), injected as
   `USBGuardTrayApp(..., settings=...)`; `DeviceListWindow(..., settings=...)`
-  takes its `QSettings` geometry store the same way.
-- Production (`main()`) injects nothing and gets the real `Settings` singleton
-  (`~/.config/usbguard_gui/general.conf`). Tests always inject a fake
-  (`_FakeSettings` in `tests/test_app.py`, a `tmp_path`-backed `QSettings` in
-  `tests/test_device_list.py`). Never let a test read or write the developer's
-  real config: a GUI preference toggled once in the running app otherwise
-  silently changes what the suite asserts (a `disable_hid_treatment=true` in
-  the user's config skipped the whole HID pending/lock flow and failed the HID
-  tests only on that machine).
+  takes its `QSettings` geometry store the same way. Production injects nothing
+  and gets the real `Settings` singleton.
+- Adding a setting means extending **both** `SettingsProtocol` and `_FakeSettings`
+  (`tests/test_app.py`): the protocol is the contract, the fake is what the suite
+  runs against. The device list gets a `tmp_path`-backed `QSettings` for the same
+  reason — every test brings its own store, so a preference toggled in the running
+  app can never change what the suite asserts.
 
 ## Project Structure
 
 ```
 src/usbguard_gui/
-    __init__.py       # Package init (can export VERSION)
+    __init__.py       # Package init (exports __version__)
     __main__.py       # python -m entry point
-    app.py            # Main tray application
-    dbus_client.py    # D-Bus client for USBGuard daemon
+    app.py            # Main tray application (HID lock-first flow lives here)
+    dbus_client.py    # D-Bus client for the USBGuard daemon
+    dbus_common.py    # Shared worker-thread base: AsyncWorkerThread, get_introspection
     device.py         # Device model and rule parsing
     device_dialog.py  # Device action dialog window
     device_list.py    # Device list window
-    screensaver.py    # Screensaver state monitoring
-    settings.py       # Application settings
+    screensaver.py    # Screensaver / lock-state monitoring
+    settings.py       # SettingsProtocol + the QSettings-backed Settings singleton
+    introspection/    # Bundled D-Bus introspection XML (must ship in the wheel)
 
 tests/
-    test_app.py          # Tests for main tray application
-    test_device.py       # Tests for device model
-    test_device_list.py  # Tests for device list window
-    test_dbus_client.py  # Tests for D-Bus client
-    test_async_api.py    # Tests for async signal-based API
-    test_release.py      # Tests for release scripts
+    test_app.py             # Main tray application
+    test_device.py          # Device model
+    test_device_dialog.py   # Action dialog
+    test_device_list.py     # Device list window
+    test_dbus_client.py     # D-Bus client
+    test_async_api.py       # Async signal-based API
+    test_settings.py        # SettingsProtocol conformance
+    test_release.py         # Release scripts
 ```
+
+## Where things are documented
+
+| Location | What it owns |
+|---|---|
+| `README.md` → *How It Works* | user-facing behaviour, **the HID lock-first security contract**, polkit, install |
+| `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, dasbus→dbus-fast mapping |
+| `docs/AUDIT-*.md`, `docs/REVIEW-*.md` | past audit/review findings and how each was resolved |
+| `TODO.md` | versioned roadmap, including deferred race fixes for 1.0 |
+| `graft/` | generated repo context graph (see the Graft section) |
 
 ## Testing Conventions
 
@@ -175,23 +187,28 @@ tests/
 - Use `pytest.mark.parametrize` for multiple test cases
 - Private helper methods in tests prefixed with `_`
 - Use sentinel pattern (`object()`) for special default values
+- Headless: each test module sets `QT_QPA_PLATFORM=offscreen` at import, and CI
+  sets it too, so the suite needs no display server
 
 ### Example Test Structure
 
 ```python
 """Tests for the device model and rule parser."""
 
-from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
+from __future__ import annotations
+
+from usbguard_gui.device import parse_device_rule
 
 
 class TestParseDeviceRule:
-  """Test rule string parsing."""
+    """Test rule string parsing."""
 
-  RULE_ALLOW = 'allow id 1d6b:0002 serial "..." name "..." ...'
+    RULE_ALLOW = 'allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI Host Controller"'
 
-  def test_allow_rule(self):
-    result = parse_device_rule(self.RULE_ALLOW)
-    assert result["rule"] == "allow"
+    def test_allow_rule(self) -> None:
+        result = parse_device_rule(self.RULE_ALLOW)
+
+        assert result["rule"] == "allow"
 ```
 
 ## Pre-commit Checklist
@@ -202,4 +219,16 @@ Before submitting changes:
 2. Ensure all new public APIs have type hints
 3. Add tests for new functionality
 4. Update docstrings for user-facing APIs
-5. No commented-out code in final submissions
+5. Update `README.md` when user-facing behaviour changes — the HID flow, the
+   lock delay, polkit rules and install steps all live there
+6. Run `graft build` after structural changes so the context graph matches the
+   code
+7. No commented-out code in final submissions
+
+## Releasing
+
+`make V=X.Y.Z release` runs `release.py`: bumps `__init__.py`, rebuilds the
+CHANGELOG section from the git log, commits, and tags `vX.Y.Z`. The tag triggers
+the GitHub → COPR webhook (verified on v0.7.4, build 10928231). Release through
+that target rather than hand-editing `__version__` or the CHANGELOG.
+
