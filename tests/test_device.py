@@ -1,6 +1,9 @@
 """Tests for the device model and rule parser."""
 
-from usbguard_gui.device import Device, DeviceTarget, interface_class, parse_device_rule
+import pytest
+
+from usbguard_gui.device import Device, DeviceTarget, interface_class, parse_device_rule, parse_rule_predicates, \
+    rule_matches_device
 
 
 class TestParseDeviceRule:
@@ -158,3 +161,112 @@ class TestInterfaceClass:
 
     def test_hub_class(self):
         assert interface_class("09:00:00") == 0x09
+
+
+class TestRuleMatchesDevice:
+    """Would one rule match the device another rule describes?
+
+    The permanent path places its rule by asking this of every rule sitting
+    above it, so the three verdicts have to mean what they say: True means
+    "that rule already covers this device" and moves the new rule above it,
+    False means the rule provably cannot match, and None means we do not
+    know -- which must never be read as True, or a parsing gap becomes a
+    user decision ranked above an administrator's policy.
+    """
+
+    DEVICE_RULE = ('allow id 2109:2817 serial "000000000" name "USB2.0 Hub" '
+                   'hash "kj7MUN8qdDfj2pO0aUpZ2tOY7UIlzSNGG7bI9jnAeu4=" '
+                   'parent-hash "xe96rjr8V53Jw+g7q/yi0C1czVxatehiq7r4gn2dH6s=" '
+                   'via-port "3-3.1.1" with-interface { 09:00:01 09:00:02 } '
+                   'with-connect-type "unknown"')
+
+    def _device(self):
+        return Device.from_dbus(54, self.DEVICE_RULE)
+
+    def _verdict(self, rule):
+        return rule_matches_device(rule, self._device())
+
+    @pytest.mark.parametrize("rule", [
+        "block",                                              # no predicates: matches everything
+        "reject",
+        'block id 2109:2817',
+        'block id 2109:2817 serial "000000000"',
+        'block via-port "3-3.1.1"',
+        'block with-connect-type "unknown"',
+        'block with-interface all-of { 09:00:01 }',
+        'block with-interface all-of { 09:*:* }',              # wildcard byte
+        'block with-interface one-of { 08:00:00 09:00:02 }',
+        'block with-interface none-of { 08:00:00 }',          # device has none of those
+        'block with-interface match-all { 09:00:01 09:00:02 }',
+        # The device's own rule, retargeted: every predicate is satisfied.
+        'block id 2109:2817 serial "000000000" name "USB2.0 Hub" '
+        'hash "kj7MUN8qdDfj2pO0aUpZ2tOY7UIlzSNGG7bI9jnAeu4=" '
+        'parent-hash "xe96rjr8V53Jw+g7q/yi0C1czVxatehiq7r4gn2dH6s=" '
+        'via-port "3-3.1.1" with-interface { 09:00:01 09:00:02 } with-connect-type "unknown"',
+    ])
+    def test_matches(self, rule):
+        assert self._verdict(rule) is True, rule
+
+    @pytest.mark.parametrize("rule", [
+        'block id 04f2:b2ea',
+        'block serial "someone-elses-drive"',
+        'block via-port "usb1"',
+        'block with-connect-type "hardwired"',
+        'block with-interface { 08:00:00 }',                  # equals: wrong size and values
+        'block with-interface all-of { 08:00:00 }',
+        'block with-interface equals-ordered { 09:00:02 09:00:01 }',
+        'block with-interface match-all { 09:00:01 }',        # 09:00:02 left uncovered
+        'block with-interface none-of { 09:00:01 }',          # device does have it
+        'block id 04f2:b2ea with-interface all-of { 09:00:01 }',
+    ])
+    def test_cannot_match(self, rule):
+        assert self._verdict(rule) is False, rule
+
+    @pytest.mark.parametrize("rule", [
+        'allow label "trusted-lab-machine"',                   # attribute we do not model
+        'allow if usbguard-condition("admin")',
+        'block name-hash "abc"',
+        'block with-interface equals { 09:*:* 09:00:02 }',     # wildcard pairing is ambiguous
+        'allow if admin-only("yes") id 2109:2817',           # unreadable predicate *before* a matching one
+    ])
+    def test_undecidable(self, rule):
+        assert self._verdict(rule) is None, rule
+
+    def test_a_predicate_we_cannot_read_never_becomes_a_match(self):
+        """The undecidable verdict must not collapse into True."""
+        assert self._verdict('allow label "x" id 2109:2817') is None
+
+    def test_undecidable_predicate_after_a_non_match_still_says_no(self):
+        """A rule that already failed to match stays failed; the unreadable
+        predicate later in the rule cannot rescue it."""
+        assert self._verdict('block id 04f2:b2ea label "x"') is False
+
+
+class TestParseRulePredicates:
+    """Tokenising a rule into (attribute, set_operator, values)."""
+
+    def test_bare_target_carries_no_predicates(self):
+        assert parse_rule_predicates("block") == []
+
+    def test_default_operator_is_equals(self):
+        assert parse_rule_predicates('allow id 1234:5678') == [("id", "equals", ["1234:5678"])]
+
+    def test_explicit_set_operator(self):
+        assert parse_rule_predicates('block with-interface all-of { 03:00:00 03:01:01 }') == [
+            ("with-interface", "all-of", ["03:00:00", "03:01:01"])
+        ]
+
+    def test_quoted_values_keep_spaces(self):
+        assert parse_rule_predicates('allow name "USB 2.0 Hub"') == [("name", "equals", ["USB 2.0 Hub"])]
+
+    def test_several_predicates_in_order(self):
+        assert parse_rule_predicates('block id 1234:5678 serial "s1"') == [
+            ("id", "equals", ["1234:5678"]),
+            ("serial", "equals", ["s1"]),
+        ]
+
+    @pytest.mark.parametrize("rule", ["", "   ", 'block with-interface all-of { 03:00:00'])
+    def test_unreadable_rule_is_none_not_an_empty_match(self, rule):
+        """Empty and unreadable are different things: the first matches
+        everything, the second says nothing."""
+        assert parse_rule_predicates(rule) is None

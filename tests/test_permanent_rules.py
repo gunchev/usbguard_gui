@@ -443,3 +443,113 @@ class TestCallSitesPassRawRule:
         window._apply(device, DeviceTarget.ALLOW, permanent=False)
 
         assert client.applied == [(9, DeviceTarget.ALLOW, False, None)]
+
+
+class TestPermanentRulePlacement:
+    """Finding A -- the rule must land where nothing above it shadows it.
+
+    USBGuard evaluates top-down and stops at the first match, so position is
+    not cosmetic: a permanent ``allow`` written below a rule that already
+    matches the device is dead code, and nothing reports it.  The permanent
+    path now walks the ruleset and places the rule above the first rule that
+    provably matches the device.
+    """
+
+    # Matches both KVM hubs on vid:pid alone -- the classic silent shadow.
+    BROAD_BLOCK = "block id 2109:2817"
+    WEBCAM = ('allow id 04f2:b2ea serial "SN-CAM" name "Integrated Camera" '
+              'hash "camhash=" via-port "usb1" with-interface { 0e:01:00 }')
+    OPAQUE = 'allow if admin-condition("usbguard-gui cannot read this")'
+
+    def _parent_of_append(self, policy):
+        return [c[2] for c in policy.calls if c[0] == "append"][-1]
+
+    def test_a_shadowing_rule_is_not_left_above_the_new_one(self):
+        policy = _FakePolicy([(5, self.WEBCAM), (10, self.BROAD_BLOCK), (20, self.WEBCAM)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        # Placed after rule 5, i.e. directly above the shadowing rule 10.
+        assert self._parent_of_append(policy) == 5
+
+    def test_a_replacement_moves_above_the_shadow_too(self):
+        """Our existing rule sits *below* something that shadows it; the
+        replacement has to climb, or it stays dead where it is."""
+        policy = _FakePolicy([(5, self.WEBCAM), (10, self.BROAD_BLOCK), (30, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert policy.kinds() == ["list", "remove", "append"]
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [30]
+        assert self._parent_of_append(policy) == 5
+
+    def test_a_shadow_at_the_head_is_reported_as_unplaceable(self, caplog):
+        """The daemon rejects parent_id 0 ("insert at the top") with
+        `Invalid parent ID`, so when the shadow is the first rule there is
+        nowhere better to go.  The decision is still written -- and said out
+        loud -- rather than dropped in silence."""
+        policy = _FakePolicy([(10, self.BROAD_BLOCK), (20, self.WEBCAM)])
+        thread = _stub_thread(policy)
+
+        with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
+        assert "cannot place a rule before the first one" in caplog.text
+
+    def test_no_shadow_appends_at_the_end(self):
+        policy = _FakePolicy([(5, self.WEBCAM)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
+
+    def test_undecidable_rules_are_not_treated_as_shadows(self, caplog):
+        """A rule we cannot read keeps its rank.  Moving a tray decision above
+        administrator-written policy on the strength of a parsing gap is the
+        wrong direction to guess in."""
+        policy = _FakePolicy([(9, self.OPAQUE)])
+        thread = _stub_thread(policy)
+
+        with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
+        assert "could not be checked for shadowing" in caplog.text
+
+    def test_the_device_s_own_rule_is_not_its_own_shadow(self, caplog):
+        """The rule being replaced shares the device's identity, so it must not
+        be counted as a shadow.  It sits first here, which is what makes the
+        test bite: counting it would report the (false) "cannot place above
+        the first rule" condition."""
+        policy = _FakePolicy([(5, HUB_A), (6, self.WEBCAM)])
+        thread = _stub_thread(policy)
+
+        with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [5]
+        assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
+        assert "cannot place a rule before the first one" not in caplog.text
+
+    def test_placement_survives_an_unreadable_ruleset(self):
+        """No ruleset, no shadow analysis -- but the decision still gets
+        written rather than lost."""
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy()
+
+        async def raise_error(label):
+            raise DBusError(ErrorType.FAILED, "cannot read rules")
+
+        policy.call_list_rules = raise_error
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
+        assert _rules_conf(policy) == [HUB_A]
+

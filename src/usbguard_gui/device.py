@@ -177,6 +177,199 @@ def _extract_interfaces(rule: str) -> list[str]:
     return []
 
 
+# ---------------------------------------------------------------------------
+# Rule matching
+#
+# USBGuard evaluates its rules top-down and stops at the first match, so a
+# rule's position only matters relative to the rules above it.  Answering
+# "would this rule match that device?" is what lets the permanent path place
+# a rule where it cannot be silently shadowed.
+#
+# Every rule attribute is a multiset compared against the device's attribute
+# set with one of these operators (usbguard::Rule::SetOperator).  A rule
+# that spells none uses `equals`.
+# ---------------------------------------------------------------------------
+SET_OPERATORS: frozenset[str] = frozenset(
+    {"all-of", "one-of", "none-of", "equals", "equals-ordered", "match-all"}
+)
+_DEFAULT_SET_OPERATOR = "equals"
+
+# A rule token is a quoted string, a brace, or a bare word.
+_RULE_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|\{|\}|[^\s{}]+')
+
+# Rule attribute -> the Device field holding the device's value for it.
+# Anything outside this table -- `label`, `if` conditions, operators we do
+# not model -- is deliberately *not* evaluated.  Guessing about a predicate
+# we cannot read is how a user's decision ends up ranked above an
+# administrator's policy by accident, so such rules are reported as
+# undecidable instead.
+_MATCHABLE_ATTRS: dict[str, str] = {
+    "id": "id",
+    "serial": "serial",
+    "name": "name",
+    "hash": "hash",
+    "parent-hash": "parent_hash",
+    "via-port": "via_port",
+    "with-connect-type": "with_connect_type",
+    "with-interface": "with_interface",
+}
+
+
+def _unquote(token: str) -> str:
+    """Strip the surrounding quotes from a rule token, if it has any."""
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return token[1:-1]
+    return token
+
+
+def parse_rule_predicates(rule: str) -> list[tuple[str, str, list[str]]] | None:
+    """Split a rule into ``(attribute, set_operator, values)`` triples.
+
+    ``None`` means the rule could not be tokenised, which keeps "carries no
+    predicates at all" -- a bare ``allow``, matching every device -- apart
+    from "unreadable".  The two must not be confused: the first is a real
+    and very broad match, the second is no verdict at all.
+    """
+    tokens = _RULE_TOKEN_RE.findall(rule.strip())
+    if not tokens:
+        return None
+
+    predicates: list[tuple[str, str, list[str]]] = []
+    index = 1  # token 0 is the target verb
+    while index < len(tokens):
+        attribute = tokens[index]
+        index += 1
+        operator = _DEFAULT_SET_OPERATOR
+        if index < len(tokens) and tokens[index] in SET_OPERATORS:
+            operator = tokens[index]
+            index += 1
+        values: list[str] = []
+        if index < len(tokens) and tokens[index] == "{":
+            index += 1
+            while index < len(tokens) and tokens[index] != "}":
+                values.append(_unquote(tokens[index]))
+                index += 1
+            if index >= len(tokens):
+                return None  # unterminated set
+            index += 1  # consume the closing brace
+        elif index < len(tokens):
+            values.append(_unquote(tokens[index]))
+            index += 1
+        else:
+            return None  # attribute with no value
+        predicates.append((attribute, operator, values))
+    return predicates
+
+
+def _interface_spec_matches(spec: str, actual: str) -> bool | None:
+    """Match one interface spec against a concrete class/subclass/protocol.
+
+    Any byte of a spec may be ``*``, so ``03:01:*`` covers ``03:01:00`` and
+    ``03:01:01``.  A side that is not a three-part spec is left undecided
+    rather than guessed at.
+    """
+    spec_parts, actual_parts = spec.split(":"), actual.split(":")
+    if len(spec_parts) != 3 or len(actual_parts) != 3:
+        return None
+    return all(expected == "*" or expected == found
+               for expected, found in zip(spec_parts, actual_parts, strict=True))
+
+
+def _exact_match(expected: str, found: str) -> bool | None:
+    return expected == found
+
+
+def _matched_by_any(expected: str, candidates: list[str], compare) -> bool | None:
+    """Does `expected` match at least one candidate?
+
+    None when nothing matched outright but some comparison could not be
+    decided -- which is not the same as having failed to match.
+    """
+    undecided = False
+    for candidate in candidates:
+        verdict = compare(expected, candidate)
+        if verdict is True:
+            return True
+        if verdict is None:
+            undecided = True
+    return None if undecided else False
+
+
+def _combine_any(verdicts: list[bool | None]) -> bool | None:
+    if True in verdicts:
+        return True
+    return None if None in verdicts else False
+
+
+def _combine_all(verdicts: list[bool | None]) -> bool | None:
+    if False in verdicts:
+        return False
+    return None if None in verdicts else True
+
+
+def _combine_none(verdicts: list[bool | None]) -> bool | None:
+    if True in verdicts:
+        return False
+    return None if None in verdicts else True
+
+
+def _set_matches(operator: str, rule_values: list[str], device_values: list[str], compare) -> bool | None:
+    """Apply one set operator. None means it could not be decided."""
+    if operator == "one-of":
+        return _combine_any([_matched_by_any(value, device_values, compare) for value in rule_values])
+    if operator == "all-of":
+        return _combine_all([_matched_by_any(value, device_values, compare) for value in rule_values])
+    if operator == "none-of":
+        return _combine_none([_matched_by_any(value, device_values, compare) for value in rule_values])
+    if operator == "match-all":
+        # Every interface the device *has* must be covered by the rule.
+        return _combine_all([_matched_by_any(found, rule_values, compare) for found in device_values])
+    if operator == "equals-ordered":
+        if len(rule_values) != len(device_values):
+            return False
+        return _combine_all([compare(expected, found)
+                             for expected, found in zip(rule_values, device_values, strict=True)])
+    if operator == "equals":
+        if len(rule_values) != len(device_values):
+            return False
+        if any("*" in value for value in rule_values):
+            # Wildcards make the pairing ambiguous: which device value each
+            # spec stands for is not knowable from the rule alone.
+            return None
+        return sorted(rule_values) == sorted(device_values)
+    return None
+
+
+def rule_matches_device(rule: str, device: Device) -> bool | None:
+    """Would `rule` match `device`?
+
+    ``True`` -- it matches.  ``False`` -- it cannot: some predicate the rule
+    requires is not satisfied by this device.  ``None`` -- we cannot tell,
+    because the rule uses an attribute or operator outside what this matcher
+    models.
+
+    The three-way answer is the point.  A caller choosing where to place a
+    rule must treat "does not match" and "unknown" differently: promoting a
+    user's decision above a rule we merely failed to read would override an
+    administrator on nothing better than a parsing gap.
+    """
+    predicates = parse_rule_predicates(rule)
+    if predicates is None:
+        return None
+
+    for attribute, operator, values in predicates:
+        field = _MATCHABLE_ATTRS.get(attribute)
+        if field is None:
+            return None
+        device_value = getattr(device, field)
+        device_values = list(device_value) if isinstance(device_value, list) else [device_value]
+        compare = _interface_spec_matches if attribute == "with-interface" else _exact_match
+        verdict = _set_matches(operator, values, device_values, compare)
+        if verdict is not True:
+            return verdict
+    return True
+
+
 class _ParsedRule(TypedDict):
     rule: str
     id: str

@@ -12,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
-from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
+from usbguard_gui.device import Device, DeviceTarget, parse_device_rule, rule_matches_device
 
 log = logging.getLogger(__name__)
 
@@ -322,71 +322,119 @@ class _DBusThread(AsyncWorkerThread):
                 if _is_connection_error(e):
                     self._set_connected(False)
 
-    async def _find_permanent_rules(self, identity: tuple[str, ...]) -> list[tuple[int, str]]:
-        """Every permanent rule carrying `identity`, in file order."""
+    async def _list_permanent_rules(self) -> list[tuple[int, str]]:
+        """The permanent ruleset, in the order the daemon evaluates it."""
         raw = await self._policy_iface.call_list_rules("")
-        return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw
-                if _rule_identity(str(rule_str)) == identity]
+        return [(int(rule_id), str(rule_str)) for rule_id, rule_str in raw]
+
+    @staticmethod
+    def _placement_for(others: list[tuple[int, str]], device: Device) -> tuple[int, str | None]:
+        """Where to write the new rule so an earlier rule cannot shadow it.
+
+        Walk the ruleset in evaluation order and stop at the first rule that
+        provably matches this device.  The new rule belongs directly above
+        it: USBGuard is first-match-wins, so anything above that already
+        matches turns the new rule into dead code.
+
+        Returns the ``parent_id`` to append after, plus a note for the log.
+        Two limits shape it, both verified against the live daemon:
+
+        * The daemon cannot insert above the *first* rule, so when the
+          shadowing rule sits there there is nowhere better to go.  The write
+          still happens -- dropping the user's decision silently would be
+          worse -- but the note says the rule may be shadowed.
+        * Rules this matcher cannot decide are skipped rather than counted as
+          matches, so an unreadable rule keeps its rank.  Promoting a tray
+          decision above administrator-written policy needs better evidence
+          than a parsing gap.
+        """
+        undecidable: list[int] = []
+
+        for index, (rule_id, text) in enumerate(others):
+            verdict = rule_matches_device(text, device)
+            if verdict is True:
+                if index == 0:
+                    return _APPEND_RULE_AT_END, (
+                        f"rule {rule_id} already matches this device and nothing sits above it to "
+                        "insert past; the daemon cannot place a rule before the first one, so this "
+                        "rule may be shadowed -- reorder rules.conf if the decision does not hold")
+                return others[index - 1][0], f"inserted above rule {rule_id}, which already matches this device"
+            if verdict is None:
+                undecidable.append(rule_id)
+
+        if undecidable:
+            return _APPEND_RULE_AT_END, (f"{len(undecidable)} existing rule(s) could not be checked for "
+                                         f"shadowing (ids {undecidable})")
+        return _APPEND_RULE_AT_END, None
 
     async def _persist_device_rule(self, device_id: int, rule: str) -> None:
-        """Write exactly one permanent rule for one device, without accumulating.
+        """Keep exactly one permanent rule for this device, where it will apply.
 
-        ``appendRule`` has no upsert semantics: every call adds a line to
-        ``/etc/usbguard/rules.conf``.  Appending unconditionally — what the
-        first cut of this path did — grows the policy on every decision, so
-        allow, block and re-allow the same KVM port leaves three rules behind
-        for one device, and the audit trail stops saying what the user chose.
-        Look the device up in the permanent ruleset first:
+        Two things go wrong when writing a permanent rule, and the daemon
+        guards against neither:
 
-        * already identical  -> do nothing.
-        * same device, other target -> replace it, removing *before* appending.
-          The order is deliberate: appending first would leave the older rule
-          above the new one, and USBGuard is first-match-wins, so a fresh
-          ``block`` would sit shadowed under a stale ``allow`` until the
-          removal landed — and forever if it did not.  Removing first can only
-          ever leave the device more restricted, never less.
-        * not present        -> append at the end.
+        * **Accumulation.** ``appendRule`` has no upsert semantics, so
+          appending unconditionally grows ``/etc/usbguard/rules.conf`` on
+          every decision -- allow, block and re-allow the same KVM port and
+          three rules are left behind for one device, and the audit trail
+          stops saying what the user chose.
+        * **Shadowing.** Rules are evaluated top-down and the first match
+          wins, so a rule appended at the end is dead code whenever a rule
+          above it already matches the device.
+
+        So read the ruleset, drop the device's previous rule if it has one,
+        and put the new one above the first rule that would shadow it.
         """
         identity = _rule_identity(rule)
-        existing: tuple[int, str] | None = None
 
-        if identity is not None:
-            try:
-                matches = await self._find_permanent_rules(identity)
-            except DBusError as e:
-                # The ruleset is unreadable.  Fall through to a plain append:
-                # silently dropping the user's permanent decision is worse
-                # than a possible duplicate, and a later decision can heal it.
-                # A broken transport still surfaces — the append below raises,
-                # and _do_apply_policy owns the reconnect decision.
-                log.warning("Cannot read permanent rules for device %d, appending without a "
-                            "duplicate check: %s", device_id, e)
-                matches = []
+        try:
+            rules = await self._list_permanent_rules()
+        except DBusError as e:
+            # Unreadable ruleset: fall through to a plain append.  Losing
+            # the user's permanent decision is worse than a possible
+            # duplicate, and a later decision can heal it.  A broken
+            # transport still surfaces -- the append below raises, and
+            # _do_apply_policy owns the reconnect decision.
+            log.warning("Cannot read permanent rules for device %d, appending without a duplicate "
+                        "or shadow check: %s", device_id, e)
+            rules = []
 
-            if len(matches) > 1:
-                # Already-bloated policy: earlier builds of this path left one
-                # rule per decision.  Update the first and say so out loud —
-                # deleting the rest is not ours to decide, since any of them
-                # could have been written by hand.
-                log.warning("%d permanent rules share device %d's identity (ids %s) — updating "
-                            "the first, prune the rest by hand",
-                            len(matches), device_id, [rule_id for rule_id, _ in matches])
-            existing = matches[0] if matches else None
+        if identity is None:
+            # A rule naming no device cannot be deduplicated or reasoned
+            # about positionally; just write it.
+            own, others = [], rules
+        else:
+            own = [(rule_id, text) for rule_id, text in rules if _rule_identity(text) == identity]
+            others = [(rule_id, text) for rule_id, text in rules if _rule_identity(text) != identity]
 
-        if existing is not None:
-            existing_id, existing_rule = existing
-            if _normalize_rule(existing_rule) == _normalize_rule(rule):
-                log.info("Permanent rule %d already covers device %d — not appending a duplicate",
-                         existing_id, device_id)
-                return
-            await self._policy_iface.call_remove_rule(existing_id)
-            rule_id = await self._policy_iface.call_append_rule(rule, _APPEND_RULE_AT_END, False)
-            log.info("Replaced permanent rule %d with %d for device %d",
-                     existing_id, rule_id, device_id)
+        if len(own) > 1:
+            # Already-bloated policy: earlier builds of this path left one
+            # rule per decision.  Update the first and say so out loud --
+            # deleting the rest is not ours to decide, since any of them
+            # could have been written by hand.
+            log.warning("%d permanent rules share device %d's identity (ids %s) -- updating the "
+                        "first, prune the rest by hand",
+                        len(own), device_id, [rule_id for rule_id, _ in own])
+        existing = own[0] if own else None
+
+        if existing is not None and _normalize_rule(existing[1]) == _normalize_rule(rule):
+            log.info("Permanent rule %d already covers device %d -- not appending a duplicate",
+                     existing[0], device_id)
             return
 
-        rule_id = await self._policy_iface.call_append_rule(rule, _APPEND_RULE_AT_END, False)
-        log.info("Appended permanent rule %d for device %d", rule_id, device_id)
+        parent_id, placement_note = (self._placement_for(others, Device.from_dbus(device_id, rule))
+                                     if identity is not None else (_APPEND_RULE_AT_END, None))
+
+        if existing is not None:
+            # Remove before appending, never after: appending first would
+            # leave the older rule above the new one, and first-match-wins
+            # would go on honouring it -- silently ignoring a fresh `block`
+            # until the removal landed, and forever if it did not.
+            await self._policy_iface.call_remove_rule(existing[0])
+
+        rule_id = await self._policy_iface.call_append_rule(rule, parent_id, False)
+        log.info("Stored permanent rule %d for device %d%s", rule_id, device_id,
+                 f" -- {placement_note}" if placement_note else "")
 
     async def _do_list_rules(self, label: str) -> None:
         try:
