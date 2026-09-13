@@ -340,6 +340,44 @@ def _set_matches(operator: str, rule_values: list[str], device_values: list[str]
     return None
 
 
+def rule_persistence_problem(rule: str) -> str | None:
+    """Why `rule` must not be written to the permanent policy, or None if it may.
+
+    ``raw_rule`` arrives from the daemon, but it is ultimately built from a
+    device's own descriptors, and this app writes it verbatim into
+    ``/etc/usbguard/rules.conf``. Before that happens the string has to look
+    like what it claims to be: one rule, with a target verb in front and
+    nothing in it but device attributes.
+
+    Without this, a string that carries a second rule, a stray directive or a
+    newline is persisted on the strength of having had its first word
+    rewritten. Probed against the retarget helper::
+
+        in:  block id 1234:5678 name "hub" block with-interface { 03:01:01 }" serial "x" reject
+        out: allow id 1234:5678 name "hub" block with-interface { 03:01:01 }" serial "x" reject
+
+    Only the leading verb changed; the rest passed through untouched. The
+    daemon escapes quotes on the way out, so this is not a proven exploit --
+    it is the cheap check that makes it someone else's problem to ever prove.
+    """
+    if any(ch in rule for ch in ("\n", "\r", "\x00")):
+        return "contains a control character"
+
+    parts = rule.strip().split(None, 1)
+    if not parts or parts[0] not in {"allow", "block", "reject"}:
+        return "does not start with a target verb"
+
+    predicates = parse_rule_predicates(rule)
+    if predicates is None:
+        return "does not parse as a single rule"
+
+    unknown = sorted({attribute for attribute, _, _ in predicates if attribute not in _MATCHABLE_ATTRS})
+    if unknown:
+        return f"carries directives that are not device attributes: {', '.join(unknown)}"
+
+    return None
+
+
 def rule_matches_device(rule: str, device: Device) -> bool | None:
     """Would `rule` match `device`?
 

@@ -3,7 +3,7 @@
 import pytest
 
 from usbguard_gui.device import Device, DeviceTarget, interface_class, parse_device_rule, parse_rule_predicates, \
-    rule_matches_device
+    rule_matches_device, rule_persistence_problem
 
 
 class TestParseDeviceRule:
@@ -270,3 +270,29 @@ class TestParseRulePredicates:
         """Empty and unreadable are different things: the first matches
         everything, the second says nothing."""
         assert parse_rule_predicates(rule) is None
+
+
+class TestRulePersistenceValidation:
+    """A device-derived rule must look like one rule before it is persisted."""
+
+    @pytest.mark.parametrize("rule,reason", [
+        ('allow id 2109:2817 serial "s" name "n" with-interface { 09:00:01 }', None),
+        ('block id 2109:2817', None),
+        ('reject id 2109:2817 with-connect-type "unknown"', None),
+        ('allow id 1234:5678 name "hub" block with-interface { 03:01:01 }" serial "x" reject',
+         "carries directives that are not device attributes"),
+        ('allow id 1:2\nreject with-interface { 03:00:00 }', "contains a control character"),
+        ('allow id 1:2\rblock', "contains a control character"),
+        ('id 1:2', "does not start with a target verb"),
+        ('allow with-interface all-of { 03:00:00', "does not parse as a single rule"),
+        ('allow label "trusted"', "carries directives that are not device attributes"),
+    ])
+    def test_reasons(self, rule, reason):
+        result = rule_persistence_problem(rule)
+        if reason is None:
+            assert result is None, rule
+        else:
+            assert result is not None and result.startswith(reason), (rule, result)
+
+    def test_a_bare_verb_is_a_whole_rule(self):
+        assert rule_persistence_problem("block") is None

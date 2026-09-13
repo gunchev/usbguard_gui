@@ -12,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
-from usbguard_gui.device import Device, DeviceTarget, parse_device_rule, rule_matches_device
+from usbguard_gui.device import Device, DeviceTarget, parse_device_rule, rule_matches_device, rule_persistence_problem
 
 log = logging.getLogger(__name__)
 
@@ -300,8 +300,23 @@ class _DBusThread(AsyncWorkerThread):
                 # Authorize the connected instance temporarily instead, then
                 # append the exact topology-specific rule permanently.  Once each
                 # topology has been seen, all of them stay valid at the same time.
-                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
                 rule = _retarget_device_rule(device_rule, target)
+                problem = rule_persistence_problem(rule)
+                if problem is not None:
+                    # Defence in depth.  This string started life as a
+                    # device's own descriptors, and it is about to become
+                    # permanent policy.  Anything that is not one
+                    # well-formed rule of known device attributes is not
+                    # written; the daemon's own upsert is used instead,
+                    # which never takes a device-supplied string, so the
+                    # user still gets the permanent decision they asked
+                    # for -- just not one assembled from a suspect rule.
+                    log.warning("Refusing to persist the device-reported rule for device %d: %s; "
+                                "falling back to the daemon's upsert", device_id, problem)
+                    await self._devices_iface.call_apply_device_policy(device_id, int(target), True)
+                    return
+
+                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
                 try:
                     await self._persist_device_rule(device_id, rule)
                 except DBusError as e:
