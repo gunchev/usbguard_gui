@@ -211,7 +211,6 @@ class USBGuardTrayApp:
         self._client.list_devices_result.connect(self._on_list_devices_result)
         self._client.list_devices_correlated.connect(self._on_correlated_devices)
         self._client.list_rules_result.connect(self._on_list_rules_result)
-
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
         self._permanent_allow_hashes.clear()
         for _, rule_str in rules:
