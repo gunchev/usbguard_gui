@@ -4,8 +4,7 @@
       "command": "graft",
       "args": [
         "mcp"
-      ],
-      "directTools": true
+      ]
     }
   }
 }

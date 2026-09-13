@@ -239,19 +239,10 @@ the GitHub → COPR webhook (verified on v0.7.4, build 10928231). Release throug
 that target rather than hand-editing `__version__` or the CHANGELOG.
 
 <!-- graft:start -->
-
-> **The graph itself is not committed.** `graft/` and `/.graft/` are gitignored,
-> so the nodes described below exist only on the machine that built them. On a
-> fresh clone there is no graph: run `graft build --deep` before using any graft
-> command, and `graft check` to see whether an existing local graph has drifted
-> from the code. If graft is unavailable, fall back to reading the source — do
-> not treat a missing or stale graph as an answer.
-
 ## Graft — repo context graph
 
 This repo is indexed in `graft/`: small linked markdown nodes that explain each
-system and carry exact file:line spans, kept in sync with the code by rebuilding
-with `graft build` (generated locally, never committed).
+system and carry exact file:line spans, kept in sync with the code through git.
 
 For ANY task here — understanding how something works, finding where code lives,
 or scoping a change — get context from the graph before grepping or opening

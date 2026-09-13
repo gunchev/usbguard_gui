@@ -31,14 +31,17 @@ __pypackages__/
 *.swp
 *~
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
+# graft's local graph cache - regenerable, not committed (run `graft build`).
 /graft/
 
-# Claude Code personal permission log — per-machine, per-session grants.
+# Claude Code personal permission log - per-machine, per-session grants.
 .claude/settings.local.json
 
-# graft's local repository settings — not committed.
+# graft's local repository settings - not committed.
 /.graft/
 
-# graft config template — may hold an API key, never commit.
+# graft config template - may hold an API key, never commit.
 .env
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/.context/
