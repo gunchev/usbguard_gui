@@ -13,14 +13,15 @@
 
 ## 1.0
 
-- [ ] Merge PR #8 — permanent allow rules across KVM and dock topology changes (`beorn-`). Rebased onto
+- [x] Merge PR #8 — permanent allow rules across KVM and dock topology changes (`beorn-`). **Merged 2026-09-13**
+      as `2e5eea4` (merge commit, authorship preserved) and shipped in **v0.8.0**. Rebased onto
       master with four review fixes: place the rule above the first one that provably matches the device,
       dedup instead of append-only, report a permanent write that only applied temporarily
       (`permanent_write_failed`), and validate the device-reported `raw_rule` before persisting it
       (fall back to the daemon's own upsert if it looks wrong). HID lock-first contract untouched.
-      Green under the full tox gate on Fedora 43/44. Waiting on `beorn-`'s KVM field confirmation of the
-      placement finding, then merge with a **merge commit** (not squash) to preserve their authorship and
-      the per-finding commits. Leaves two README lines behind: the unplaceable-first-rule case
+      Green under the full tox gate on Fedora 43/44. Merged without waiting on the KVM field
+      confirmation — see `docs/REVIEW-2026-09-13-pr8-permanent-rules.md` for the review trail.
+      Leaves two README lines behind: the unplaceable-first-rule case
       (`Policy::appendRule` rejects `parent_id = 0`, so nothing lands above rule #1) and the matcher's
       undecidable-by-design `None` verdict. Land this **before** the lock-gate refinement below — its
       tests are the baseline that change has to keep green — and its `rule_matches_device()` /
