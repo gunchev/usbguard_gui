@@ -553,3 +553,103 @@ class TestPermanentRulePlacement:
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
         assert _rules_conf(policy) == [HUB_A]
 
+
+class TestPermanentWriteFailure:
+    """Finding C -- a permanent decision that failed must not look like it worked.
+
+    The permanent path is two calls: authorize the live device, then write the
+    durable rule.  When the second one is denied the device is left in the
+    requested state with nothing persisted, so the user believes they granted
+    permanence and finds out otherwise at the next boot.  The path now says
+    so, and puts back anything it took away.
+    """
+
+    def _failures(self, thread):
+        seen = []
+        thread.permanent_write_failed.connect(lambda dev, action, reason: seen.append((dev, action, reason)))
+        return seen
+
+    def _deny(self, reason="Not authorized"):
+        from dbus_fast import DBusError, ErrorType
+        return DBusError(ErrorType.FAILED, reason)
+
+    def test_a_denied_permanent_write_reports_that_only_temporary_applied(self):
+        policy = _FakePolicy()
+        policy.call_append_rule = AsyncMock(side_effect=self._deny())
+        thread = _stub_thread(policy)
+        failures = self._failures(thread)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert len(failures) == 1
+        device_id, action, reason = failures[0]
+        assert (device_id, action) == (54, "allow")
+        assert "Not authorized" in reason
+
+    def test_the_temporary_allow_is_kept_and_said_to_be_temporary(self):
+        """Rolling the live allow back would fight what the user asked for; the
+        honest move is to leave it standing and label it temporary."""
+        policy = _FakePolicy()
+        policy.call_append_rule = AsyncMock(side_effect=self._deny())
+        thread = _stub_thread(policy)
+        self._failures(thread)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
+            54, int(DeviceTarget.ALLOW), False
+        )
+
+    def test_a_failed_replacement_puts_the_removed_rule_back(self, caplog):
+        """The remove landed and the append did not: the policy would be left
+        with less than it had before the click."""
+        policy = _FakePolicy([(7, HUB_A)])
+        original_append = policy.call_append_rule
+        attempts = {"n": 0}
+
+        async def flaky_append(rule, parent_id, temporary):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise self._deny()
+            return await original_append(rule, parent_id, temporary)
+
+        policy.call_append_rule = flaky_append
+        thread = _stub_thread(policy)
+        self._failures(thread)
+
+        with caplog.at_level(logging.WARNING, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
+        assert _rules_conf(policy) == [HUB_A]
+        assert "Restored permanent rule 7" in caplog.text
+
+    def test_a_restore_that_also_fails_is_said_loudly(self, caplog):
+        """Nothing left to undo -- the operator needs to know the rule is gone."""
+        policy = _FakePolicy([(7, HUB_A)])
+        policy.call_append_rule = AsyncMock(side_effect=self._deny())
+        thread = _stub_thread(policy)
+        self._failures(thread)
+
+        with caplog.at_level(logging.ERROR, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert "could NOT be restored" in caplog.text
+        assert _rules_conf(policy) == []
+
+    def test_a_clean_write_reports_no_failure(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+        failures = self._failures(thread)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert failures == []
+
+    def test_both_classes_expose_the_signal(self):
+        """The thread's signal is only useful because the client forwards it --
+        error_occurred never reached the GUI, which is how this stayed hidden."""
+        from usbguard_gui.dbus_client import USBGuardClient
+
+        assert hasattr(_DBusThread, "permanent_write_failed")
+        assert hasattr(USBGuardClient, "permanent_write_failed")

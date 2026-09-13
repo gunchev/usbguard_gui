@@ -130,6 +130,10 @@ class _DBusThread(AsyncWorkerThread):
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
+    # Emitted when the device was authorized live but the durable rule did
+    # not land.  Distinct from error_occurred on purpose: the caller needs to
+    # know the decision is *temporary*, not merely that something failed.
+    permanent_write_failed = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -298,7 +302,17 @@ class _DBusThread(AsyncWorkerThread):
                 # topology has been seen, all of them stay valid at the same time.
                 await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
                 rule = _retarget_device_rule(device_rule, target)
-                await self._persist_device_rule(device_id, rule)
+                try:
+                    await self._persist_device_rule(device_id, rule)
+                except DBusError as e:
+                    # The device is live-allowed (or live-blocked) right now
+                    # and the durable half never landed.  Silence here is the
+                    # actual defect: the denial is a log line nobody reads,
+                    # the user believes they granted permanence, and the
+                    # decision quietly expires the next time the device is
+                    # unplugged.
+                    self.permanent_write_failed.emit(device_id, target.name.lower(), str(e))
+                    raise
             else:
                 rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
                 log.info("Applied %s to device %d (permanent=%s) → rule %d",
@@ -432,9 +446,34 @@ class _DBusThread(AsyncWorkerThread):
             # until the removal landed, and forever if it did not.
             await self._policy_iface.call_remove_rule(existing[0])
 
-        rule_id = await self._policy_iface.call_append_rule(rule, parent_id, False)
+        try:
+            rule_id = await self._policy_iface.call_append_rule(rule, parent_id, False)
+        except DBusError:
+            if existing is not None:
+                await self._restore_permanent_rule(device_id, existing)
+            raise
+
         log.info("Stored permanent rule %d for device %d%s", rule_id, device_id,
                  f" -- {placement_note}" if placement_note else "")
+
+    async def _restore_permanent_rule(self, device_id: int, previous: tuple[int, str]) -> None:
+        """Put back a permanent rule we removed but could not replace.
+
+        Remove-then-append is not atomic.  If the append fails -- a polkit
+        denial, a daemon hiccup -- the policy is left holding *less* than it
+        did before the user clicked, while the device runs on a temporary
+        state nobody chose to make temporary.  Restore best-effort, and if
+        that fails too say so loudly: the operator is looking at a policy
+        that changed under them and needs to know it.
+        """
+        rule_id, text = previous
+        try:
+            await self._policy_iface.call_append_rule(text, _APPEND_RULE_AT_END, False)
+            log.warning("Restored permanent rule %d for device %d after the replacement failed",
+                        rule_id, device_id)
+        except DBusError as e:
+            log.error("Permanent rule %d for device %d was removed and could NOT be restored: %s",
+                      rule_id, device_id, e)
 
     async def _do_list_rules(self, label: str) -> None:
         try:
@@ -519,6 +558,7 @@ class USBGuardClient(QObject):
     list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
+    permanent_write_failed = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -547,6 +587,7 @@ class USBGuardClient(QObject):
         self._thread.list_devices_correlated.connect(self.list_devices_correlated)
         self._thread.list_rules_result.connect(self.list_rules_result)
         self._thread.remove_rule_result.connect(self.remove_rule_result)
+        self._thread.permanent_write_failed.connect(self.permanent_write_failed)
         self._thread.start()
         return True
 

@@ -110,6 +110,7 @@ class _FakeClient(QObject):
     list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
+    permanent_write_failed = pyqtSignal(int, str, str)
 
     def __init__(self) -> None:
         super().__init__()

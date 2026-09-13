@@ -211,6 +211,21 @@ class USBGuardTrayApp:
         self._client.list_devices_result.connect(self._on_list_devices_result)
         self._client.list_devices_correlated.connect(self._on_correlated_devices)
         self._client.list_rules_result.connect(self._on_list_rules_result)
+        self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
+
+    def _on_permanent_write_failed(self, device_id: int, action: str, reason: str) -> None:
+        # The device is in the requested state right now, but only until it is
+        # unplugged.  Without this the user reads "Allow (Permanent)" as done
+        # and finds out otherwise at the next boot -- the failure is otherwise
+        # a log line in a tray app nobody tails.
+        self._tray.showMessage(
+            "Permanent rule not saved",
+            f"The permanent {action} for device {device_id} could not be written; it applies only "
+            f"until the device is unplugged.\n{reason}",
+            QSystemTrayIcon.MessageIcon.Warning,
+            10000,
+        )
+
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
         self._permanent_allow_hashes.clear()
         for _, rule_str in rules:
