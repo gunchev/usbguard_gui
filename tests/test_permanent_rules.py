@@ -653,3 +653,73 @@ class TestPermanentWriteFailure:
 
         assert hasattr(_DBusThread, "permanent_write_failed")
         assert hasattr(USBGuardClient, "permanent_write_failed")
+
+
+class TestUntrustedRuleIsNotPersisted:
+    """Finding D -- a device-derived string is not written verbatim.
+
+    raw_rule reaches the app from the daemon, but it is built from the
+    device's own descriptors and this path writes it into
+    /etc/usbguard/rules.conf.  A string that is not one well-formed rule of
+    known device attributes is refused, and the daemon's own upsert -- which
+    never accepts a device-supplied string -- is used instead, so the user
+    still gets a permanent decision rather than a silent no-op.
+    """
+
+    # The handoff's smuggling probe: a second rule and stray tokens riding
+    # along behind a legitimate-looking prefix.
+    CRAFTED = 'block id 2109:2817 name "hub" block with-interface { 03:01:01 }" serial "x" reject'
+
+    def test_a_smuggled_directive_is_never_written_to_the_policy(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+
+        assert "append" not in policy.kinds()
+
+    def test_a_refused_rule_falls_back_to_the_daemon_upsert(self):
+        """The decision is not dropped -- it goes through the path that
+        generates the rule daemon-side instead of taking ours."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+
+        thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
+            54, int(DeviceTarget.ALLOW), True
+        )
+
+    def test_a_refused_rule_does_not_reach_the_durable_ruleset(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+
+        assert _rules_conf(policy) == []
+
+    def test_a_rule_with_a_newline_is_refused(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True,
+                                     HUB_A + '\nreject with-interface { 03:00:00 }'))
+
+        assert "append" not in policy.kinds()
+        thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
+            54, int(DeviceTarget.ALLOW), True
+        )
+
+    def test_a_wellformed_rule_is_still_persisted(self):
+        """The check must not cost the normal path its behaviour."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert [c for c in policy.calls if c[0] == "append"] == [
+            ("append", HUB_A, _APPEND_RULE_AT_END, False)
+        ]
+        thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
+            54, int(DeviceTarget.ALLOW), False
+        )
