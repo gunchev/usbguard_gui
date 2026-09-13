@@ -1,3 +1,37 @@
+## 0.8.0 — 2026-09-13
+
+### Changes since v0.7.4
+
+- 0cb3466 docs: add PR #8 permanent-rules review handoff notes
+- 485ed90 docs: record PR #8 as a 1.0 gate and close the stale review markers
+- 2e5eea4 fix: validate a device-reported rule before persisting it
+- f6cec9e fix: say so when a permanent decision only applied temporarily
+- 88eaba5 fix: place the permanent rule where an earlier rule cannot shadow it
+- 2b51446 fix: update the existing permanent rule instead of appending another
+- d219e1a fix: keep permanent allow rules across KVM and dock topology changes
+- 7b0154a ci: make autopep8 fail the lint gate, not just print a diff
+- b4d3e7c ci: make tox run lint and typecheck, not just pytest
+- 2893815 .gitignore, .ignore, .mcp.json, AGENTS.md
+- 0e90ed2 docs(ci): explain why the altver install loop fails for the default Python
+- 0237314 chore: gitignore .env
+- 3a8676c docs: close AUDIT follow-ups #2 and #3, document the correlated fetch
+- 955632b fix: correlate unlock-cycle fetches so foreign and out-of-order results cannot drop prompts
+- 85840a2 test: reproduce the two open unlock-queue races as strict xfail
+- 2ea9af6 docs(todo): record the dialog 'Close' button naming follow-up
+- cc14749 docs: sync DESIGN/README with the worker-lifecycle change and the real module list
+- eb3d278 chore: cover the module entry point, align tox with the classifiers, scope coverage
+- 2367c99 fix: bound the HID lock delay and the screensaver unlock queue
+- dc4ea90 fix: recycle replaced D-Bus workers without blocking the Qt UI thread
+- f640f98 docs(readme): surface the polkit grant scope before install
+- aecdb6d docs(readme): fix the misleading HID and dialog descriptions
+- b630468 docs: correct DESIGN.md ruff rules, test count and settings module surface
+- ae64007 docs(agents): state that the graft graph is local-only and must be built
+- 32a64c9 docs: land the AUDIT rename (AUDIT.md -> AUDIT-2026-06-15.md)
+- afe8d57 chore: introduce graft repo context graph tooling
+- 028ea49 docs: correct and sharpen AGENTS.md
+- a4cad6e refactor: inject settings via SettingsProtocol so tests never touch user config
+- 42bfdd4 docs: mark COPR webhook verified (v0.7.4, build 10928231)
+
 ## 0.7.4 — 2026-09-01
 
 ### Changes since v0.7.3
