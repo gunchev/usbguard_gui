@@ -84,6 +84,11 @@ format` fixes it); the density preference is enforced by review.
 (import order), `autopep8` (whitespace and continuation layout), `pyright`
 (types). `make lint` runs the first three, `make typecheck` runs pyright.
 
+autopep8 runs with `--exit-code`, and that flag is load-bearing: plain
+`--diff` prints the patch and still exits 0, so without it `make lint`
+*reported* formatting drift while passing. With the flag it exits 2 when a
+diff exists, so `make check` actually fails on it.
+
 ### Imports
 
 - Always use `from __future__ import annotations` for postponed annotations

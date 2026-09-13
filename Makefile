@@ -50,7 +50,10 @@ help:
 lint:
 	uv run isort --check-only src/ tests/
 	uv run ruff check src/ tests/
-	uv run autopep8 --diff --recursive src/ tests/
+	# --exit-code: plain --diff prints the patch and still exits 0, so without it
+	# this step reported formatting drift while passing.  autopep8 exits 2 when a
+	# diff exists, which is what makes it a gate.
+	uv run autopep8 --diff --exit-code --recursive src/ tests/
 
 
 .PHONY: typecheck
