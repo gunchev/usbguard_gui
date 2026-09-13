@@ -21,8 +21,11 @@ jobs:
 
       - name: Run tox on Fedora ${{ matrix.fedora }}
         run: |
-          dnf -y install uv python3 make gcc fedora-packager \
+          dnf -y install uv python3 make gcc fedora-packager nodejs \
             python3-devel python3-cairo cairo-gobject-devel cairo-devel libglvnd-glx libglvnd-egl
+          # nodejs is for pyright (the typecheck env in tox.ini): it is a Node tool
+          # shipped through pip and would otherwise download its own runtime at run
+          # time.  Installing it here keeps the typecheck env offline-deterministic.
           # Install every altver Python in the declared range (tox envlist / pyproject classifiers).
           # The release's DEFAULT python3 is not an altver package: it arrives via python3/python3-devel
           # above and already provides /usr/bin/python3.XX. So the iteration for the current default

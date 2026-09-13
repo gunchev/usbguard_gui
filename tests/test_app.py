@@ -1098,7 +1098,7 @@ class TestHIDLockTimerNotExtendedByLaterInserts:
         tray_app._hid_lock_timer.stop()  # don't leak a 5 s timer into later tests
 
     def test_the_earliest_scheduled_lock_covers_every_pending_device(self, tray_app, fake_client,
-                                                                  fake_screensaver) -> None:
+                                                                     fake_screensaver) -> None:
         self._insert(fake_client, 1, self._RULE_A)
         self._insert(fake_client, 2, self._RULE_B)
         tray_app._hid_lock_timer.stop()

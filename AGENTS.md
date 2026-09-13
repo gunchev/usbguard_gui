@@ -10,7 +10,10 @@ Instructions for agentic coding agents working in this repository.
    Works → HID Devices*. Touch `app.py` without it in hand and you risk re-
    opening a security bug, not just a functional one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
-   not done.
+   not done. CI enforces it: the workflow runs plain `tox`, and `tox.ini` leads
+   its envlist with `lint` and `typecheck` ahead of the `py310`–`py314` test
+   matrix. (Before that split CI ran pytest alone, so lint and typing
+   regressions could land on master with the checks still green.)
 3. **Graft before grep** — but build it first. The `graft/` context graph (see
    the Graft section) answers "where does X live" and "what breaks if I change
    X" exactly, for free. It is **generated and local-only**: `graft/` is
