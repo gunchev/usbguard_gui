@@ -229,6 +229,7 @@ as defined in the XDG specifications.
 - Implemented with [Claude Sonnet](https://claude.ai/claude-code) (Anthropic).
 - Infrastructure improvements by [big-pickle/OpenCode](https://opencode.ai).
 - Manu bugs and improvements by [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) with [pi](https://pi.dev/) + [thinking fixes](https://github.com/soster/qwen38-thinking-levels).
+- v0.8.0 release engineering by [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) served by [halogen-flash-server](https://github.com/peonist-ai/halogen-flash-server), with [pi](https://pi.dev/).
 
 ## License
 
