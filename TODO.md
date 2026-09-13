@@ -13,6 +13,18 @@
 
 ## 1.0
 
+- [ ] Merge PR #8 — permanent allow rules across KVM and dock topology changes (`beorn-`). Rebased onto
+      master with four review fixes: place the rule above the first one that provably matches the device,
+      dedup instead of append-only, report a permanent write that only applied temporarily
+      (`permanent_write_failed`), and validate the device-reported `raw_rule` before persisting it
+      (fall back to the daemon's own upsert if it looks wrong). HID lock-first contract untouched.
+      Green under the full tox gate on Fedora 43/44. Waiting on `beorn-`'s KVM field confirmation of the
+      placement finding, then merge with a **merge commit** (not squash) to preserve their authorship and
+      the per-finding commits. Leaves two README lines behind: the unplaceable-first-rule case
+      (`Policy::appendRule` rejects `parent_id = 0`, so nothing lands above rule #1) and the matcher's
+      undecidable-by-design `None` verdict. Land this **before** the lock-gate refinement below — its
+      tests are the baseline that change has to keep green — and its `rule_matches_device()` /
+      `rule_persistence_problem()` are the primitives the catch-all detection should reuse.
 - [x] Unlock-queue race: correlated per-call device fetch (Option 3) — `fetch_devices()` +
       `list_devices_correlated(id, devices)`, id→id-set dict in the app, device-list window
       untouched. Closes AUDIT follow-up items 2 & 3 (both reproduced red, then fixed;
@@ -38,7 +50,8 @@
 
 ## 0.7.3
 
-- [x] Any local users and a wheel-only users packages plus core (polkit) — realized as the 1.0 subpackages above.
+- [x] Any local users and a wheel-only users packages plus core (polkit) — the core/users split shipped.
+      **Not** "packaging done": the open/strict subpackage split is still pending as the 1.0 item above.
 - [x] Fix the screen locking inhibition.
 - [x] Option to stop the special HID device handling.
 - [x] Circuit Breaker Pattern for USBGuard Client.
