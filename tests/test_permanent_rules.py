@@ -16,6 +16,7 @@ gets its own coexisting rule.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,6 +80,7 @@ class TestPermanentAllowAppendsRule:
         thread._devices_iface = MagicMock()
         thread._devices_iface.call_apply_device_policy = AsyncMock(return_value=7)
         thread._policy_iface = MagicMock()
+        thread._policy_iface.call_list_rules = AsyncMock(return_value=[])
         thread._policy_iface.call_append_rule = AsyncMock(return_value=23)
         return thread
 
@@ -144,6 +146,210 @@ class TestPermanentAllowAppendsRule:
         """UINT32_MAX-2; verified against the live daemon, which appended after
         the last rule and returned a fresh id."""
         assert _APPEND_RULE_AT_END == 4294967293
+
+
+class _FakePolicy:
+    """Stand-in for Policy1 holding a real permanent ruleset.
+
+    appendRule always adds — the daemon never deduplicates, that is precisely
+    the finding — removeRule deletes, listRules reports what is there now.
+    Driving the client against state rather than bare mocks is what makes the
+    accumulation tests mean something: they assert on the rules.conf the user
+    ends up with, not on how many times a mock was poked.
+    """
+
+    def __init__(self, rules=None):
+        self.rules = list(rules or [])
+        self.calls = []
+        self._next_id = max((rule_id for rule_id, _ in self.rules), default=0) + 1
+
+    async def call_list_rules(self, label):
+        self.calls.append(("list", label))
+        return list(self.rules)
+
+    async def call_append_rule(self, rule, parent_id, temporary):
+        self.calls.append(("append", rule, parent_id, temporary))
+        rule_id = self._next_id
+        self._next_id += 1
+        self.rules.append((rule_id, rule))
+        return rule_id
+
+    async def call_remove_rule(self, rule_id):
+        self.calls.append(("remove", rule_id))
+        self.rules = [(i, r) for i, r in self.rules if i != rule_id]
+
+    def kinds(self):
+        return [c[0] for c in self.calls]
+
+
+def _stub_thread(policy=None):
+    """_DBusThread wired to recording fakes for the daemon calls it makes."""
+    thread = _DBusThread()
+    thread._connected = True
+    thread._devices_iface = MagicMock()
+    thread._devices_iface.call_apply_device_policy = AsyncMock(return_value=7)
+    thread._policy_iface = policy if policy is not None else _FakePolicy()
+    return thread
+
+
+def _rules_conf(policy):
+    """The permanent ruleset as the user would find it in /etc/usbguard/rules.conf."""
+    return [rule for _, rule in policy.rules]
+
+
+class TestPermanentRuleDeduplication:
+    """Finding B — repeated permanent decisions must not pile up rules.
+
+    master's ``permanent=True`` *upserted* one rule per device hash, so
+    re-deciding a device reused the entry that was already there.  Appending
+    without looking first writes a fresh line every time: allow, block, then
+    re-allow the same KVM port and three rules are left for one device, and
+    the audit trail no longer records what the user decided.  The permanent
+    path now reads the ruleset and updates the rule it finds.
+    """
+
+    def test_reallowing_same_topology_appends_only_one_rule(self):
+        """Two permanent allows of one unchanged device == one rule."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_A]
+
+    def test_allow_block_reallow_cycle_leaves_one_rule_holding_the_last_decision(self):
+        """The ping-pong the UI actually invites: allow, block, allow again."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_A]
+
+    def test_repeated_permanent_decisions_do_not_grow_the_policy(self):
+        """N permanent decisions on one device must not mean N rules."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        for _ in range(5):
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert len(policy.rules) == 1
+
+    def test_target_change_replaces_the_rule_instead_of_adding_one(self):
+        """A changed mind updates the existing entry; it does not stack."""
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert _rules_conf(policy) == [BLOCKED_HUB]
+
+    def test_removal_precedes_append_so_a_new_block_is_never_shadowed(self):
+        """USBGuard is first-match-wins, so the stale rule has to go *before*
+        the new one lands.  Appending first would park a fresh ``block`` under
+        an older ``allow`` and silently ignore the user."""
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert policy.kinds() == ["list", "remove", "append"]
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
+
+    def test_replacement_still_authorizes_the_live_device_temporarily(self):
+        """Dedup must not turn the live authorization back into a permanent
+        upsert — the temporary apply is what keeps the HID lock-first gate the
+        only thing deciding when a device goes live."""
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
+            54, int(DeviceTarget.BLOCK), False
+        )
+
+    def test_sibling_topology_is_not_a_duplicate(self):
+        """The KVM's other hub differs in parent-hash, so it is a different
+        insertion point and keeps its own rule — dedup must not collapse them
+        back into the single-rule behaviour that caused the original bug."""
+        policy = _FakePolicy([(7, HUB_B)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert len(policy.rules) == 2
+        assert "remove" not in policy.kinds()
+
+    def test_unrelated_rules_are_left_untouched(self):
+        """Only the matched device's rule moves; everything else keeps its
+        place in the file."""
+        webcam = ('allow id 04f2:b2ea serial "SN-CAM" name "Integrated Camera" '
+                  'hash "camhash=" via-port "usb1" with-interface { 0e:01:00 }')
+        policy = _FakePolicy([(3, webcam)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [webcam, HUB_A]
+
+    def test_rule_naming_no_device_is_never_treated_as_this_device_s(self):
+        """A class-wide rule shares no identity with a specific device, so it
+        is neither a duplicate nor a replacement target — hand-written policy
+        stays exactly where the admin put it."""
+        broad = 'allow with-interface { 03:00:00 }'
+        policy = _FakePolicy([(3, broad)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [broad, HUB_A]
+
+    def test_whitespace_only_difference_is_not_a_new_rule(self):
+        """Same rule, differently wrapped: nothing to write."""
+        policy = _FakePolicy([(7, HUB_A.replace('name "USB2.0 Hub"', 'name  "USB2.0 Hub"'))])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert policy.kinds() == ["list"]
+
+    def test_preexisting_duplicates_update_the_first_and_report_the_rest(self, caplog):
+        """A policy already bloated by repeated decisions heals one rule at a
+        time, and never silently: the extra copies are reported rather than
+        deleted, because any of them could have been written by hand."""
+        policy = _FakePolicy([(7, HUB_A), (9, HUB_A)])
+        thread = _stub_thread(policy)
+
+        with caplog.at_level(logging.WARNING, logger="usbguard_gui.dbus_client"):
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
+        assert _rules_conf(policy) == [HUB_A, BLOCKED_HUB]
+        assert "9" in caplog.text
+
+    def test_unreadable_ruleset_falls_back_to_appending(self):
+        """Losing the user's permanent decision is worse than a possible
+        duplicate, so an unreadable ruleset degrades to the old append."""
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy()
+
+        async def raise_error(label):
+            raise DBusError(ErrorType.FAILED, "cannot read rules")
+
+        policy.call_list_rules = raise_error
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_A]
+        # An ordinary per-call failure must not flip the connection.
+        assert thread._connected is True
 
 
 class TestDeviceRawRule:
