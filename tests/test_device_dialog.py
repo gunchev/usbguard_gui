@@ -8,7 +8,7 @@ import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox
 
-from usbguard_gui.device import Device, DeviceTarget
+from usbguard_gui.device import Device, DeviceTarget, Persistence
 from usbguard_gui.device_dialog import DeviceActionDialog
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -31,9 +31,10 @@ class _FakeClient:
     def connected(self) -> bool:
         return self._connected
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+    def apply_device_policy(self, device_id: int, target: DeviceTarget,
+                            persistence: Persistence = Persistence.UNCHANGED,
                             device_rule: str | None = None) -> None:
-        self.apply_calls.append((device_id, target, permanent))
+        self.apply_calls.append((device_id, target, persistence))
 
 
 class _FakeScreensaver(QObject):
@@ -59,7 +60,8 @@ class TestDialogLockUnavailable:
     @pytest.fixture()
     def buttons(self, dialog_with_screensaver):
         dialog = dialog_with_screensaver[0]
-        return [dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close]
+        return [dialog._btn_allow_always, dialog._btn_allow_once, dialog._btn_block_once,
+                dialog._btn_block_always, dialog._btn_close]
 
     @pytest.fixture()
     def dialog_with_screensaver(self, qapp, qtbot):
@@ -77,7 +79,8 @@ class TestDialogLockUnavailable:
         dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
         qtbot.addWidget(dialog)
 
-        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close):
+        for btn in (dialog._btn_allow_always, dialog._btn_allow_once, dialog._btn_block_once,
+                    dialog._btn_block_always, dialog._btn_close):
             assert btn.isEnabled()
 
     def test_buttons_enabled_without_screensaver(self, qapp, qtbot) -> None:
@@ -85,7 +88,8 @@ class TestDialogLockUnavailable:
         dialog = DeviceActionDialog(_make_device(), _FakeClient())
         qtbot.addWidget(dialog)
 
-        for btn in (dialog._btn_allow, dialog._btn_allow_temp, dialog._btn_block, dialog._btn_close):
+        for btn in (dialog._btn_allow_always, dialog._btn_allow_once, dialog._btn_block_once,
+                    dialog._btn_block_always, dialog._btn_close):
             assert btn.isEnabled()
 
     def test_buttons_follow_lock_state_changes(self, dialog_with_screensaver, buttons) -> None:
@@ -102,7 +106,7 @@ class TestDialogLockUnavailable:
         screensaver.connection_changed.emit(False)
         assert all(not btn.isEnabled() for btn in buttons)
 
-    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_close"])
+    @pytest.mark.parametrize("handler", ["_on_allow_always", "_on_allow_once", "_on_block_once", "_on_block_always"])
     def test_actions_warn_when_lock_unavailable(self, dialog_with_screensaver, mocker, handler: str) -> None:
         """If a handler runs while lock is unavailable (e.g. the state flips
         after the buttons were enabled), it must warn, not record the choice."""
@@ -148,8 +152,8 @@ class TestCloseIsDefaultButton:
         QTest.keyClick(dialog, Qt.Key.Key_Return)
         qapp.processEvents()
 
-        assert dialog.result_target is DeviceTarget.REJECT
-        assert dialog.permanent is False
+        assert dialog.result_target is None
+        assert dialog.persistence is Persistence.UNCHANGED
         assert not dialog.isVisible()
 
     def test_enter_key_enter_triggers_close(self, qapp, qtbot) -> None:
@@ -166,8 +170,8 @@ class TestCloseIsDefaultButton:
         QTest.keyClick(dialog, Qt.Key.Key_Enter)
         qapp.processEvents()
 
-        assert dialog.result_target is DeviceTarget.REJECT
-        assert dialog.permanent is False
+        assert dialog.result_target is None
+        assert dialog.persistence is Persistence.UNCHANGED
         assert not dialog.isVisible()
 
     def test_escape_closes_without_target(self, qapp, qtbot) -> None:
@@ -216,7 +220,7 @@ class TestDialogConnectionWarning:
     believe their choice was applied.  The dialog stays open so the user
     can retry once the daemon is back."""
 
-    @pytest.mark.parametrize("handler", ["_on_allow", "_on_allow_temp", "_on_block", "_on_close"])
+    @pytest.mark.parametrize("handler", ["_on_allow_always", "_on_allow_once", "_on_block_once", "_on_block_always"])
     def test_all_actions_warn_when_disconnected(self, qapp, qtbot, mocker, handler: str) -> None:
         client = _FakeClient(connected=False)
         dialog = DeviceActionDialog(_make_device(), client)
@@ -232,16 +236,16 @@ class TestDialogConnectionWarning:
         dialog.close()
 
     @pytest.mark.parametrize(
-        ("handler", "target", "permanent"),
+        ("handler", "target", "persistence"),
         [
-            ("_on_allow", DeviceTarget.ALLOW, True),
-            ("_on_allow_temp", DeviceTarget.ALLOW, False),
-            ("_on_block", DeviceTarget.BLOCK, False),
-            ("_on_close", DeviceTarget.REJECT, False),
+            ("_on_allow_always", DeviceTarget.ALLOW, Persistence.ALWAYS),
+            ("_on_allow_once", DeviceTarget.ALLOW, Persistence.ONCE),
+            ("_on_block_once", DeviceTarget.BLOCK, Persistence.ONCE),
+            ("_on_block_always", DeviceTarget.BLOCK, Persistence.ALWAYS),
         ],
     )
     def test_all_actions_record_choice_when_connected(self, qapp, qtbot, mocker, handler: str, target: DeviceTarget,
-                                                      permanent: bool) -> None:
+                                                      persistence: Persistence) -> None:
         client = _FakeClient(connected=True)
         dialog = DeviceActionDialog(_make_device(), client)
         qtbot.addWidget(dialog)
@@ -251,4 +255,195 @@ class TestDialogConnectionWarning:
 
         assert not warn.called
         assert dialog.result_target is target
-        assert dialog.permanent is permanent
+        assert dialog.persistence is persistence
+
+    def test_button_labels_are_the_action_set(self, qapp, qtbot) -> None:
+        """The labels are the contract the user reads; keep them exact."""
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(connected=True))
+        qtbot.addWidget(dialog)
+
+        assert [b.text() for b in (dialog._btn_allow_always, dialog._btn_allow_once,
+                                   dialog._btn_block_once, dialog._btn_block_always)] == [
+            "Allow Always", "Allow Once", "Block Once", "Block Always",
+        ]
+
+
+class TestDismissAppliesNothing:
+    """Slice 7 -- Close, Escape and the timeout all mean "not deciding".
+
+    With four explicit Always/Once buttons, a dismiss that silently applies
+    something is the anomaly: the label says Close, not Block.  The device
+    stays where USBGuard's implicit policy put it -- blocked -- and nothing
+    durable is touched by a decision nobody made.  Verified against the
+    insert path: a device matching a permanent allow never reaches a dialog
+    at all (`app.py:327` returns on target=ALLOW), so a dismiss could not
+    have wiped a grant even if it tried.
+    """
+
+    def test_close_button_applies_nothing(self, qapp, qtbot) -> None:
+        client = _FakeClient(connected=True)
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+
+        dialog._on_close()
+
+        assert dialog.result_target is None
+        assert client.apply_calls == []
+
+    def test_close_is_never_blocked(self, qapp, qtbot, mocker) -> None:
+        """Closing has no action that could fail, so it must never warn or stick."""
+        client = _FakeClient(connected=False)
+        dialog = DeviceActionDialog(_make_device(), client)
+        qtbot.addWidget(dialog)
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        dialog._on_close()
+
+        assert not warn.called
+        assert dialog.result_target is None
+
+    def test_timeout_applies_nothing(self, qapp, qtbot) -> None:
+        client = _FakeClient(connected=True)
+        dialog = DeviceActionDialog(_make_device(), client, timeout=1)
+        qtbot.addWidget(dialog)
+
+        dialog._tick()
+
+        assert dialog.result_target is None
+        assert client.apply_calls == []
+
+
+class TestCleanupIsIdempotent:
+    """`finished` can arrive more than once; the second cleanup must not raise.
+
+    A TypeError raised inside a Qt slot aborts the tray process.  Observed as
+    the whole app dying with SIGABRT after `close()` followed by `reject()`:
+    the second `finished` ran cleanup again and the second `disconnect` hit an
+    already-detached signal.
+    """
+
+    def test_close_then_reject_survives_the_second_finished(self, qapp) -> None:
+        screensaver = _FakeScreensaver()
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog.show()
+        qapp.processEvents()
+
+        dialog.close()
+        dialog.reject()
+        qapp.processEvents()
+
+        assert dialog._cleanup_done is True
+
+    def test_the_monitor_is_detached_exactly_once(self, qapp) -> None:
+        screensaver = _FakeScreensaver()
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog.show()
+        qapp.processEvents()
+        assert screensaver.receivers(screensaver.connection_changed) == 1
+
+        dialog.close()
+        dialog.reject()
+        qapp.processEvents()
+
+        assert screensaver.receivers(screensaver.connection_changed) == 0
+
+    def test_cleanup_without_a_screensaver_is_still_safe(self, qapp) -> None:
+        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        dialog.show()
+        qapp.processEvents()
+        dialog.close()
+        dialog.reject()
+        qapp.processEvents()
+        assert dialog._cleanup_done is True
+
+
+class TestTheAbsentDeviceNoticeSurvivesTheCountdown:
+    """The one label that tells the user a click still counts must not be erased.
+
+    `set_device_present(False)` writes the notice into the same label the
+    countdown ticks into, and `_tick` rewrote it a second later with
+    "Auto-close in Ns (device stays blocked)" -- which not only loses the
+    notice, it says the opposite of what is true: the choice *is* still live,
+    and it applies when the device returns.
+    """
+
+    @pytest.fixture()
+    def dialog(self, qapp, qtbot):
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), timeout=30)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_the_notice_survives_a_tick(self, dialog) -> None:
+        dialog.set_device_present(False)
+
+        dialog._tick()
+
+        # The notice is what must survive, not one exact string -- the away
+        # line keeps its own countdown in it, so the whole text moves each tick.
+        text = dialog._timeout_label.text()
+        assert "disconnected" in text.lower(), "the countdown must not overwrite the notice"
+        assert "returns" in text
+
+    def test_the_countdown_still_runs_while_the_device_is_away(self, dialog) -> None:
+        """Only the text is held back -- the dialog still auto-closes."""
+        dialog.set_device_present(False)
+        remaining = dialog._remaining
+
+        dialog._tick()
+
+        assert dialog._remaining == remaining - 1
+
+    def test_the_countdown_comes_back_when_the_device_does(self, dialog) -> None:
+        dialog.set_device_present(False)
+        dialog._tick()
+
+        dialog.set_device_present(True)
+
+        assert "Auto-close in" in dialog._timeout_label.text()
+
+    def test_a_present_device_still_shows_the_countdown(self, dialog) -> None:
+        dialog._tick()
+
+        assert dialog._timeout_label.text() == "Auto-close in 29s (device stays blocked)"
+
+
+class TestTheAwayNoticeKeepsTheClockVisible:
+    """F5 -- holding back the countdown text also hid the clock.
+
+    The away notice replaces the whole status line, so for the entire window
+    in which the user can still click there is no indication of how long is
+    left -- while the dialog keeps counting down and closes behind them.  The
+    notice is worth keeping; suppressing the timer alongside it is not.
+    """
+
+    @pytest.fixture()
+    def dialog(self, qapp, qtbot):
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), timeout=30)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_the_time_left_is_visible_while_the_device_is_away(self, dialog) -> None:
+        dialog.set_device_present(False)
+
+        dialog._tick()
+
+        assert f"{dialog._remaining}s" in dialog._timeout_label.text(), \
+            f"the clock must stay readable; got {dialog._timeout_label.text()!r}"
+
+    def test_the_clock_still_moves_while_the_device_is_away(self, dialog) -> None:
+        dialog.set_device_present(False)
+        dialog._tick()
+        first = dialog._timeout_label.text()
+
+        dialog._tick()
+
+        assert dialog._timeout_label.text() != first, "a frozen clock is not a countdown"
+
+    def test_the_away_notice_is_still_there_alongside_the_clock(self, dialog) -> None:
+        dialog.set_device_present(False)
+
+        dialog._tick()
+
+        text = dialog._timeout_label.text()
+        assert "disconnected" in text.lower(), "the away state must not be lost either"
+        assert "stays blocked" not in text, "the old wording says the opposite of what is true"

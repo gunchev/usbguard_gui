@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
+import time
 from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from usbguard_gui.device import Device, DeviceTarget, PresenceEvent
+from usbguard_gui.app import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE, MAX_PENDING_DECISIONS, \
+    PROMPT_COOLDOWN_SEC, USBGuardTrayApp
+from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -111,10 +115,15 @@ class _FakeClient(QObject):
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     permanent_write_failed = pyqtSignal(int, str, str)
+    permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self) -> None:
         super().__init__()
         self.apply_policy_calls: list[tuple] = []
+        self.persist_rule_calls: list[tuple] = []
+        self.apply_policy_rules: list[str | None] = []
+        self.remove_rule_calls: list[int] = []
         self.list_devices_calls: int = 0
         self.fetch_devices_calls: list[int] = []
         self._connected = True
@@ -129,15 +138,20 @@ class _FakeClient(QObject):
     def fetch_devices(self, request_id: int, query: str = "match") -> None:
         self.fetch_devices_calls.append(request_id)
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+    def apply_device_policy(self, device_id: int, target: DeviceTarget,
+                            persistence: Persistence = Persistence.UNCHANGED,
                             device_rule: str | None = None) -> None:
-        self.apply_policy_calls.append((device_id, target, permanent))
+        self.apply_policy_calls.append((device_id, target, persistence))
+        self.apply_policy_rules.append(device_rule)
+
+    def persist_rule(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
+        self.persist_rule_calls.append((device_id, target, device_rule))
 
     def list_rules(self, label: str = "") -> None:
         pass
 
     def remove_rule(self, rule_id: int) -> None:
-        pass
+        self.remove_rule_calls.append(rule_id)
 
     def connect(self) -> bool:  # type: ignore[override]
         return True
@@ -373,7 +387,7 @@ class TestHIDLockOnDeviceRemoval:
         tray_app._hid_pending_devices = {1}
         fake_screensaver._active = True  # Screen is now locked
         fake_client.list_devices_result.emit([device])
-        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 
     def test_no_allow_when_device_removed_before_lock(self, tray_app, fake_client, fake_screensaver) -> None:
         """If the device is unplugged before the screen locks, do not apply policy."""
@@ -457,7 +471,7 @@ class TestHIDAllowOnScreenLock:
     def test_allows_pending_hid_devices_on_lock(self, tray_app, fake_client) -> None:
         tray_app._hid_pending_devices = {1}
         tray_app._on_screensaver_locked(True)
-        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         assert tray_app._hid_pending_devices == set()
 
     def test_allows_multiple_pending_devices(self, tray_app, fake_client) -> None:
@@ -465,7 +479,7 @@ class TestHIDAllowOnScreenLock:
         tray_app._on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 3
         for device_id in (1, 2, 3):
-            assert (device_id, DeviceTarget.ALLOW, False) in fake_client.apply_policy_calls
+            assert (device_id, DeviceTarget.ALLOW, Persistence.UNCHANGED) in fake_client.apply_policy_calls
         assert tray_app._hid_pending_devices == set()
 
     def test_no_pending_no_action(self, tray_app, fake_client) -> None:
@@ -484,7 +498,7 @@ class TestHIDAllowOnScreenLock:
         tray_app._on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 2
         assert all(call[1] == DeviceTarget.ALLOW for call in fake_client.apply_policy_calls)
-        assert all(call[2] is False for call in fake_client.apply_policy_calls)
+        assert all(call[2] is Persistence.UNCHANGED for call in fake_client.apply_policy_calls)
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +585,7 @@ class TestHIDAllowRequiresLockedScreen:
         # 5. The deferred lock happens -> B is allowed (the safe path).
         fake_screensaver._active = True
         tray_app._on_screensaver_locked(True)
-        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 
         for dialog in list(tray_app._open_dialogs.values()):
             dialog.close()
@@ -1110,7 +1124,7 @@ class TestHIDLockTimerNotExtendedByLaterInserts:
 
         tray_app._on_screensaver_locked(True)
         assert sorted(fake_client.apply_policy_calls) == sorted(
-            [(1, DeviceTarget.ALLOW, False), (2, DeviceTarget.ALLOW, False)]
+            [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED), (2, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         )
 
 
@@ -1250,3 +1264,814 @@ class TestUnlockQueueRaceReproductions:
     def test_reconnect_with_no_outstanding_cycles_fetches_nothing(self, tray_app, fake_client) -> None:
         fake_client.connection_changed.emit(True)
         assert fake_client.fetch_devices_calls == []
+
+
+class TestAutomaticAllowsNeverClearPersistence:
+    """Slice 5 -- the three non-user allow paths must never delete a standing rule.
+
+    These fire with nobody clicking: the list-devices HID safety net, the
+    anti-lockout branch, and the pending-unlock allow.  If any of them carried
+    `Once` semantics it would erase an administrator's permanent `block` from
+    a path with no user in the loop -- privilege escalation dressed up as a
+    temporary allow.  They are `UNCHANGED`, and that is a security property,
+    not a convenient default.
+    """
+
+    _RULE = ('block id 1234:abcd serial "" name "Keyboard" hash "aaa111" '
+             'parent-hash "" via-port "1-1" with-interface 03:00:00 '
+             'with-connect-type hotplug')
+
+    def test_anti_lockout_branch_allows_without_clearing(self, tray_app, fake_client,
+                                                         fake_screensaver) -> None:
+        """HID inserted while the screen is already locked: allow, persistence untouched."""
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+        assert fake_client.remove_rule_calls == []
+
+    def test_pending_unlock_allow_does_not_clear(self, tray_app, fake_client) -> None:
+        tray_app._hid_pending_devices = {1}
+
+        tray_app._on_screensaver_locked(True)
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+        assert fake_client.remove_rule_calls == []
+
+    def test_list_devices_hid_safety_net_does_not_clear(self, tray_app, fake_client,
+                                                        fake_screensaver) -> None:
+        fake_screensaver._active = True
+        tray_app._hid_pending_devices = {1}
+
+        tray_app._on_list_devices_result([Device.from_dbus(1, self._RULE)])
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+        assert fake_client.remove_rule_calls == []
+
+
+class TestBroaderRuleWarning:
+    """A `Once` that leaves a wildcard rule in force must be announced.
+
+    Nothing failed -- the device's own rule was cleared.  But a broader rule
+    still governs the device, so it remains permanently allowed while the user
+    believes they just made a temporary decision.  Silence here is the whole
+    defect; the rule is deliberately left alone.
+    """
+
+    def test_the_tray_names_the_rule_that_remains(self, tray_app, mocker):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._on_permanent_rule_remains(54, "allow", "allow id 2109:2817")
+
+        title, body = show.call_args[0][0], show.call_args[0][1]
+        assert "Temporary decision incomplete" in title
+        assert "allow id 2109:2817" in body, "the user must be able to find the rule"
+        assert "permanently allow" in body
+
+    def test_the_signal_is_wired_through_to_the_tray(self, tray_app, mocker):
+        """Wiring, not just the handler -- an unconnected signal is silent."""
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._client.permanent_rule_remains.emit(54, "block", "block id 2109:2817")
+
+        assert show.called
+        assert "block id 2109:2817" in show.call_args[0][1]
+
+
+class TestReappearingDeviceDoesNotStackDialogs:
+    """A device that re-enumerates must not produce a notification storm.
+
+    The daemon assigns a fresh device number on every insertion, so the old
+    number-keyed dedup check let a flapping device stack one notification and
+    one dialog per landing.  Observed live with an ELKSMART Smart IR Blaster,
+    which resets when it is configured: three "New USB device inserted"
+    notices deep for one physical device, none of them a new device.
+    """
+
+    _IR = (
+        'block id 1234:5678 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+        'parent-hash "" via-port "2-1" with-interface ff:00:00 with-connect-type "hotplug"'
+    )
+
+    def test_a_new_device_number_for_the_same_device_does_not_stack(self, tray_app, mocker) -> None:
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(174, self._IR))
+        assert len(tray_app._open_dialogs) == 1
+        assert show.call_count == 1
+
+        tray_app._show_device_dialog(Device.from_dbus(179, self._IR))
+
+        assert len(tray_app._open_dialogs) == 1, "re-enumeration must not stack a second dialog"
+        assert show.call_count == 1, "and must not notify again"
+
+    def test_a_different_device_still_gets_its_own_dialog(self, tray_app, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        other = self._IR.replace('hash "irhash1"', 'hash "otherhash"')
+        tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
+        tray_app._show_device_dialog(Device.from_dbus(2, other))
+        assert len(tray_app._open_dialogs) == 2
+
+    def test_closing_the_dialog_does_not_let_the_next_flap_prompt_immediately(self, tray_app, mocker) -> None:
+        """Closing the dialog frees the identity for stacking purposes, but the
+        cooldown still holds.  This is the whole point: a flapping device closes
+        its own dialog on every REMOVE, so without the cooldown each flap would
+        prompt again the instant the previous dialog was torn down."""
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
+        tray_app._open_dialogs[1].reject()
+
+        tray_app._show_device_dialog(Device.from_dbus(2, self._IR))
+
+        assert 2 not in tray_app._open_dialogs, "still inside the cooldown"
+
+    def test_after_the_cooldown_expires_the_next_landing_prompts_again(self, tray_app, mocker) -> None:
+        """The cooldown is a quiet period, not a permanent silence -- a device
+        that comes back later is still worth asking about."""
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
+        tray_app._open_dialogs[1].reject()
+
+        identity = USBGuardTrayApp._dialog_identity(Device.from_dbus(1, self._IR))
+        tray_app._last_prompted_at[identity] = time.monotonic() - (PROMPT_COOLDOWN_SEC + 1)
+
+        tray_app._show_device_dialog(Device.from_dbus(2, self._IR))
+
+        assert 2 in tray_app._open_dialogs
+
+    def test_devices_without_a_hash_dedup_on_id_and_port(self, tray_app, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        no_hash = ('block id abcd:1234 serial "" name "Gadget" hash "" parent-hash "" '
+                   'via-port "3-2" with-interface ff:00:00 with-connect-type "hotplug"')
+        tray_app._show_device_dialog(Device.from_dbus(1, no_hash))
+        tray_app._show_device_dialog(Device.from_dbus(2, no_hash))
+        assert len(tray_app._open_dialogs) == 1
+
+    def test_the_identity_key_prefers_the_hash(self) -> None:
+        device = Device.from_dbus(1, self._IR)
+        assert USBGuardTrayApp._dialog_identity(device) == "hash:irhash1"
+
+
+class TestDialogTracksTheNewestInstance:
+    """A click must act on the device that exists *now*.
+
+    Observed live: Allow Once on a flapping Smart IR Blaster failed with
+    "Device lookup: device id: id doesn't exist".  The dialog held the device
+    number captured when it opened, and that incarnation was long gone by the
+    time the user clicked -- so the click failed even though the user did
+    everything right.
+    """
+
+    _IR = (
+        'block id 045c:0131 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+        'parent-hash "" via-port "1-2" with-interface ff:00:00 with-connect-type "hotplug"'
+    )
+
+    def test_a_reappearance_retargets_the_open_dialog(self, tray_app, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(247, self._IR))
+        dialog = tray_app._open_dialogs[247]
+
+        tray_app._show_device_dialog(Device.from_dbus(264, self._IR))
+
+        assert dialog.device.number == 264
+        assert 247 not in tray_app._open_dialogs, "the stale key must not linger"
+        assert tray_app._open_dialogs[264] is dialog
+
+    def test_the_click_applies_to_the_current_number(self, tray_app, fake_client, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(247, self._IR))
+        dialog = tray_app._open_dialogs[247]
+        tray_app._show_device_dialog(Device.from_dbus(264, self._IR))
+
+        dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
+
+        assert fake_client.apply_policy_calls[-1][0] == 264, "must not act on the stale 247"
+
+    def test_the_click_uses_the_current_raw_rule(self, tray_app, fake_client, mocker) -> None:
+        """`Once` derives the deletion identity from the rule string, so a stale
+        rule would clear the wrong thing."""
+        mocker.patch.object(tray_app._tray, "showMessage")
+        moved = self._IR.replace('via-port "1-2"', 'via-port "1-5"')
+        tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
+        dialog = tray_app._open_dialogs[1]
+        tray_app._show_device_dialog(Device.from_dbus(2, moved))
+
+        dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
+
+        assert fake_client.apply_policy_rules[-1] == moved
+
+    def test_no_reappearance_still_uses_the_original(self, tray_app, fake_client, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(7, self._IR))
+        dialog = tray_app._open_dialogs[7]
+
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ALWAYS)
+
+        assert fake_client.apply_policy_calls[-1][0] == 7
+
+
+class TestDecisionsSurviveAFlappingDevice:
+    """A device dropping off the bus must not take the user's options with it.
+
+    Observed: the dialog for a Smart IR Blaster closed in under three seconds
+    -- REMOVE closed it, and the cooldown then suppressed the next one -- so
+    there was nothing left to click at all.  The dialog now stays open, and a
+    choice made while the device is away is held and applied on its next
+    appearance.
+    """
+
+    _IR = (
+        'block id 045c:0131 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+        'parent-hash "" via-port "1-2" with-interface ff:00:00 with-connect-type "hotplug"'
+    )
+
+    def _open(self, tray_app, mocker, number: int = 292):
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(number, self._IR))
+        return tray_app._open_dialogs[number]
+
+    def _remove(self, tray_app, number: int = 292) -> None:
+        tray_app._on_device_presence_changed(number, int(PresenceEvent.REMOVE),
+                                             int(DeviceTarget.BLOCK), self._IR, {})
+
+    @property
+    def _ident(self) -> str:
+        return USBGuardTrayApp._dialog_identity(Device.from_dbus(292, self._IR))
+
+    def test_removal_keeps_the_dialog_open_but_marks_the_device_gone(self, tray_app, mocker) -> None:
+        dialog = self._open(tray_app, mocker)
+        assert dialog.device_present is True
+
+        self._remove(tray_app)
+
+        assert tray_app._open_dialogs.get(292) is dialog, "the dialog must survive the REMOVE"
+        assert dialog.device_present is False
+
+    def test_always_while_absent_writes_the_rule_immediately(self, tray_app, fake_client, mocker) -> None:
+        """A permanent rule is inert data -- appendRule needs no device.  There
+        is nothing to defer, and nothing to authorize either."""
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ALWAYS)
+
+        assert fake_client.persist_rule_calls[-1] == (292, DeviceTarget.BLOCK, self._IR)
+        assert fake_client.apply_policy_calls == [], "no live device to authorize"
+        assert tray_app._pending_decisions == {}, "nothing queued -- it already landed"
+
+    def test_once_while_absent_is_queued_not_applied(self, tray_app, fake_client, mocker) -> None:
+        """`Once` is a live state that expires, so it genuinely needs the device."""
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert fake_client.apply_policy_calls == []
+        assert fake_client.persist_rule_calls == []
+        assert self._ident in tray_app._pending_decisions
+
+    def test_the_queued_decision_applies_on_the_next_appearance(self, tray_app, fake_client, mocker) -> None:
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+        dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
+
+        tray_app._show_device_dialog(Device.from_dbus(301, self._IR))
+
+        assert fake_client.apply_policy_calls[-1] == (301, DeviceTarget.ALLOW, Persistence.ONCE)
+        assert tray_app._pending_decisions == {}
+
+    def test_a_queued_decision_does_not_open_a_fresh_prompt(self, tray_app, mocker) -> None:
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ONCE)
+        before = tray_app._tray.showMessage.call_count
+
+        tray_app._show_device_dialog(Device.from_dbus(302, self._IR))
+
+        assert tray_app._tray.showMessage.call_count == before, "the user already decided"
+        assert len(tray_app._open_dialogs) == 0, "the answered dialog closed; no new one opens"
+
+    def test_a_choice_made_while_present_applies_immediately(self, tray_app, fake_client, mocker) -> None:
+        dialog = self._open(tray_app, mocker)
+
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert fake_client.apply_policy_calls[-1] == (292, DeviceTarget.BLOCK, Persistence.ONCE)
+        assert tray_app._pending_decisions == {}
+
+    def test_the_pending_cap_drops_the_oldest_and_says_so(self, tray_app, mocker) -> None:
+        for i in range(MAX_PENDING_DECISIONS):
+            tray_app._pending_decisions[f"hash:filler{i}"] = (DeviceTarget.BLOCK, Persistence.ONCE, "block x")
+        dropped = mocker.patch("usbguard_gui.app.log.warning")
+
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+        dialog._choose(DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert len(tray_app._pending_decisions) == MAX_PENDING_DECISIONS
+        assert self._ident in tray_app._pending_decisions
+        assert dropped.called
+        # Which one goes matters.  `dict.popitem()` is LIFO, so the cap used to
+        # evict the *newest* queued decision and pin the 32 oldest forever --
+        # keeping the stalest decisions and discarding the one the user made a
+        # moment ago, which is the opposite of what the log line says.
+        assert "hash:filler0" not in tray_app._pending_decisions, "the oldest queued decision goes first"
+        assert f"hash:filler{MAX_PENDING_DECISIONS - 1}" in tray_app._pending_decisions, \
+            "the newest queued decisions stay"
+        assert dropped.call_args.args[-1] == "hash:filler0", "the log must name the entry it actually dropped"
+
+    def test_a_retargeted_dialog_knows_the_device_is_back(self, tray_app, fake_client, mocker) -> None:
+        """Retargeting must restore presence.
+
+        Without it the dialog keeps the "away" flag set by the previous REMOVE,
+        so a click made just after a re-appearance takes the no-live-device
+        path and the live half of the decision is silently skipped.
+        """
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+        assert dialog.device_present is False
+
+        tray_app._show_device_dialog(Device.from_dbus(301, self._IR))
+
+        assert dialog.device_present is True, "the device we just re-targeted is on the bus"
+        dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
+        assert fake_client.apply_policy_calls[-1] == (301, DeviceTarget.ALLOW, Persistence.ONCE)
+        assert tray_app._pending_decisions == {}, "nothing to queue, it applied live"
+
+
+class TestAQueuedDecisionDrainsOnEveryReturnPath:
+    """A decision the user already made must not depend on how the device comes back.
+
+    ``_show_device_dialog`` is the only place a queued decision was ever
+    applied, and the INSERT handler returns before reaching it whenever the
+    device needs no prompt -- it came back already allowed, or it is a HID
+    device heading for the lock-first flow.  So the one case the queue exists
+    for (a device that flaps) lost the decision precisely when the device's own
+    policy disagreed with the user's choice.  The HID path is the sharp end: a
+    queued `Block` became an auto-allow on the next unlock.
+    """
+
+    _IR = (
+        'block id 045c:0131 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+        'parent-hash "" via-port "1-2" with-interface ff:00:00 with-connect-type "hotplug"'
+    )
+    _KEYBOARD = (
+        'block id 046d:c52b serial "KB1" name "Keyboard" hash "kbhash1" '
+        'parent-hash "" via-port "1-3" with-interface 03:01:01 with-connect-type "hotplug"'
+    )
+
+    def _queue(self, tray_app, mocker, rule: str, target: DeviceTarget = DeviceTarget.BLOCK) -> None:
+        """Leave a decision in the queue the way the user does: decide while away."""
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(292, rule))
+        dialog = tray_app._open_dialogs[292]
+        tray_app._on_device_presence_changed(292, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), rule, {})
+        dialog._choose(target, Persistence.ONCE)
+        assert tray_app._pending_decisions, "precondition: the decision is queued"
+
+    def _insert(self, tray_app, rule: str, target: DeviceTarget, number: int = 301) -> None:
+        tray_app._on_device_presence_changed(number, int(PresenceEvent.INSERT), int(target), rule, {})
+
+    def test_a_device_that_returns_allowed_still_gets_the_queued_decision(self, tray_app, fake_client, mocker):
+        """The INSERT handler skips allowed devices -- but not a decided one.
+
+        A wildcard `allow id ...` underneath the device brings it back with
+        target=ALLOW, and the queued `Block Once` was dropped without a word.
+        """
+        self._queue(tray_app, mocker, self._IR)
+
+        self._insert(tray_app, self._IR, DeviceTarget.ALLOW)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._pending_decisions == {}, "the queue must not hold a decision it already applied"
+
+    def test_a_queued_decision_wins_over_the_hid_lock_flow(self, tray_app, fake_client, mocker):
+        """The queued choice is the user's; the lock-first flow is the default for undecided devices.
+
+        Without this the keyboard lands in _hid_pending_devices and is
+        auto-allowed on the next unlock -- the exact opposite of the `Block`
+        the user clicked while it was off the bus.
+        """
+        self._queue(tray_app, mocker, self._KEYBOARD)
+
+        self._insert(tray_app, self._KEYBOARD, DeviceTarget.BLOCK)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._hid_pending_devices == set(), "a decided device never enters the lock-first flow"
+        assert not tray_app._hid_lock_timer.isActive(), "nothing to lock for"
+        assert tray_app._pending_decisions == {}
+
+    def test_a_queued_decision_applies_even_while_the_screen_is_locked(self, tray_app, fake_client,
+                                                                       fake_screensaver, mocker):
+        """Deferral is for devices nobody has decided about yet."""
+        self._queue(tray_app, mocker, self._IR)
+        fake_screensaver._active = True
+
+        self._insert(tray_app, self._IR, DeviceTarget.BLOCK)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._screensaver_pending_devices == set(), "already decided -- nothing to prompt on unlock"
+
+    def test_an_undecided_device_is_untouched_by_the_drain(self, tray_app, fake_client, mocker):
+        """The drain must not swallow the normal paths it now runs ahead of."""
+        mocker.patch.object(tray_app._tray, "showMessage")
+
+        self._insert(tray_app, self._KEYBOARD, DeviceTarget.BLOCK)
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._hid_pending_devices == {301}, "no queued decision, so the HID flow still owns it"
+
+
+class TestAQueuedAllowStillObeysTheLockContract:
+    """A queued decision must not become a way around the lock-first flow.
+
+    Draining the queue ahead of everything is right for `Block` -- it is
+    strictly safer than the default.  For `Allow` on a device with a HID
+    interface it is not: the whole point of the lock-first flow is that a
+    keyboard is only ever authorized behind a password prompt, and a decision
+    the user made minutes ago while the device was off the bus is no substitute
+    for that.  So the live authorize goes back to the lock flow.  The `Once`
+    clear that goes with it is not performed either -- see
+    `TestAHandbackQueuedAllowSaysWhatWasLost` for why, and for the warning
+    that keeps the loss from being silent.
+    """
+
+    _KEYBOARD = (
+        'block id 046d:c52b serial "KB1" name "Keyboard" hash "kbhash1" '
+        'parent-hash "" via-port "1-3" with-interface 03:01:01 with-connect-type "hotplug"'
+    )
+    _IR = (
+        'block id 045c:0131 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+        'parent-hash "" via-port "1-2" with-interface ff:00:00 with-connect-type "hotplug"'
+    )
+
+    def _queue(self, tray_app, mocker, rule: str, target: DeviceTarget, persistence: Persistence) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(292, rule))
+        dialog = tray_app._open_dialogs[292]
+        tray_app._on_device_presence_changed(292, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), rule, {})
+        dialog._choose(target, persistence)
+
+    def _insert(self, tray_app, rule: str) -> None:
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), rule, {})
+
+    def test_a_queued_allow_on_a_hid_device_goes_through_the_lock(self, tray_app, fake_client, mocker):
+        self._queue(tray_app, mocker, self._KEYBOARD, DeviceTarget.ALLOW, Persistence.ONCE)
+
+        self._insert(tray_app, self._KEYBOARD)
+
+        assert fake_client.apply_policy_calls == [], "no live allow without the lock gate"
+        assert tray_app._hid_pending_devices == {301}, "the lock-first flow owns the authorize"
+        assert tray_app._hid_lock_timer.isActive()
+
+    def test_an_always_never_reaches_the_queue_at_all(self, tray_app, fake_client, mocker):
+        """So the lock gate costs the user nothing durable.
+
+        A permanent rule needs no live device, so `Always` chosen while the
+        device is away is written at click time rather than queued -- which is
+        why handing a queued `Allow` back to the lock flow can only ever defer
+        a `Once`, never discard an `Always`.
+        """
+        self._queue(tray_app, mocker, self._KEYBOARD, DeviceTarget.ALLOW, Persistence.ALWAYS)
+
+        assert tray_app._pending_decisions == {}, "written, not queued"
+        assert fake_client.persist_rule_calls == [(292, DeviceTarget.ALLOW, self._KEYBOARD)]
+        assert fake_client.apply_policy_calls == [], "no live device to authorize"
+
+    def test_a_once_queue_writes_no_rule(self, tray_app, fake_client, mocker):
+        self._queue(tray_app, mocker, self._KEYBOARD, DeviceTarget.ALLOW, Persistence.ONCE)
+
+        self._insert(tray_app, self._KEYBOARD)
+
+        assert fake_client.persist_rule_calls == []
+
+    def test_a_queued_block_on_a_hid_device_applies_at_once(self, tray_app, fake_client, mocker):
+        """Block is strictly safer than the flow it replaces, so it needs no gate."""
+        self._queue(tray_app, mocker, self._KEYBOARD, DeviceTarget.BLOCK, Persistence.ONCE)
+
+        self._insert(tray_app, self._KEYBOARD)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._hid_pending_devices == set()
+
+    def test_a_queued_allow_on_a_non_hid_device_applies_at_once(self, tray_app, fake_client, mocker):
+        """The contract is about HID; nothing else is gated."""
+        self._queue(tray_app, mocker, self._IR, DeviceTarget.ALLOW, Persistence.ONCE)
+
+        self._insert(tray_app, self._IR)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
+
+    def test_a_queued_allow_applies_at_once_when_hid_treatment_is_off(self, tray_app, fake_client,
+                                                                      fake_settings, mocker):
+        """There is no lock-first flow to defer to once the user has disabled it."""
+        self._queue(tray_app, mocker, self._KEYBOARD, DeviceTarget.ALLOW, Persistence.ONCE)
+        fake_settings.set_disable_hid_treatment(True)
+
+        self._insert(tray_app, self._KEYBOARD)
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
+        assert tray_app._hid_pending_devices == set()
+
+
+class TestPartialClearIsAnnouncedDifferently:
+    """A half-done clear must not read like a no-op.
+
+    The `Once` path is fail-closed: the clear runs first, so a refusal means the
+    decision never happened and the device keeps its rule.  That message is
+    correct only while rules.conf is untouched.  When the device owned several
+    permanent rules and the clear died partway, the stored policy *did* change,
+    and telling the user "the existing permanent rule could not be removed"
+    points them at a file that no longer says what they think it says.
+    """
+
+    def test_a_total_failure_keeps_the_plain_message(self, tray_app, mocker):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._on_permanent_clear_failed(54, "allow", "Not authorized", False)
+
+        title, body = show.call_args[0][0], show.call_args[0][1]
+        assert title == "Temporary decision not applied"
+        assert "could not be removed" in body
+        assert "partly" not in body
+
+    def test_a_partial_failure_says_the_policy_changed(self, tray_app, mocker):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._on_permanent_clear_failed(54, "allow", "transient failure", True)
+
+        title, body = show.call_args[0][0], show.call_args[0][1]
+        assert "partly changed" in title
+        assert "did not take effect" in body, "the decision still did not land"
+        assert "no longer what it was" in body, "and the stored policy moved"
+        assert "rules.conf" in body, "send the user somewhere they can check"
+
+    def test_the_signal_is_wired_through_to_the_tray(self, tray_app, mocker):
+        """Wiring, not just the handler -- an unconnected signal is silent."""
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._client.permanent_clear_failed.emit(54, "allow", "transient failure", True)
+
+        assert show.called
+        assert "partly changed" in show.call_args[0][0]
+
+
+def _handback_notice(show) -> tuple[str, str]:
+    """The handback notice the tray was shown, selected by identity not prose."""
+    for call in show.call_args_list:
+        if call.args[0] == HANDBACK_NOTICE_TITLE:
+            return call.args[0], call.args[1]
+    raise AssertionError(f"no handback notice was raised; got {[c.args[0] for c in show.call_args_list]}")
+
+
+def _says_clear_did_not_happen(body: str) -> bool:
+    """Does the wording report that no permanent rule was cleared?
+
+    Keyed on the claim, not on one sentence.  The wording is user-facing and
+    gets improved; an assertion pinned to a literal turns every rewording into
+    a test failure that has nothing to do with whether the claim is being made.
+    """
+    return bool(_NEGATED_CLEAR.search(body.lower()))
+
+
+def _asserts_a_rule_the_app_never_read(body: str) -> bool:
+    """Does the wording state as fact that the device *has* a standing rule?
+
+    `_apply_pending_decision` never reads the ruleset -- the app tracks
+    permanent *allow* hashes only -- so it cannot say one is there.  "cleared
+    no permanent rule" and "any rule it has" are both fine; a definite
+    possessive is not, because it asserts existence the code never checked.
+    """
+    return bool(_EXISTENCE_ASSERTION.search(body.lower()))
+
+
+# Any way of saying the clear did not happen.  Apostrophes are matched both
+# ways because user-facing strings drift between ASCII and typographic.
+_NEGATED_CLEAR = re.compile(r"cleared no|n[o'\u2019]t cleared|n[o'\u2019]t clear|no permanent rule")
+
+# A definite, unhedged reference to a standing permanent rule.
+_EXISTENCE_ASSERTION = re.compile(r"\b(?:its|the|this)\s+standing permanent rule\b")
+
+
+KEYBOARD_RULE = (
+    'block id 046d:c52b serial "KB1" name "Keyboard" hash "kbhash1" '
+    'parent-hash "" via-port "1-3" with-interface 03:01:01 with-connect-type "hotplug"'
+)
+IR_RULE = (
+    'block id 045c:0131 serial "IR1" name "Smart IR Blaster" hash "irhash1" '
+    'parent-hash "" via-port "1-2" with-interface ff:00:00 with-connect-type "hotplug"'
+)
+
+
+@pytest.fixture()
+def queued_decision(tray_app, mocker):
+    """Leave a decision in the queue the way the user does: decide while away.
+
+    A factory rather than a fixed state, because the tests vary the target, the
+    persistence and the device, and each wants the tray mock back with its call
+    history already cleared -- opening the dialog and the REMOVE that precedes
+    the click raise notices of their own that would otherwise pollute the
+    assertions about the insertion.
+    """
+    def _make(target: DeviceTarget, persistence: Persistence = Persistence.ONCE,
+              rule: str = KEYBOARD_RULE) -> MagicMock:
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._show_device_dialog(Device.from_dbus(292, rule))
+        dialog = tray_app._open_dialogs[292]
+        tray_app._on_device_presence_changed(292, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), rule, {})
+        dialog._choose(target, persistence)
+        assert tray_app._pending_decisions, "precondition: the decision is queued"
+        show.reset_mock()
+        return show
+
+    return _make
+
+
+class TestAHandbackQueuedAllowSaysWhatWasLost:
+    """F3 -- handing a queued `Allow` back to the lock flow drops the `Once`
+    clear, and that has to be said out loud.
+
+    The handback is right for the *live* half: a click made minutes ago while
+    the device was off the bus does not prove anybody is at the machine, so
+    the authorize waits for the lock.  But `Once` is two halves, and the
+    durable one -- "clear the standing permanent rule" -- is not performed by
+    the lock-first flow, which authorizes with `UNCHANGED`.  Before this the
+    decision was popped and dropped with one log line, so a user who clicked
+    *Allow Once* on a permanently blocked keyboard kept the permanent rule
+    and was never told.
+
+    The clear is deliberately *not* performed outside the lock: dropping a
+    standing `block` widens what the *next* insertion does, and acting on a
+    stale click is exactly what the lock contract refuses to do.  So the fix
+    is honesty rather than action -- the user is told the standing rule
+    survived, and can decide again with the device in hand.
+    """
+
+    def test_a_handback_warns_that_the_standing_rule_was_kept(self, tray_app, fake_client, queued_decision):
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        assert tray_app._hid_pending_devices == {301}, "the lock-first flow owns the authorize"
+        titles = [c.args[0] for c in show.call_args_list]
+        assert any(t == HANDBACK_NOTICE_TITLE for t in titles), \
+            f"the user must be told the clear did not happen; got {titles}"
+
+    def test_the_handback_warning_says_the_clear_was_not_made(self, tray_app, fake_client, queued_decision):
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        _title, body = _handback_notice(show)
+        assert _says_clear_did_not_happen(body), \
+            f"the durable half of the click is what did not happen: {body!r}"
+        assert "did not take effect" not in body, \
+            "the live half DOES still take effect behind the lock -- do not claim otherwise"
+
+    def test_the_notice_title_claims_no_lock_screen(self, tray_app, fake_client, queued_decision):
+        """The title is the one part with no room to hedge, so it must not claim.
+
+        Whether a lock screen ever arrives is decided after
+        `_apply_pending_decision` returns -- a device that comes back already
+        allowed never enters the lock flow at all.  A title naming the lock is
+        therefore a forecast, and forecasts are what this notice got wrong.
+        """
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        title, _body = _handback_notice(show)
+        assert "lock" not in title.lower(), f"the title forecasts a lock screen: {title!r}"
+
+    def test_the_notice_bodies_never_promise_a_live_authorize(self, tray_app, fake_client, queued_decision):
+        """Checked against the whole promise list, not one string that was once wrong."""
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        _title, body = _handback_notice(show)
+        promised = [p for p in _LIVE_AUTHORIZE_PROMISES if p in body.lower()]
+        assert not promised, f"the notice forecasts the live half: {promised} in {body!r}"
+
+    def test_the_handback_warning_names_the_device(self, tray_app, fake_client, queued_decision):
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        body = next(c.args[1] for c in show.call_args_list if c.args[0] == HANDBACK_NOTICE_TITLE)
+        assert "301" in body, "the user needs to know which device still carries the rule"
+
+    def test_a_queued_allow_that_applied_live_raises_no_handback_warning(self, tray_app, fake_client, queued_decision):
+        """Nothing was handed back on a non-HID device, so nothing was lost."""
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, IR_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             IR_RULE, {})
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
+        assert not any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
+
+    def test_a_queued_block_raises_no_handback_warning(self, tray_app, fake_client, queued_decision):
+        """A queued Block applies whole -- no handback, no lost half."""
+        show = queued_decision(DeviceTarget.BLOCK, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert not any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
+
+    def test_the_handback_still_leaves_no_queued_decision_behind(self, tray_app, fake_client, queued_decision):
+        """The warning is not a re-queue: the entry must not linger and fire twice."""
+        queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        assert tray_app._pending_decisions == {}
+
+
+class TestTheHandbackWarningPromisesNothingItCannotKeep:
+    """F6 -- the warning fires *before* the already-allowed early return.
+
+    `_apply_pending_decision` runs ahead of every other reaction to an
+    insertion; that ordering is the whole point of it.  But one of the
+    reactions it runs ahead of is "the device came back already allowed, do
+    nothing", and a HID device reaches that when a permanent allow rule put it
+    there.  The lock-first flow then never runs, so a notice telling the user
+    their Allow "will be authorized only behind the lock screen" described
+    something that was not going to happen -- harmless to the device, which is
+    allowed either way, but the user is being told about a password prompt
+    they will never see.
+
+    The notice itself still belongs on this path: its load-bearing half is that
+    no permanent rule was cleared, and that is true however the insertion is
+    handled.  Whether a rule *exists* is not something this method knows -- the
+    app tracks permanent *allow* hashes only, and a device returning already
+    allowed may be governed by a broader wildcard rule (which a `Once` never
+    removes) or by the daemon's default policy with no device-specific rule at
+    all.  So the notice states only what holds either way, and says nothing
+    about the live half, which it does not get to decide.
+    """
+
+    def test_the_notice_still_fires_when_the_device_returns_allowed(self, tray_app, fake_client, queued_decision):
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.ALLOW),
+                                             KEYBOARD_RULE, {})
+
+        assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list), \
+            "the kept permanent rule is real however the insertion is handled"
+
+    def test_the_notice_does_not_promise_an_authorize_that_never_happens(self, tray_app, fake_client, queued_decision):
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.ALLOW),
+                                             KEYBOARD_RULE, {})
+
+        assert tray_app._hid_pending_devices == set(), "an already-allowed device never enters the lock flow"
+        title, body = _handback_notice(show)
+        promised = [p for p in _LIVE_AUTHORIZE_PROMISES if p in body.lower()]
+        assert not promised, \
+            f"no lock screen is coming on this path; do not promise one: {promised} in {body!r}"
+        assert "lock" not in title.lower(), f"nor in the title: {title!r}"
+
+    def test_the_notice_does_not_assert_a_permanent_rule_the_app_never_looked_for(self, tray_app,
+                                                                                  fake_client,
+                                                                                  queued_decision):
+        """The app tracks permanent *allow* hashes only -- it cannot know.
+
+        A keyboard prompted during a lock inhibitor (a dnf transaction, "prevent
+        screen lock"), flapped, clicked `Allow Once` and returned once the
+        inhibitor lifted has usually no standing rule at all, and the clear
+        would have been a no-op.  Stating flatly that "its standing permanent
+        rule was not cleared" sends that user looking through rules.conf for a
+        rule that was never there.
+        """
+        show = queued_decision(DeviceTarget.ALLOW, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK),
+                                             KEYBOARD_RULE, {})
+
+        _title, body = _handback_notice(show)
+        assert _says_clear_did_not_happen(body), \
+            f"the durable half of the click is still what did not happen: {body!r}"
+        assert not _asserts_a_rule_the_app_never_read(body), \
+            f"the app never read the ruleset -- it must not assert the rule exists: {body!r}"
+
+    def test_a_queued_block_on_an_allowed_return_still_applies(self, tray_app, fake_client, queued_decision):
+        """The handback is the ALLOW-only exception; a Block is not softened.
+
+        A device coming back already allowed is precisely when a queued `Block`
+        matters most, and it runs before the already-allowed return that would
+        otherwise leave the keyboard live.
+        """
+        show = queued_decision(DeviceTarget.BLOCK, Persistence.ONCE, KEYBOARD_RULE)
+
+        tray_app._on_device_presence_changed(301, int(PresenceEvent.INSERT), int(DeviceTarget.ALLOW),
+                                             KEYBOARD_RULE, {})
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert not any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)

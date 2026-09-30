@@ -11,7 +11,7 @@ from PyQt6.QtGui import QAction, QCloseEvent, QColor, QShowEvent
 from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, QMessageBox, QTableView, QToolBar, \
     QVBoxLayout, QWidget
 
-from usbguard_gui.device import Device, DeviceTarget, parse_device_rule
+from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_is_broader_than_device, rule_matches_device
 
 log = logging.getLogger(__name__)
 
@@ -19,11 +19,16 @@ if TYPE_CHECKING:
     from usbguard_gui.dbus_client import USBGuardClient
     from usbguard_gui.screensaver import ScreensaverMonitor
 
-COLUMNS = ["#", "Status", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type", "Connection"]
+COLUMNS = ["#", "Status", "Persistence", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type",
+           "Connection"]
 
-_COLOR_ALLOW_PERMANENT = QColor(0, 80, 0)
-_COLOR_ALLOW_TEMPORARY = QColor(0, 50, 100)
-_COLOR_BLOCK = QColor(80, 40, 0)
+# Colour carries the live target; the shade carries whether it is durable.  A device
+# sitting on the implicit floor and one with an explicit permanent rule must not look
+# the same -- they differ in exactly the way the user is being asked to care about.
+_COLOR_ALLOW_PERMANENT = QColor(0, 100, 0)
+_COLOR_ALLOW_TEMPORARY = QColor(0, 80, 120)
+_COLOR_BLOCK_PERMANENT = QColor(130, 30, 30)
+_COLOR_BLOCK_TEMPORARY = QColor(125, 85, 0)
 _COLOR_REJECT = QColor(80, 0, 0)
 
 
@@ -45,27 +50,78 @@ class DeviceTableModel(QAbstractTableModel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._devices: list[Device] = []
-        self._permanent_allow_hashes: set[str] = set()
+        self._permanent_rules: list[str] = []
+        self._persistence: list[str] = []
+        self._row_colors: list[QColor | None] = []
 
-    def set_devices(self, devices: list[Device], permanent_allow_hashes: set[str]) -> None:
+    def set_devices(self, devices: list[Device], permanent_rules: list[str]) -> None:
+        """Replace the rows.
+
+        `permanent_rules` is the daemon's ruleset in rule order, which is the order
+        the daemon applies them.  Persistence is resolved once here rather than per
+        cell: a refresh touches every cell of every row, and re-matching the whole
+        ruleset for each one is work we only need to do once per device.  The row
+        colour is derived from the same answer for the same reason -- Qt asks for
+        the background and the foreground of every cell separately, so anything
+        left un-cached here is paid for twice per cell per repaint.
+        """
         self.beginResetModel()
         self._devices = list(devices)
-        self._permanent_allow_hashes = permanent_allow_hashes
+        self._permanent_rules = list(permanent_rules)
+        self._persistence = [self._resolve_persistence(d) for d in self._devices]
+        self._row_colors = [self._resolve_bg_color(device, persistence)
+                            for device, persistence in zip(self._devices, self._persistence, strict=True)]
         self.endResetModel()
+
+    def _resolve_persistence(self, device: Device) -> str:
+        """`Permanent allow` / `Permanent allow (wildcard)` / `Temporary` / `Unknown`.
+
+        The first rule that matches wins, matching the daemon.  A rule we cannot
+        read above the match yields `Unknown` rather than a confident wrong answer:
+        the daemon may have stopped there, and telling the user the device is
+        temporary in that case would be a guess dressed up as a fact.
+
+        `(wildcard)` marks a rule that covers this device without naming it --
+        `allow id 2109:2817` governs every hub of that model.  It matters
+        because `Once` cannot clear one: the user clicked a temporary action and
+        the device is in fact permanently allowed, so the row has to say which
+        kind of permanent it is.
+        """
+        for rule in self._permanent_rules:
+            verdict = rule_matches_device(rule, device)
+            if verdict is True:
+                verb = rule.strip().split(None, 1)[0].lower() if rule.strip() else "rule"
+                if rule_is_broader_than_device(rule, device):
+                    return f"Permanent {verb} (wildcard)"
+                return f"Permanent {verb}"
+            if verdict is None:
+                return "Unknown"
+        return "Temporary"
+
+    def persistence_at(self, row: int) -> str:
+        if 0 <= row < len(self._persistence):
+            return self._persistence[row]
+        return "Unknown"
 
     def device_at(self, row: int) -> Device | None:
         if 0 <= row < len(self._devices):
             return self._devices[row]
         return None
 
-    def _bg_color(self, device: Device) -> QColor | None:
+    def _bg_color(self, row: int) -> QColor | None:
+        """The row's colour, precomputed in `set_devices`.  A lookup, never a match."""
+        if 0 <= row < len(self._row_colors):
+            return self._row_colors[row]
+        return None
+
+    @staticmethod
+    def _resolve_bg_color(device: Device, persistence: str) -> QColor | None:
         rule = device.rule.lower()
+        permanent = persistence.startswith("Permanent")
         if rule == "allow":
-            if device.hash and device.hash in self._permanent_allow_hashes:
-                return _COLOR_ALLOW_PERMANENT
-            return _COLOR_ALLOW_TEMPORARY
+            return _COLOR_ALLOW_PERMANENT if permanent else _COLOR_ALLOW_TEMPORARY
         if rule == "block":
-            return _COLOR_BLOCK
+            return _COLOR_BLOCK_PERMANENT if permanent else _COLOR_BLOCK_TEMPORARY
         if rule == "reject":
             return _COLOR_REJECT
         return None
@@ -88,35 +144,33 @@ class DeviceTableModel(QAbstractTableModel):
         col = index.column()
 
         if role == Qt.ItemDataRole.DisplayRole:
-            return self._display_data(device, col)
+            return self._display_data(device, col, index.row())
         if role == Qt.ItemDataRole.BackgroundRole:
-            return self._bg_color(device)
-        if role == Qt.ItemDataRole.ForegroundRole and self._bg_color(device) is not None:
+            return self._bg_color(index.row())
+        if role == Qt.ItemDataRole.ForegroundRole and self._bg_color(index.row()) is not None:
             return QColor(Qt.GlobalColor.white)
         return None
 
-    def _display_data(self, device: Device, col: int) -> str:
+    def _display_data(self, device: Device, col: int, row: int) -> str:
         if col == 0:
             return str(device.number)
         if col == 1:
-            if device.rule.lower() == "allow":
-                if device.hash and device.hash in self._permanent_allow_hashes:
-                    return "Allow"
-                return "Temporary"
             return device.rule.capitalize()
         if col == 2:
-            return device.id
+            return self.persistence_at(row)
         if col == 3:
-            return device.name
+            return device.id
         if col == 4:
-            return device.serial
+            return device.name
         if col == 5:
-            return device.via_port
+            return device.serial
         if col == 6:
-            return " ".join(device.with_interface)
+            return device.via_port
         if col == 7:
-            return device.class_description_string()
+            return " ".join(device.with_interface)
         if col == 8:
+            return device.class_description_string()
+        if col == 9:
             return device.with_connect_type
         return ""
 
@@ -215,7 +269,7 @@ class DeviceListWindow(QMainWindow):
     def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
         if self._refresh_pending:
             self._refresh_pending = False
-            self._model.set_devices(self._pending_devices, _permanent_allow_hashes(rules))
+            self._model.set_devices(self._pending_devices, _permanent_rule_strings(rules))
             if not self._columns_sized:
                 self._view.resizeColumnsToContents()
                 self._columns_sized = True
@@ -255,22 +309,43 @@ class DeviceListWindow(QMainWindow):
             return
 
         menu = QMenu(self)
-        menu.addAction("Allow (Permanent)", lambda: self._apply(device, DeviceTarget.ALLOW, permanent=True))
-        menu.addAction("Allow (Temporary)", lambda: self._apply(device, DeviceTarget.ALLOW, permanent=False))
-        menu.addSeparator()
-        menu.addAction("Block", lambda: self._apply(device, DeviceTarget.BLOCK, permanent=False))
-        menu.addAction("Reject", lambda: self._apply(device, DeviceTarget.REJECT, permanent=False))
+        for index, (label, target, persistence) in enumerate(self._menu_actions(device)):
+            if index == 2:
+                menu.addSeparator()
+            menu.addAction(label, lambda _checked=False, t=target, p=persistence: self._apply(device, t, p))
         vp = self._view.viewport()
         assert vp is not None
         menu.exec(vp.mapToGlobal(pos))
 
-    def _apply(self, device: Device, target: DeviceTarget, permanent: bool) -> None:
-        # Apply directly.  Do NOT remove any existing allow rules first: a
-        # permanent rule and a temporary one are indistinguishable from the
-        # rule string, and removing the user's permanent rule (e.g. when
-        # re-applying a temporary allow) would silently revoke persistent
-        # authorization.  Re-applying a temporary allow is harmless —
-        # USBGuard prepends it, so it wins evaluation order.
+    #: The action set, shared verbatim with the tray dialog.
+    _ACTION_SET: tuple[tuple[str, DeviceTarget, Persistence], ...] = (
+        ("Allow Always", DeviceTarget.ALLOW, Persistence.ALWAYS),
+        ("Allow Once", DeviceTarget.ALLOW, Persistence.ONCE),
+        ("Block Once", DeviceTarget.BLOCK, Persistence.ONCE),
+        ("Block Always", DeviceTarget.BLOCK, Persistence.ALWAYS),
+    )
+
+    def _menu_actions(self, device: Device) -> list[tuple[str, DeviceTarget, Persistence]]:
+        """The actions offered for `device`, as (label, target, persistence).
+
+        Returned as data rather than built inline so the menu contract can be
+        checked against the dialog's without popping a QMenu.
+        """
+        return list(self._ACTION_SET)
+
+    def _apply(self, device: Device, target: DeviceTarget, persistence: Persistence) -> None:
+        # Hand the decision to the client and let it own persistence.  `Always`
+        # upserts the device's permanent rule; `Once` deletes it.  Both are
+        # keyed on device identity (`_rule_identity`), which is what makes the
+        # deletion safe: it can only reach a rule that names this device, never
+        # a hand-written class rule such as `reject with-interface all-of {}`.
+        #
+        # The comment here used to say the GUI must never remove a rule because
+        # permanent and temporary rules are indistinguishable from the rule
+        # string.  That predates identity-keyed dedup and is now the wrong
+        # invariant: `Once` *must* remove, or the old rule survives the click
+        # and silently re-asserts at the next reboot -- the exact divergence
+        # this action set exists to eliminate.
         if not self._client.connected:
             log.warning("Action %s on device %d not applied: USBGuard daemon not connected", target.name, device.number)
             QMessageBox.warning(
@@ -297,16 +372,14 @@ class DeviceListWindow(QMainWindow):
                 "Devices remain blocked by USBGuard's policy.",
             )
             return
-        self._client.apply_device_policy(device.number, target, permanent,
-                                         device.raw_rule if permanent else None)
+        # `Once` needs the raw rule too, not just `Always`: the client keys the
+        # deletion on device identity, and that identity comes from this string.
+        # Withholding it would make `Once` a silent no-op from the UI.
+        self._client.apply_device_policy(device.number, target, persistence,
+                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         self._request_refresh()
 
 
-def _permanent_allow_hashes(rules: list[tuple[int, str]]) -> set[str]:
-    """Return the set of device hashes that have a permanent allow rule."""
-    hashes: set[str] = set()
-    for _, rule_str in rules:
-        parsed = parse_device_rule(rule_str)
-        if parsed["rule"] == "allow" and parsed["hash"]:
-            hashes.add(parsed["hash"])
-    return hashes
+def _permanent_rule_strings(rules: list[tuple[int, str]]) -> list[str]:
+    """The permanent ruleset in rule order, which is the order the daemon applies it."""
+    return [rule_str for _, rule_str in rules]

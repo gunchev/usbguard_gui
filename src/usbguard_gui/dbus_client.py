@@ -12,7 +12,8 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, THREAD_STOP_TIMEOUT_MS, \
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
-from usbguard_gui.device import Device, DeviceTarget, parse_device_rule, rule_matches_device, rule_persistence_problem
+from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_identity, rule_is_broader_than_device, \
+    rule_matches_device, rule_persistence_problem
 
 log = logging.getLogger(__name__)
 
@@ -84,35 +85,29 @@ def _retarget_device_rule(rule: str, target: DeviceTarget) -> str:
     return target.name.lower() + (f" {parts[1]}" if len(parts) == 2 else "")
 
 
-# Attributes that pin a rule to one physical device in one topology.  Two rules
-# agreeing on all of them describe the same insertion point, so a permanent
-# decision must update the rule already there instead of adding another.
-# parent-hash and via-port are what tell the KVM's sibling hubs apart; leaving
-# them out of the identity is the collapse this whole path exists to avoid.
-_RULE_IDENTITY_ATTRS = ("id", "serial", "hash", "parent_hash", "via_port")
-
-
-def _rule_identity(rule: str) -> tuple[str, ...] | None:
-    """Return the device/topology identity a permanent rule is keyed on.
-
-    ``None`` when the rule names no device — ``allow with-interface { ... }``,
-    or anything unparseable.  Such a rule covers a *class* of devices rather
-    than one, so claiming it as "this device's rule" would let a permanent
-    decision clobber hand-written policy.  Rules without an identity are never
-    matched, and the permanent path simply appends alongside them.
-    """
-    try:
-        parsed = parse_device_rule(rule)
-    except Exception as e:  # a rule we cannot read is simply not a match
-        log.debug("Could not parse rule for deduplication: %s", e)
-        return None
-    identity = tuple(str(parsed.get(attr) or "") for attr in _RULE_IDENTITY_ATTRS)
-    return identity if identity[0] else None
-
-
 def _normalize_rule(rule: str) -> str:
     """Collapse whitespace so two spellings of one rule compare equal."""
     return " ".join(rule.split())
+
+
+class _PartialClear(Exception):
+    """A `Once` clear that stopped partway, carrying what it had already removed.
+
+    A device can own more than one permanent rule -- `_persist_device_rule`
+    warns about that state rather than pruning it, since any of them could be
+    hand-written -- so the clear is a loop, and a loop can fail after it has
+    already changed rules.conf.  What it managed is the difference between "your
+    decision did not take effect" and "your decision did not take effect *and*
+    the stored policy is no longer what it was", which is the user's cue to go
+    look at the file.
+    """
+
+    def __init__(self, cause: DBusError, removed: list[tuple[int, str]]) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        # (rule_id, rule_text) for each rule already deleted.  The id is what the
+        # log needs; the text is what the user can actually find in rules.conf.
+        self.removed = removed
 
 
 _DEVICES_INTROSPECTION = get_introspection("org.usbguard.Devices1.xml")
@@ -134,6 +129,18 @@ class _DBusThread(AsyncWorkerThread):
     # not land.  Distinct from error_occurred on purpose: the caller needs to
     # know the decision is *temporary*, not merely that something failed.
     permanent_write_failed = pyqtSignal(int, str, str)
+    # The `Once` counterpart: the standing rule could not be removed, so the
+    # temporary decision the user asked for never took effect either.  The
+    # trailing flag says whether rules.conf was *partly* rewritten first -- a
+    # bloated policy can hold several rules for one device, and a failure on the
+    # second is not the same story as a failure on the first.
+    permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    # The `Once` half that succeeded but did not finish: the device's own rule is
+    # gone, yet a broader rule that merely *covers* it is still in force.  Those
+    # are deliberately not removed -- `allow id 1d6b:0002` is usually hand-written
+    # admin policy and a tray click has no business erasing it -- so the user has
+    # to be told the device is still permanently decided.
+    permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -286,10 +293,19 @@ class _DBusThread(AsyncWorkerThread):
             return
         self.list_devices_correlated.emit(request_id, devices)
 
-    async def _do_apply_policy(self, device_id: int, target: DeviceTarget, permanent: bool,
+    async def _do_apply_policy(self, device_id: int, target: DeviceTarget, persistence: Persistence,
                                device_rule: str | None = None) -> None:
         try:
-            if permanent and device_rule and self._policy_iface is not None:
+            if persistence is Persistence.ALWAYS and target is DeviceTarget.REJECT:
+                # Ghost guard.  A permanent `reject` fires remove=1 on every
+                # match, so the device is gone on sight: never in the device
+                # list, nothing to click, no UI path back until the persistent-
+                # rules editor lands.  A durable deny is what `block` is for.
+                raise ValueError(
+                    f"Refusing to persist a `reject` rule for device {device_id}: it removes the "
+                    f"device on sight and leaves no UI path back. Use BLOCK for a durable deny."
+                )
+            if persistence is Persistence.ALWAYS and device_rule and self._policy_iface is not None:
                 # applyDevicePolicy(permanent=True) makes USBGuard *upsert* the
                 # rule it generates for this device, keyed on the device hash.
                 # Chained identical hubs — what a KVM switch produces — hash
@@ -328,28 +344,119 @@ class _DBusThread(AsyncWorkerThread):
                     # unplugged.
                     self.permanent_write_failed.emit(device_id, target.name.lower(), str(e))
                     raise
+            elif persistence is Persistence.ONCE and self._policy_iface is not None:
+                # Clear first, then apply live.  If the removal fails we have
+                # changed nothing and the user sees the error; applying live
+                # first and failing to remove would leave the device running
+                # under a permanent rule nobody chose -- the divergence this
+                # whole change exists to eliminate.
+                try:
+                    await self._clear_device_rule(device_id, device_rule)
+                except _PartialClear as e:
+                    # _PartialClear is deliberately NOT a DBusError, so the arm
+                    # below cannot swallow it whichever order the two are
+                    # written in -- and the `raise e.cause` that ends this arm
+                    # is raised from inside a handler, which that arm never
+                    # sees either.  One failure, one report, either way.
+                    # The dialog has already closed by now.  Without this the
+                    # user reads "Allow Once" as done while the standing rule
+                    # is untouched -- the same silence permanent_write_failed
+                    # exists for, one layer down.  `removed` is what makes the
+                    # message honest: on a bloated policy the clear can delete
+                    # one rule and then fail on the next, and telling the user
+                    # nothing happened would be the same lie in the other
+                    # direction.
+                    reason = str(e.cause)
+                    if e.removed:
+                        listed = "; ".join(f"{text} (rule {rule_id})" for rule_id, text in e.removed)
+                        reason = (f"{reason}\nAlready removed from the stored policy: {listed}. "
+                                  f"The policy for this device has changed even though the temporary "
+                                  f"decision did not take effect.")
+                    self.permanent_clear_failed.emit(device_id, target.name.lower(), reason, bool(e.removed))
+                    raise e.cause from e
+                except DBusError as e:
+                    # The clear opens with listRules, before it has removed
+                    # anything, and that read can fail on its own -- polkit gates
+                    # listRules and removeRule separately, and a daemon restart
+                    # mid-call does the same.  Narrowing this handler to
+                    # _PartialClear let every such failure escape unreported:
+                    # the click did nothing, and the tray said nothing.  Nothing
+                    # was removed, so it is not partial -- but it is still the
+                    # user's cue that their decision did not land.
+                    log.error("Could not read the permanent ruleset to clear device %d's rule: %s",
+                              device_id, e)
+                    self.permanent_clear_failed.emit(device_id, target.name.lower(), str(e), False)
+                    raise
+                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                log.info("Applied %s to device %d (ONCE)", target.name, device_id)
             else:
-                rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
-                log.info("Applied %s to device %d (permanent=%s) → rule %d",
-                         target.name, device_id, permanent, rule_id)
+                # No verbatim rule to write (no device_rule, or no policy iface).
+                # ALWAYS still has to reach the daemon's own upsert -- dropping it
+                # to False here would silently turn a permanent decision into a
+                # temporary one.  UNCHANGED/ONCE are live-only.
+                daemon_permanent = persistence is Persistence.ALWAYS
+                rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target),
+                                                                             daemon_permanent)
+                log.info("Applied %s to device %d (%s) → rule %d",
+                         target.name, device_id, persistence.name, rule_id)
         except DBusError as e:
             if _is_permission_error(e):
                 log.error(
-                    "Not authorized to apply policy to device %d (target=%s, permanent=%s) — install polkit rule",
+                    "Not authorized to apply policy to device %d (target=%s, persistence=%s) — install polkit rule",
                     device_id,
                     target.name,
-                    permanent,
+                    persistence.name,
                 )
             else:
                 log.error(
-                    "Failed to apply policy to device %d (target=%s, permanent=%s): %s",
+                    "Failed to apply policy to device %d (target=%s, persistence=%s): %s",
                     device_id,
                     target.name,
-                    permanent,
+                    persistence.name,
                     e,
                 )
                 if _is_connection_error(e):
                     self._set_connected(False)
+
+    async def _do_persist_only(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
+        """Write the durable half of an `Always` decision with no device present.
+
+        A permanent rule is inert data in rules.conf: ``appendRule`` takes a
+        rule string and needs nothing else.  What needs a live device is the
+        authorize/deauthorize call -- and there is nothing to authorize while
+        the device is away.  So `Allow Always` on a device that has already
+        dropped off the bus is not a deferred action at all: the durable part
+        lands now, and the rule itself admits the device the next time it
+        appears.  Only `Once`, whose whole point is a live state that expires,
+        actually has to wait for the device.
+        """
+        try:
+            if target is DeviceTarget.REJECT:
+                # Same ghost guard as the live path: a persisted `reject`
+                # removes the device on sight and leaves no UI path back.
+                raise ValueError(
+                    f"Refusing to persist a `reject` rule for device {device_id}: it removes the "
+                    f"device on sight and leaves no UI path back. Use BLOCK for a durable deny."
+                )
+            rule = _retarget_device_rule(device_rule, target)
+            problem = rule_persistence_problem(rule)
+            if problem is not None:
+                # The usual fallback is the daemon's own upsert, and that needs
+                # a live device we do not have.  Report it instead of dropping
+                # the decision quietly.
+                log.warning("Cannot persist the device-reported rule for device %d while it is away: %s",
+                            device_id, problem)
+                self.permanent_write_failed.emit(device_id, target.name.lower(), problem)
+                return
+            await self._persist_device_rule(device_id, rule)
+            log.info("Stored permanent %s rule for device %d while it is off the bus -- it governs "
+                     "the next appearance", target.name.lower(), device_id)
+        except DBusError as e:
+            self.permanent_write_failed.emit(device_id, target.name.lower(), str(e))
+            log.error("Failed to persist the %s rule for device %d while it is away: %s",
+                      target.name.lower(), device_id, e)
+            if _is_connection_error(e):
+                self._set_connected(False)
 
     async def _list_permanent_rules(self) -> list[tuple[int, str]]:
         """The permanent ruleset, in the order the daemon evaluates it."""
@@ -396,6 +503,51 @@ class _DBusThread(AsyncWorkerThread):
                                          f"shadowing (ids {undecidable})")
         return _APPEND_RULE_AT_END, None
 
+    async def _clear_device_rule(self, device_id: int, device_rule: str | None) -> None:
+        """Delete the device's permanent rule, if it has one.
+
+        The ``Once`` half of the invariant.  Identity-keyed and verb-agnostic,
+        so it removes whatever standing rule the device carries -- ``allow`` or
+        ``block`` -- and never touches a rule that names no device.  Hand-written
+        class policy such as ``reject with-interface all-of { ... }`` has no
+        identity to match on, and removing it is not this app's to decide.
+        """
+        if not device_rule:
+            return
+
+        identity = rule_identity(device_rule)
+        if identity is None:
+            return
+
+        rules = await self._list_permanent_rules()
+        own = [(rule_id, text) for rule_id, text in rules if rule_identity(text) == identity]
+        removed: list[tuple[int, str]] = []
+        for rule_id, text in own:
+            try:
+                await self._policy_iface.call_remove_rule(rule_id)
+            except DBusError as e:
+                # Report what the loop already did, not just that it stopped.
+                # Reporting a mid-loop failure as a total one told the user
+                # rules.conf was untouched while a rule was already gone.
+                log.error("Clearing device %d's permanent rules stopped at rule %d after removing %s: %s",
+                          device_id, rule_id, [i for i, _ in removed] or "none", e)
+                raise _PartialClear(e, removed) from e
+            removed.append((rule_id, text))
+            log.info("Cleared permanent rule %d for device %d -- the decision was temporary", rule_id, device_id)
+
+        # Option A: never remove a broader rule, but never hide one either.  This
+        # is the exact case where "Allow Once" leaves the user believing the
+        # device is clear while a wildcard allow underneath it still governs.
+        probe = Device.from_dbus(device_id, device_rule)
+        for _rule_id, text in rules:
+            if rule_identity(text) == identity:
+                continue  # removed above
+            if rule_is_broader_than_device(text, probe):
+                verb = text.strip().split(None, 1)[0].lower() if text.strip() else "rule"
+                log.info("Rule %r still covers device %d and was not removed", text, device_id)
+                self.permanent_rule_remains.emit(device_id, verb, text)
+                break
+
     async def _persist_device_rule(self, device_id: int, rule: str) -> None:
         """Keep exactly one permanent rule for this device, where it will apply.
 
@@ -414,7 +566,7 @@ class _DBusThread(AsyncWorkerThread):
         So read the ruleset, drop the device's previous rule if it has one,
         and put the new one above the first rule that would shadow it.
         """
-        identity = _rule_identity(rule)
+        identity = rule_identity(rule)
 
         try:
             rules = await self._list_permanent_rules()
@@ -433,8 +585,8 @@ class _DBusThread(AsyncWorkerThread):
             # about positionally; just write it.
             own, others = [], rules
         else:
-            own = [(rule_id, text) for rule_id, text in rules if _rule_identity(text) == identity]
-            others = [(rule_id, text) for rule_id, text in rules if _rule_identity(text) != identity]
+            own = [(rule_id, text) for rule_id, text in rules if rule_identity(text) == identity]
+            others = [(rule_id, text) for rule_id, text in rules if rule_identity(text) != identity]
 
         if len(own) > 1:
             # Already-bloated policy: earlier builds of this path left one
@@ -537,12 +689,20 @@ class _DBusThread(AsyncWorkerThread):
         if self._devices_iface and self._loop:
             self._schedule(self._do_fetch_devices(request_id, query))
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+    def apply_device_policy(self, device_id: int, target: DeviceTarget,
+                            persistence: Persistence = Persistence.UNCHANGED,
                             device_rule: str | None = None) -> None:
         if not self._connected:
             return
         if self._devices_iface and self._loop:
-            self._schedule(self._do_apply_policy(device_id, target, permanent, device_rule))
+            self._schedule(self._do_apply_policy(device_id, target, persistence, device_rule))
+
+    def persist_rule(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
+        """Durable half only -- safe with the device off the bus."""
+        if not self._connected:
+            return
+        if self._policy_iface and self._loop:
+            self._schedule(self._do_persist_only(device_id, target, device_rule))
 
     def list_rules(self, label: str = "") -> None:
         if not self._connected:
@@ -574,6 +734,8 @@ class USBGuardClient(QObject):
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     permanent_write_failed = pyqtSignal(int, str, str)
+    permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -603,6 +765,8 @@ class USBGuardClient(QObject):
         self._thread.list_rules_result.connect(self.list_rules_result)
         self._thread.remove_rule_result.connect(self.remove_rule_result)
         self._thread.permanent_write_failed.connect(self.permanent_write_failed)
+        self._thread.permanent_clear_failed.connect(self.permanent_clear_failed)
+        self._thread.permanent_rule_remains.connect(self.permanent_rule_remains)
         self._thread.start()
         return True
 
@@ -627,10 +791,22 @@ class USBGuardClient(QObject):
         else:
             self.list_devices_correlated.emit(request_id, [])
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+    def apply_device_policy(self, device_id: int, target: DeviceTarget,
+                            persistence: Persistence = Persistence.UNCHANGED,
                             device_rule: str | None = None) -> None:
         if self._thread:
-            self._thread.apply_device_policy(device_id, target, permanent, device_rule)
+            self._thread.apply_device_policy(device_id, target, persistence, device_rule)
+
+    def persist_rule(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
+        """Write a permanent rule without touching a live device.
+
+        Used when the user makes an `Always` decision about a device that has
+        already dropped off the bus.  The rule lands immediately; the live
+        half is unnecessary because the rule itself decides the device on its
+        next insertion.
+        """
+        if self._thread:
+            self._thread.persist_rule(device_id, target, device_rule)
 
     def list_rules(self, label: str = "") -> None:
         if self._thread:

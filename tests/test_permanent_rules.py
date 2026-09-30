@@ -23,7 +23,7 @@ import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_client import _APPEND_RULE_AT_END, _DBusThread, _retarget_device_rule
-from usbguard_gui.device import Device, DeviceTarget
+from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_identity
 
 # The two same-hash hub instances seen on the KVM switch; they differ only in
 # parent-hash, which is exactly what the upsert discards.
@@ -87,7 +87,7 @@ class TestPermanentAllowAppendsRule:
     def test_permanent_applies_temporarily_then_appends(self):
         thread = self._thread()
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         # The live device is authorized without a permanent upsert...
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
@@ -103,7 +103,7 @@ class TestPermanentAllowAppendsRule:
         is the one USBGuard matches and the ping-pong continues."""
         thread = self._thread()
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         appended = thread._policy_iface.call_append_rule.await_args.args[0]
         assert 'parent-hash "xe96rjr8V53Jw+g7q/yi0C1czVxatehiq7r4gn2dH6s="' in appended
@@ -113,8 +113,8 @@ class TestPermanentAllowAppendsRule:
         """Allowing hub A then hub B must yield two rules, not one replaced twice."""
         thread = self._thread()
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, HUB_A.replace("allow ", "block ", 1)))
-        _run(thread._do_apply_policy(56, DeviceTarget.ALLOW, True, HUB_B.replace("allow ", "block ", 1)))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, HUB_A.replace("allow ", "block ", 1)))
+        _run(thread._do_apply_policy(56, DeviceTarget.ALLOW, Persistence.ALWAYS, HUB_B.replace("allow ", "block ", 1)))
 
         appended = [c.args[0] for c in thread._policy_iface.call_append_rule.await_args_list]
         assert appended == [HUB_A, HUB_B]
@@ -123,7 +123,7 @@ class TestPermanentAllowAppendsRule:
     def test_temporary_uses_apply_device_policy_only(self):
         thread = self._thread()
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, False, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.UNCHANGED, BLOCKED_HUB))
 
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.ALLOW), False
@@ -135,7 +135,7 @@ class TestPermanentAllowAppendsRule:
         behaviour rather than silently doing nothing."""
         thread = self._thread()
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, None))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, None))
 
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.ALLOW), True
@@ -213,8 +213,8 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert _rules_conf(policy) == [HUB_A]
 
@@ -223,9 +223,9 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
-        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert _rules_conf(policy) == [HUB_A]
 
@@ -235,7 +235,7 @@ class TestPermanentRuleDeduplication:
         thread = _stub_thread(policy)
 
         for _ in range(5):
-            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert len(policy.rules) == 1
 
@@ -244,7 +244,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(7, HUB_A)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert _rules_conf(policy) == [BLOCKED_HUB]
 
@@ -255,7 +255,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(7, HUB_A)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert policy.kinds() == ["list", "remove", "append"]
         assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
@@ -267,7 +267,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(7, HUB_A)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.BLOCK), False
@@ -280,7 +280,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(7, HUB_B)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert len(policy.rules) == 2
         assert "remove" not in policy.kinds()
@@ -293,7 +293,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(3, webcam)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert _rules_conf(policy) == [webcam, HUB_A]
 
@@ -305,7 +305,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(3, broad)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert _rules_conf(policy) == [broad, HUB_A]
 
@@ -314,7 +314,7 @@ class TestPermanentRuleDeduplication:
         policy = _FakePolicy([(7, HUB_A.replace('name "USB2.0 Hub"', 'name  "USB2.0 Hub"'))])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert policy.kinds() == ["list"]
 
@@ -326,7 +326,7 @@ class TestPermanentRuleDeduplication:
         thread = _stub_thread(policy)
 
         with caplog.at_level(logging.WARNING, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
         assert _rules_conf(policy) == [HUB_A, BLOCKED_HUB]
@@ -345,11 +345,79 @@ class TestPermanentRuleDeduplication:
         policy.call_list_rules = raise_error
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert _rules_conf(policy) == [HUB_A]
         # An ordinary per-call failure must not flip the connection.
         assert thread._connected is True
+
+
+class TestOnceClearsThePermanentRule:
+    """`Once` deletes -- it is not merely a refusal to write.
+
+    The invariant: a device's permanent rule always reflects the last *durable*
+    decision, or there is none.  A temporary decision says nothing durable
+    stands behind this device, so the standing rule has to go.  Merely declining
+    to write would leave it in place to re-assert at the next boot -- the exact
+    divergence between what the user clicked and what survives reboot that this
+    change exists to remove.
+    """
+
+    def test_allow_once_removes_the_device_s_existing_permanent_allow(self):
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == []
+        assert ("remove", 7) in policy.calls
+        assert "append" not in policy.kinds()
+        thread._devices_iface.call_apply_device_policy.assert_called_once_with(
+            54, int(DeviceTarget.ALLOW), False)
+
+    def test_block_once_removes_the_same_rule_allow_once_would(self):
+        """The identity carries no target verb, so the clear is verb-agnostic.
+
+        Proved rather than assumed: `_RULE_IDENTITY_ATTRS` is device/topology
+        only, so a `block` clears exactly what an `allow` clears.
+        """
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ONCE, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == []
+        assert ("remove", 7) in policy.calls
+        assert "append" not in policy.kinds()
+
+    def test_once_with_no_standing_rule_writes_nothing(self):
+        """A temporary decision about an unknown device leaves the policy alone."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == []
+        # 'list' is the ruleset read; what matters is that nothing mutated it.
+        assert [k for k in policy.kinds() if k != "list"] == []
+        thread._devices_iface.call_apply_device_policy.assert_called_once_with(
+            54, int(DeviceTarget.ALLOW), False)
+
+    def test_once_never_touches_a_rule_that_names_no_device(self):
+        """Hand-written class policy is not ours to remove.
+
+        `reject with-interface all-of { ... }` carries no device identity, so
+        `_rule_identity` returns None and it can never be picked up as "this
+        device's rule".  This is the boundary that keeps a tray click from
+        dismantling deliberate admin policy.
+        """
+        class_rule = 'reject with-interface all-of { 08:*:* 03:00:* }'
+        policy = _FakePolicy([(3, class_rule), (7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ONCE, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [class_rule]
 
 
 class TestDeviceRawRule:
@@ -403,9 +471,10 @@ class _RecordingClient(QObject):
     def remove_rule(self, rule_id: int) -> None:
         pass
 
-    def apply_device_policy(self, device_id: int, target: DeviceTarget, permanent: bool = False,
+    def apply_device_policy(self, device_id: int, target: DeviceTarget,
+                            persistence: Persistence = Persistence.UNCHANGED,
                             device_rule: str | None = None) -> None:
-        self.applied.append((device_id, target, permanent, device_rule))
+        self.applied.append((device_id, target, persistence, device_rule))
 
 
 class _LockAvailable(QObject):
@@ -430,19 +499,28 @@ class TestCallSitesPassRawRule:
         qtbot.addWidget(window)
         return window, client, Device.from_dbus(9, BLOCKED_HUB)
 
-    def test_permanent_forwards_raw_rule(self, qtbot):
+    def test_always_forwards_raw_rule(self, qtbot):
         window, client, device = self._window_and_device(qtbot)
 
-        window._apply(device, DeviceTarget.ALLOW, permanent=True)
+        window._apply(device, DeviceTarget.ALLOW, persistence=Persistence.ALWAYS)
 
-        assert client.applied == [(9, DeviceTarget.ALLOW, True, BLOCKED_HUB)]
+        assert client.applied == [(9, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB)]
 
-    def test_temporary_forwards_none(self, qtbot):
+    def test_once_forwards_raw_rule_so_the_clear_has_an_identity(self, qtbot):
+        """`Once` deletes by device identity, and that identity is derived from
+        the rule string.  Withhold it and the clear is a silent no-op."""
         window, client, device = self._window_and_device(qtbot)
 
-        window._apply(device, DeviceTarget.ALLOW, permanent=False)
+        window._apply(device, DeviceTarget.BLOCK, persistence=Persistence.ONCE)
 
-        assert client.applied == [(9, DeviceTarget.ALLOW, False, None)]
+        assert client.applied == [(9, DeviceTarget.BLOCK, Persistence.ONCE, BLOCKED_HUB)]
+
+    def test_unchanged_forwards_none(self, qtbot):
+        window, client, device = self._window_and_device(qtbot)
+
+        window._apply(device, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
+
+        assert client.applied == [(9, DeviceTarget.ALLOW, Persistence.UNCHANGED, None)]
 
 
 class TestPermanentRulePlacement:
@@ -468,7 +546,7 @@ class TestPermanentRulePlacement:
         policy = _FakePolicy([(5, self.WEBCAM), (10, self.BROAD_BLOCK), (20, self.WEBCAM)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         # Placed after rule 5, i.e. directly above the shadowing rule 10.
         assert self._parent_of_append(policy) == 5
@@ -479,7 +557,7 @@ class TestPermanentRulePlacement:
         policy = _FakePolicy([(5, self.WEBCAM), (10, self.BROAD_BLOCK), (30, HUB_A)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert policy.kinds() == ["list", "remove", "append"]
         assert [c[1] for c in policy.calls if c[0] == "remove"] == [30]
@@ -494,7 +572,7 @@ class TestPermanentRulePlacement:
         thread = _stub_thread(policy)
 
         with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
         assert "cannot place a rule before the first one" in caplog.text
@@ -503,7 +581,7 @@ class TestPermanentRulePlacement:
         policy = _FakePolicy([(5, self.WEBCAM)])
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
 
@@ -515,7 +593,7 @@ class TestPermanentRulePlacement:
         thread = _stub_thread(policy)
 
         with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+            _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
         assert "could not be checked for shadowing" in caplog.text
@@ -529,7 +607,7 @@ class TestPermanentRulePlacement:
         thread = _stub_thread(policy)
 
         with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert [c[1] for c in policy.calls if c[0] == "remove"] == [5]
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
@@ -548,7 +626,7 @@ class TestPermanentRulePlacement:
         policy.call_list_rules = raise_error
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert self._parent_of_append(policy) == _APPEND_RULE_AT_END
         assert _rules_conf(policy) == [HUB_A]
@@ -579,7 +657,7 @@ class TestPermanentWriteFailure:
         thread = _stub_thread(policy)
         failures = self._failures(thread)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert len(failures) == 1
         device_id, action, reason = failures[0]
@@ -594,7 +672,7 @@ class TestPermanentWriteFailure:
         thread = _stub_thread(policy)
         self._failures(thread)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.ALLOW), False
@@ -618,7 +696,7 @@ class TestPermanentWriteFailure:
         self._failures(thread)
 
         with caplog.at_level(logging.WARNING, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
         assert _rules_conf(policy) == [HUB_A]
@@ -632,7 +710,7 @@ class TestPermanentWriteFailure:
         self._failures(thread)
 
         with caplog.at_level(logging.ERROR, logger="usbguard_gui.dbus_client"):
-            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, True, HUB_A))
+            _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
         assert "could NOT be restored" in caplog.text
         assert _rules_conf(policy) == []
@@ -642,7 +720,7 @@ class TestPermanentWriteFailure:
         thread = _stub_thread(policy)
         failures = self._failures(thread)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert failures == []
 
@@ -674,7 +752,7 @@ class TestUntrustedRuleIsNotPersisted:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, self.CRAFTED))
 
         assert "append" not in policy.kinds()
 
@@ -684,7 +762,7 @@ class TestUntrustedRuleIsNotPersisted:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, self.CRAFTED))
 
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.ALLOW), True
@@ -694,7 +772,7 @@ class TestUntrustedRuleIsNotPersisted:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, self.CRAFTED))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, self.CRAFTED))
 
         assert _rules_conf(policy) == []
 
@@ -702,7 +780,7 @@ class TestUntrustedRuleIsNotPersisted:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True,
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS,
                                      HUB_A + '\nreject with-interface { 03:00:00 }'))
 
         assert "append" not in policy.kinds()
@@ -715,7 +793,7 @@ class TestUntrustedRuleIsNotPersisted:
         policy = _FakePolicy()
         thread = _stub_thread(policy)
 
-        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, True, BLOCKED_HUB))
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert [c for c in policy.calls if c[0] == "append"] == [
             ("append", HUB_A, _APPEND_RULE_AT_END, False)
@@ -723,3 +801,370 @@ class TestUntrustedRuleIsNotPersisted:
         thread._devices_iface.call_apply_device_policy.assert_awaited_once_with(
             54, int(DeviceTarget.ALLOW), False
         )
+
+
+class TestGhostGuard:
+    """Slice 9 -- a persisted `reject` is a ghost, and the code refuses to write one.
+
+    A permanent `reject` rule fires `remove=1` on every match, so the device is
+    gone on sight: never in the device list, nothing to click, no UI path back
+    until the persistent-rules editor exists.  Nothing in the action set
+    produces that target -- but "nothing produces it" is exactly the kind of
+    claim that rots the day someone wires a new button, so it is asserted.
+    """
+
+    def test_block_always_persists_a_block_verb(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [BLOCKED_HUB]
+
+    def test_persisting_a_reject_is_refused(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        with pytest.raises(ValueError, match="reject"):
+            _run(thread._do_apply_policy(54, DeviceTarget.REJECT, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == []
+
+    def test_no_action_set_target_ever_writes_a_reject_rule(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        for target in (DeviceTarget.ALLOW, DeviceTarget.BLOCK):
+            _run(thread._do_apply_policy(54, target, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert not any(r.lstrip().startswith("reject") for r in _rules_conf(policy))
+
+
+class TestFailedClearIsReported:
+    """Slice 10 -- a `Once` whose removal failed must say so.
+
+    The user clicked a deliberate action.  If the daemon refused the removal
+    -- polkit, a hiccup -- the device keeps its standing rule and the dialog
+    has already closed.  Silence here is the same defect
+    `permanent_write_failed` exists for, one layer down.
+    """
+
+    def test_a_refused_removal_emits_a_clear_failure(self):
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+
+        async def deny(_rule_id):
+            raise DBusError(ErrorType.FAILED, "Not authorized to remove rules")
+
+        policy.call_remove_rule = deny
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        # The outer handler owns the DBusError (and the reconnect decision), so
+        # what the caller can rely on is the signal, not a raise.
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", "Not authorized to remove rules", False)], \
+            "the first removal failed, so rules.conf is untouched"
+        # The clear comes first, so nothing was applied live either.
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+
+
+class TestOnceNeverRemovesABroaderRule:
+    """Option A: a `Once` decision clears the device's own rule and nothing else.
+
+    A rule that merely *covers* the device -- `allow id 2109:2817`, or a class
+    rule -- is usually hand-written admin policy, and a tray click has no
+    business erasing it.  But the user clicked a temporary action, so the app
+    has to say out loud that a permanent rule is still in force; otherwise
+    "Allow Once" reads as if it took effect.
+    """
+
+    def test_a_broader_rule_survives_and_is_reported(self):
+        policy = _FakePolicy([(1, 'allow id 2109:2817')])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", "allow id 2109:2817")]
+        assert "allow id 2109:2817" in _rules_conf(policy), "broader rule must NOT be removed"
+
+    def test_a_class_rule_covering_the_device_is_reported_not_removed(self):
+        policy = _FakePolicy([(1, 'allow with-interface { 09:00:01 09:00:02 }')])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", "allow with-interface { 09:00:01 09:00:02 }")]
+        assert 'allow with-interface { 09:00:01 09:00:02 }' in _rules_conf(policy)
+
+    def test_a_serial_only_rule_is_reported_as_broader(self):
+        """A serial pins the unit but not the insertion point, and carries no
+        identity for `Once` to match on -- so it is broader in the sense that
+        matters: this app cannot clear it."""
+        policy = _FakePolicy([(1, 'allow serial "000000000"')])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", 'allow serial "000000000"')]
+        assert 'allow serial "000000000"' in _rules_conf(policy)
+
+    def test_a_device_exact_rule_is_cleared_and_nothing_is_reported(self):
+        """The clean case: the only rule is the device's own, so `Once` finishes
+        and there is no broader rule to warn about."""
+        policy = _FakePolicy([(1, HUB_A)])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, HUB_A))
+
+        assert received == []
+        assert _rules_conf(policy) == []
+
+    def test_no_rules_means_no_warning(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, HUB_A))
+
+        assert received == []
+
+    def test_a_rule_that_does_not_cover_the_device_is_not_reported(self):
+        """An unrelated device's permanent rule is not this device's business."""
+        policy = _FakePolicy([(1, HUB_B.replace("3-3.1.1.4", "9-9.9.9"))])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, HUB_A))
+
+        assert received == []
+
+    def test_the_reported_rule_text_is_the_real_rule(self):
+        """The warning has to name the rule the user must go edit -- not a
+        paraphrase they cannot find in rules.conf."""
+        rule = 'allow id 2109:2817 serial "000000000"'
+        policy = _FakePolicy([(7, rule)])
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_rule_remains.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received[0][2] == rule
+
+
+class TestPersistWithoutADevice:
+    """`Always` needs no live device -- a permanent rule is inert data.
+
+    appendRule takes a rule string and nothing else.  Only the live
+    authorize/deauthorize call needs a device, so a durable decision about a
+    device that has already left the bus can land immediately rather than
+    waiting for it to come back.
+    """
+
+    def test_the_rule_lands_without_touching_the_devices_interface(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_persist_only(54, DeviceTarget.ALLOW, BLOCKED_HUB))
+
+        assert _rules_conf(policy)[0].startswith("allow ")
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+
+    def test_a_permanent_block_lands_the_same_way(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        _run(thread._do_persist_only(54, DeviceTarget.BLOCK, HUB_A))
+
+        assert _rules_conf(policy)[0].startswith("block ")
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+
+    def test_the_ghost_guard_still_refuses_a_permanent_reject(self):
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+
+        with pytest.raises(ValueError):
+            _run(thread._do_persist_only(54, DeviceTarget.REJECT, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == []
+
+    def test_an_unpersistable_rule_is_reported_not_falled_back(self):
+        """The usual fallback is the daemon's own upsert, and that needs a live
+        device we do not have -- so it must be reported, not attempted."""
+        policy = _FakePolicy()
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_write_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_persist_only(54, DeviceTarget.ALLOW, 'allow with-bogus-thing "x"'))
+
+        assert received, "the user must be told the durable half did not land"
+        assert _rules_conf(policy) == []
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+
+
+class TestAPartialClearSaysSo:
+    """A clear that removed some rules and then failed is not "nothing happened".
+
+    `_clear_device_rule` removes every rule sharing the device's identity, and a
+    bloated policy really does carry more than one (`_persist_device_rule` warns
+    about exactly that state and leaves it alone).  The loop had no per-removal
+    guard, so a failure partway through emitted the same signal as a failure on
+    the first rule -- and the tray said "the existing permanent rule could not be
+    removed", while a rule had in fact already been deleted from rules.conf.
+    """
+
+    @staticmethod
+    def _flaky_policy(rules, fail_after: int):
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy(rules)
+        real_remove = policy.call_remove_rule
+        attempts: list[int] = []
+
+        async def flaky(rule_id):
+            attempts.append(rule_id)
+            if len(attempts) > fail_after:
+                raise DBusError(ErrorType.FAILED, "transient failure")
+            return await real_remove(rule_id)
+
+        policy.call_remove_rule = flaky
+        return policy, attempts
+
+    def test_a_failure_partway_through_is_reported_as_partial(self):
+        policy, attempts = self._flaky_policy([(7, HUB_A), (8, HUB_A)], fail_after=1)
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert len(attempts) == 2, "the failure must not be silently swallowed mid-loop"
+        assert len(received) == 1
+        device_id, action, reason, partial = received[0]
+        assert (device_id, action) == (54, "allow")
+        assert partial is True, "policy was modified -- the user must not be told nothing happened"
+        assert "7" in reason, "the reason must name the rule that was already removed"
+
+    def test_a_failure_on_the_first_rule_is_not_partial(self):
+        policy, _attempts = self._flaky_policy([(7, HUB_A), (8, HUB_A)], fail_after=0)
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", "transient failure", False)], "nothing was removed"
+
+    def test_a_partial_clear_still_withholds_the_live_change(self):
+        """Clear-first is fail-closed: the device keeps USBGuard's implicit block
+        rather than running under a policy half the user asked for."""
+        policy, _attempts = self._flaky_policy([(7, HUB_A), (8, HUB_A)], fail_after=1)
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+
+
+class TestAnUnreadableRulesetIsStillReported:
+    """F1 -- the clear reads the ruleset *before* it removes anything, and a
+    failure there must be announced just like a failure inside the loop.
+
+    ``_clear_device_rule`` opens with ``listRules``.  Narrowing the ``Once``
+    handler to ``except _PartialClear`` caught only the removal loop and let
+    everything else escape unreported: the click did nothing, the live change
+    was withheld, and the tray said nothing at all.  That is the exact silence
+    ``permanent_clear_failed`` exists to kill, and it is not theoretical --
+    polkit gates ``listRules`` and ``removeRule`` separately, so a policy that
+    permits one and refuses the other lands here.
+    """
+
+    def test_a_refused_ruleset_read_emits_a_clear_failure(self):
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy([(7, HUB_A)])
+
+        async def deny_list(_label):
+            raise DBusError(ErrorType.FAILED, "Not authorized to list rules")
+
+        policy.call_list_rules = deny_list
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert received == [(54, "allow", "Not authorized to list rules", False)], \
+            "nothing was removed, so it is a total failure -- but it must still be announced"
+
+    def test_a_refused_ruleset_read_still_withholds_the_live_change(self):
+        """Fail-closed is unchanged: no live apply behind an unreadable policy."""
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy([(7, HUB_A)])
+
+        async def deny_list(_label):
+            raise DBusError(ErrorType.FAILED, "Not authorized to list rules")
+
+        policy.call_list_rules = deny_list
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        thread._devices_iface.call_apply_device_policy.assert_not_called()
+        assert policy.rules == [(7, HUB_A)], "the stored policy must not have moved"
+
+
+class TestAPartialClearNamesTheRuleText:
+    """F2 -- the user is sent to rules.conf, which carries no rule ids.
+
+    Naming the ids that were already removed is useless against a file of rule
+    strings; the ids are good for the log, the text is what the user can find.
+    """
+
+    def test_the_reason_carries_the_removed_rule_text(self):
+        policy, _attempts = TestAPartialClearSaysSo._flaky_policy([(7, HUB_A), (8, HUB_A)], fail_after=1)
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        reason = received[0][2]
+        assert "allow id 2109:2817" in reason, "the text must be findable in rules.conf"
+
+    def test_the_rule_that_was_not_removed_is_not_named(self):
+        """Only what actually went is listed, or the file is misdescribed.
+
+        The surviving rule shares the removed one's identity -- same id, serial,
+        hash, parent-hash and port -- and differs only in `name`, so the two are
+        indistinguishable to the clear and must be distinguishable in the
+        message.
+        """
+        stale = HUB_A.replace('name "USB2.0 Hub"', 'name "USB2.0 Hub (stale)"')
+        assert rule_identity(stale) == rule_identity(HUB_A), "same device, same topology"
+        policy, _attempts = TestAPartialClearSaysSo._flaky_policy([(7, HUB_A), (8, stale)], fail_after=1)
+        thread = _stub_thread(policy)
+        received = []
+        thread.permanent_clear_failed.connect(lambda *a: received.append(a))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        reason = received[0][2]
+        assert 'name "USB2.0 Hub"' in reason, "rule 7 went, so its text must be named"
+        assert "(stale)" not in reason, "rule 8 is still in the file and must not be named"

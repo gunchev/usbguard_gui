@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from usbguard_gui.dbus_client import USBGuardClient, _DBusThread, _is_connection_error, _is_permission_error
-from usbguard_gui.device import DeviceTarget
+from usbguard_gui.device import DeviceTarget, Persistence
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -31,6 +31,8 @@ def mock_thread():
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
+            permanent_clear_failed = pyqtSignal(int, str, str, bool)
+            permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self):
                 super().__init__()
@@ -70,8 +72,8 @@ def mock_thread():
             def fetch_devices(self, request_id, query="match"):
                 self._fetch_devices_calls.append((request_id, query))
 
-            def apply_device_policy(self, device_id, target, permanent=False, device_rule=None):
-                self._apply_policy_calls.append((device_id, target, permanent))
+            def apply_device_policy(self, device_id, target, persistence=Persistence.UNCHANGED, device_rule=None):
+                self._apply_policy_calls.append((device_id, target, persistence))
 
             def list_rules(self, label=""):
                 self._list_rules_calls.append(label)
@@ -233,12 +235,12 @@ class TestUSBGuardClient:
     def test_apply_device_policy_calls_thread(self, client, mock_thread):
         client.connect()
         client.apply_device_policy(1, DeviceTarget.ALLOW)
-        assert mock_thread._apply_policy_calls == [(1, DeviceTarget.ALLOW, False)]
+        assert mock_thread._apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 
     def test_apply_device_policy_with_permanent(self, client, mock_thread):
         client.connect()
-        client.apply_device_policy(1, DeviceTarget.BLOCK, permanent=True)
-        assert mock_thread._apply_policy_calls == [(1, DeviceTarget.BLOCK, True)]
+        client.apply_device_policy(1, DeviceTarget.BLOCK, persistence=Persistence.ALWAYS)
+        assert mock_thread._apply_policy_calls == [(1, DeviceTarget.BLOCK, Persistence.ALWAYS)]
 
     def test_list_rules_calls_thread(self, client, mock_thread):
         client.connect()
@@ -343,6 +345,8 @@ class TestConnectRecyclesPreviousThread:
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
+            permanent_clear_failed = pyqtSignal(int, str, str, bool)
+            permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self, parent=None):
                 super().__init__(parent)
@@ -779,7 +783,7 @@ class TestConnectionDropNarrowing:
 
         thread._devices_iface.call_apply_device_policy = raise_error
 
-        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, False))
+        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, Persistence.UNCHANGED))
 
         assert thread._connected is True
         assert events == []
@@ -797,7 +801,7 @@ class TestConnectionDropNarrowing:
 
         thread._devices_iface.call_apply_device_policy = raise_error
 
-        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, False))
+        asyncio.run(thread._do_apply_policy(1, DeviceTarget.ALLOW, Persistence.UNCHANGED))
 
         assert thread._connected is False
         assert events == [False]

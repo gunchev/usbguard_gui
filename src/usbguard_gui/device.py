@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import TypedDict
+
+log = logging.getLogger(__name__)
 
 
 class DeviceTarget(IntEnum):
@@ -14,6 +17,20 @@ class DeviceTarget(IntEnum):
     ALLOW = 0
     BLOCK = 1
     REJECT = 2
+
+
+class Persistence(Enum):
+    """What a decision does to the device's permanent rule.
+
+    Deliberately a plain ``Enum``, not an ``IntEnum``: ``True``/``False`` must
+    never compare equal to a persistence state.  A call site left behind on the
+    old boolean API should fail the typecheck rather than silently land on
+    whichever member happens to share its value.
+    """
+
+    ALWAYS = "always"  # upsert the device's permanent rule
+    ONCE = "once"  # delete it -- the device is live-only from here
+    UNCHANGED = "unchanged"  # leave persistence alone (automatic paths, never a click)
 
 
 class PresenceEvent(IntEnum):
@@ -93,12 +110,6 @@ class Device:
         if rule_lower == "reject":
             return DeviceTarget.REJECT
         return DeviceTarget.BLOCK
-
-    def is_hid(self) -> bool:
-        """Return True if all interfaces are HID (class 0x03)."""
-        if not self.with_interface:
-            return False
-        return all(interface_class(iface) == 0x03 for iface in self.with_interface)
 
     def has_hid_interface(self) -> bool:
         """Return True if any interface is HID (class 0x03).
@@ -406,6 +417,51 @@ def rule_matches_device(rule: str, device: Device) -> bool | None:
         if verdict is not True:
             return verdict
     return True
+
+
+#: The attributes a permanent rule is keyed on.  ``parent-hash`` and ``via-port``
+#: are what tell a KVM's sibling hubs apart; leaving them out of the identity is
+#: the collapse the permanent-rule path exists to avoid.
+RULE_IDENTITY_ATTRS = ("id", "serial", "hash", "parent_hash", "via_port")
+
+
+def rule_identity(rule: str) -> tuple[str, ...] | None:
+    """Return the device/topology identity a permanent rule is keyed on.
+
+    ``None`` when the rule names no device -- ``allow with-interface { ... }``,
+    or anything unparseable.  Such a rule covers a *class* of devices rather
+    than one, so claiming it as "this device's rule" would let a permanent
+    decision clobber hand-written policy.  Rules without an identity are never
+    matched, and the permanent path simply appends alongside them.
+    """
+    try:
+        parsed = parse_device_rule(rule)
+    except Exception as e:  # a rule we cannot read is simply not a match
+        log.debug("Could not parse rule for identity: %s", e)
+        return None
+    identity = tuple(str(parsed.get(attr) or "") for attr in RULE_IDENTITY_ATTRS)
+    return identity if identity[0] else None
+
+
+def rule_is_broader_than_device(rule: str, device: Device) -> bool:
+    """Does `rule` match `device` without actually naming it?
+
+    True for ``allow id 2109:2817`` against a device that rule covers: every
+    predicate it does state is satisfied, but it says nothing about serial, hash
+    or port, so it governs every device of that model.
+
+    These are the rules a ``Once`` decision cannot clear -- and deliberately
+    should not, since they are usually hand-written admin policy.  The user
+    still has to be told one is in force, or "Allow Once" reads as though it
+    took effect when the device is in fact permanently allowed.
+    """
+    if rule_matches_device(rule, device) is not True:
+        return False
+    identity = rule_identity(rule)
+    if identity is None:
+        # Covers a class, not a device: broader than anything device-keyed.
+        return True
+    return identity != rule_identity(device.raw_rule)
 
 
 class _ParsedRule(TypedDict):

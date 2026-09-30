@@ -29,7 +29,7 @@ dependencies = [
 | `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | ScreenSaver + logind session-bus monitor   |
 | `device.py`        | `Device`, `DeviceTarget`, `parse_device_rule` | Device model and rule-string parsing    |
 | `app.py`           | `USBGuardTrayApp`                           | Qt event loop, tray, routing               |
-| `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow / Block / Reject prompt   |
+| `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow/Block × Always/Once prompt |
 | `device_list.py`   | `DeviceListWindow` (+ table models)         | Device list window                         |
 | `settings.py`      | `SettingsProtocol`, `Settings`              | Settings seam (Protocol) + QSettings-backed singleton |
 
@@ -123,6 +123,7 @@ src/usbguard_gui/introspection/
 | `list_devices_correlated` | `int, list[Device]`                     | result of `fetch_devices(request_id)` |
 | `list_rules_result`       | `list[tuple[int, str]]`                 | result of `list_rules()`     |
 | `remove_rule_result`      | `bool`                                  | result of `remove_rule()`    |
+| `permanent_write_failed`  | `int, str, str` (device_id, action, reason) | a permanent rule that did **not** reach `rules.conf` |
 
 `list_devices()` and `fetch_devices()` hit the same D-Bus call; they differ in
 delivery.  `list_devices()` answers on the shared, untagged `list_devices_result`
@@ -133,8 +134,18 @@ cycle resolves only against the snapshot it asked for, so another consumer's
 refresh can never consume it and answers may arrive in any order.  Both always
 terminate — a fast-fail or a `DBusError` still emits an empty list.
 
-`apply_device_policy()` is fire-and-forget (no result signal); callers follow
-up with `list_rules()` to confirm the new policy state.
+`apply_device_policy()` has no **success** signal — callers follow up with `list_rules()` to
+confirm the new policy state. It does have a **failure** one, and that is deliberate rather
+than an omission.
+
+A permanent decision is two steps: make the device live, then append the durable rule. The
+second step can be denied or fail on its own, leaving the device in the requested state only
+until it is unplugged while the user believes they granted permanence. That gap is invisible
+in a log file in a tray app nobody tails, so `_do_apply_policy` emits
+`permanent_write_failed(device_id, action, reason)` and
+`USBGuardTrayApp._on_permanent_write_failed` turns it into a tray warning. Consumers must
+treat a permanent request as unconfirmed until either `list_rules()` shows the rule or this
+signal fires.
 
 ## ScreensaverMonitor Signals
 

@@ -4,7 +4,7 @@
 
 A vibe coded KDE/Qt system tray GUI for [USBGuard](https://usbguard.github.io/).
 
-Monitors USB device insertions and lets you Allow, Block or Reject devices
+Monitors USB device insertions and lets you Allow or Block devices, permanently or until unplugged
 through desktop notifications and a device management window.
 
 <img src="rpm/usbguard_gui.svg" alt="This is the systray icon." width="32" height="32">
@@ -29,16 +29,51 @@ Click the tray icon to open the device list showing all connected USB devices. C
   - **Device has at least one HID interface** — see *HID Devices* below.
   - **Screen is locked** (non-HID device) — the device is deferred (see *Screensaver Integration* below).
   - **Anything else** — a popup dialog appears with these buttons:
-    - **Allow (Permanent)** — allow the device and create a persistent rule.
-    - **Allow (Temporary)** — allow the device until it is disconnected.
-    - **Block** — keep the device blocked.
-    - **Close** — applies **Reject**: the device is electrically disconnected and
-      USBGuard forgets it. Despite the label this is a decision, not a dismissal.
+    - **Allow Always** — allow the device and create a persistent rule.
+    - **Allow Once** — allow the device until it is disconnected, and **remove**
+      any permanent rule it currently has.
+    - **Block Once** — keep the device blocked, and remove any permanent rule it
+      currently has.
+    - **Block Always** — keep the device blocked and persist that as a rule.
+    - **Close** — dismiss without deciding. Nothing is applied, same as **Escape**.
 
-  `Close` is the default button, so **Enter** applies Reject rather than an allow.
-  Letting the dialog time out (30 s) is different: no action is applied at all and
-  the device simply stays blocked. If you want "do nothing for now", let it time
-  out or pick **Block**.
+  `Close` is the default button, so **Enter** dismisses rather than allowing.
+  Letting the dialog time out (30 s) does the same: no action is applied at all
+  and the device simply stays blocked.
+
+**Every action states whether it is durable.** The invariant is that a device's
+permanent rule always reflects your last *durable* decision — or there is none.
+`Always` writes the rule; `Once` **deletes** it rather than merely declining to
+write, so an old rule cannot survive the click and silently re-assert at the next
+reboot. **Reject is not offered.** A persisted `reject` rule removes the device on
+sight, so it never appears in the device list and there is no way back from the app
+until a rule editor exists; the code refuses to write one.
+
+**A durable decision that fails is reported.** *Always* writes the rule to
+`/etc/usbguard/rules.conf` as a separate step from making the device live. If that
+write is denied or fails, the device stays in the state you asked for **only until
+it is unplugged**, and the tray raises a *"Permanent rule not saved"* warning saying
+so. The mirror case exists too: if *Once* cannot remove the standing rule, nothing
+was applied at all and the tray raises *"Temporary decision not applied"*. A device
+whose policy had grown several rules can fail halfway — some removed, some not — and
+that is reported separately as *"Temporary decision not applied — policy partly
+changed"*, because there the stored policy really did move and is worth checking by
+hand. If you see any of these, the decision needs to be made again (or the polkit
+rule fixed) — otherwise the state is not what you clicked.
+
+**A device that disconnects while you are deciding keeps its dialog.** Hardware that
+re-enumerates on its own — IR blasters, modems, anything that resets when it is
+configured — can vanish before you finish reading the prompt. The dialog stays open
+and says so, and your click still counts: *Always* writes the rule immediately (a
+permanent rule needs no live device, and it governs the next appearance), while
+*Once* is held and applied the moment the device comes back. The one exception is
+the HID contract below: a held *Allow* for a device with a HID interface hands the
+live authorization back to the lock-first flow rather than bypassing it. That held
+*Once* does not carry its other half there — no permanent rule is cleared, because
+dropping one on the strength of a click made while the device was away is the same
+stale-click problem the lock exists to refuse. The tray raises *"Held Allow cleared
+no permanent rule"* so the difference is visible, and you can decide again with
+the device connected.
 
 ### HID Devices
 
@@ -79,8 +114,14 @@ assumption and the app refuses to act rather than pretending:
   policy. The tray announces it again when locking becomes available.
 - **A logind idle/block inhibitor is held** (a `dnf`/`rpm` transaction, a *"Prevent screen
   lock"* toggle, `systemd-inhibit --what=idle`, …). The auto-allow-then-lock flow is
-  skipped — locking would be a no-op, so the app does not claim it happened — and the HID
-  device falls through to the normal prompt path, where it is **not** auto-allowed.
+  skipped and the HID device falls through to the normal prompt path, where it is **not**
+  auto-allowed.
+
+  The reason is intent rather than capability. An explicit `ScreenSaver.Lock()` usually *does*
+  get through an `idle` inhibitor — that class suppresses the idle *transition*, not a
+  deliberate lock request. But whoever holds "Prevent screen lock" has asked for the screen to
+  stay up, so the app neither races that wish nor announces a lock it cannot guarantee. It
+  declines the flow and lets you decide explicitly instead.
 
 In both cases the failure direction is the safe one: the device stays blocked.
 
@@ -93,11 +134,91 @@ In both cases the failure direction is the safe one: the device stays blocked.
 ### Device List Window
 
 - Shows all currently connected USB devices with their status.
-- Displays device name, ID, hash and class.
-- Status column: **Allow** = permanent rule, **Temporary** = allowed until unplugged, **Block** / **Reject** as set.
+- Columns: `#` (device id), `Status`, `Persistence`, `USB ID`, `Name`, `Serial`, `Port`,
+  `Interfaces`, `Type`, `Connection`.
+- **Status** is the live target — what the device is doing right now.
+- **Persistence** is what survives. **Permanent allow** / **Permanent block** when a
+  permanent rule matching this device is pinned to it; **Temporary** when none is, so the
+  live state ends at unplug; **Unknown** when a rule sitting above the match could not be
+  read, which is reported rather than guessed at. Rules resolve in the daemon's own order —
+  first match wins.
+- **`(wildcard)`** marks a rule that covers the device without pinning it down.
+  `allow id 2109:2817` governs every hub of that model; a class rule covers a whole
+  interface class; a hash-only rule follows the device to every port. **`Allow Once` and
+  `Block Once` cannot clear these.** They are usually hand-written admin policy and a tray
+  click has no business erasing it, so the rule is left alone — and the tray raises
+  *"Temporary decision incomplete"*, naming the rule so you can go revoke it deliberately
+  in `/etc/usbguard/rules.conf`.
+
+  This is why the column distinguishes the two kinds of permanent. Without it, clicking
+  **Allow Once** on a device covered by a wildcard allow would look like it worked while
+  the device stayed permanently allowed.
+- Rows are colour-coded by target and shaded by durability: green (allowed) vs blue
+  (allowed only until unplug), dark red (permanently blocked) vs amber (blocked with
+  nothing recorded against the device).
 - Live updates via D-Bus signals (refreshes on device events).
-- Supports applying policy actions directly.
-- Indicates which devices have permanent allow rules.
+- Supports the same action set as the popup dialog, from the row context menu.
+- Column layout and window geometry are remembered between runs.
+
+## If you lock yourself out
+
+You cannot lock yourself out **permanently** with this app — but not because a block wears
+off. It never does. USBGuard's default policy is `ImplicitPolicyTarget=block`, so every
+device without a matching allow rule is blocked, and that floor is re-established on every
+boot whether or not you ever pressed Block.
+
+What this app writes permanently is the **allow list** (`/etc/usbguard/rules.conf`), plus a
+permanent `block` if you pick *Block Always*. A bare deny needs no persistent rule — the
+floor applies it anyway — but writing one is worth it when you want the decision recorded
+against that specific device rather than left implicit. **A blocked device comes back
+blocked** either way. Reversing it takes an explicit allow, not a reboot.
+
+That is also why you cannot get stuck: the app has no lever that digs below the default floor,
+so it cannot leave the persistent policy worse than a fresh install. Recovery is about getting
+another chance to decide — and there are several.
+
+> **The old asymmetry is gone.** *Block* used to be a pause that left a permanent allow
+> untouched, so the device came back **allowed** at the next boot. With the action set,
+> **Block Always** replaces that allow with a permanent block, and **Block Once** or
+> **Allow Once** remove it outright. Revoking permanent trust is an in-app action now; you
+> no longer need to edit `/etc/usbguard/rules.conf`.
+
+The recovery ladder, cheapest first:
+
+1. **Unplug and replug the device.** It re-enumerates as unknown and the app prompts you
+   again, which reopens the decision. (The device is blocked again the moment it lands — the
+   fresh prompt is the recovery, not a cleared state.) Covers anything removable: keyboards,
+   mice, docks, KVM legs, and Bluetooth (power-cycle the keyboard).
+2. **Reboot.** `rules.conf` is re-read from scratch and the device is blocked again — and
+   then the locked-screen rule above (*"an HID device plugged in while the screen is locked is
+   temporarily allowed"*) lets you log in with it, or the app prompts and you allow it
+   explicitly. The block survives; your way back survives with it.
+3. **Use the pre-USBGuard window.** `usbguard.service` activates well after the keyboard is
+   usable. GRUB, the kernel and the initramfs all have a working keyboard before the daemon
+   starts — including the LUKS passphrase prompt, which is precisely the case where a keyboard
+   *must* work regardless of USB policy. Interrupt at GRUB (`init=/bin/bash`,
+   `systemd.unit=rescue.target`, or your distro's recovery entry) and the daemon never comes
+   up at all: rescue and single-user do not pull in `multi-user.target`, so `usbguard.service`
+   stays down and you can edit the policy at leisure.
+4. **SSH in from another machine.** `usbguard list-devices` plus an edit to
+   `/etc/usbguard/rules.conf` (or `usbguard append-rule`) recovers without a reboot, and is
+   the only rung that needs no keyboard at the locked machine at all.
+5. **Boot other media.** Mount the root filesystem from a live USB and edit `rules.conf`, or
+   `systemctl disable usbguard`. The universal fallback; it does not care what the policy did.
+
+The one persistent change the app can make that is *not* an allow is internal to the
+permanent-rule rewrite: it removes the device's existing rule before appending the
+replacement. If the append fails **and** the rollback fails as well, a previously permanent
+allow is lost. That is logged loudly (`could NOT be restored`), it degrades to the pre-allow
+state rather than to a block, and rungs 1–2 above recover it.
+
+> **Note for anyone extending the code.** The *API* can write any target permanently —
+> `apply_device_policy(..., target=T, persistence=P)`. The action set exposes `allow` and
+> `block` only; `reject` is **refused outright with a `ValueError`** (the ghost-device
+> guard), because a persisted `reject` removes the device on sight and leaves no way back
+> from the app. The lockout reasoning above already accounts for a permanent block: it sits
+> at the same level as the implicit floor, so it cannot dig below a fresh install. Adding
+> `reject` to the UI requires the persistent-rules editor to land first.
 
 ## Requirements
 

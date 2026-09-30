@@ -89,21 +89,21 @@ class TestDevice:
         assert self._make_device("block").target() == DeviceTarget.BLOCK
         assert self._make_device("reject").target() == DeviceTarget.REJECT
 
-    def test_is_hid_single_hid_interface(self):
-        device = self._make_device(interfaces=["03:00:01"])
-        assert device.is_hid()
+    def test_all_interfaces_hid_helper_does_not_exist(self):
+        """`is_hid()` is deliberately gone -- the name invites the wrong security call.
 
-    def test_is_hid_multiple_hid_interfaces(self):
+        A composite HID+MSC device can send keystrokes and must be treated as
+        HID, so an "all interfaces are HID" predicate sitting next to the HID
+        decision is a trap: it silently excludes exactly the composite class the
+        README warns about.  `has_hid_interface()` is the security-correct check.
+        """
+        assert not hasattr(Device, "is_hid")
+        assert hasattr(Device, "has_hid_interface")
+
+    def test_has_hid_interface_multiple_hid_interfaces(self):
+        # Composite keyboard+mouse: every interface is HID.
         device = self._make_device(interfaces=["03:00:01", "03:01:01"])
-        assert device.is_hid()
-
-    def test_is_hid_mixed_interfaces(self):
-        device = self._make_device(interfaces=["03:00:01", "08:06:50"])
-        assert not device.is_hid()
-
-    def test_is_hid_no_interfaces(self):
-        device = self._make_device(interfaces=[])
-        assert not device.is_hid()
+        assert device.has_hid_interface()
 
     def test_has_hid_interface_pure_hid(self):
         device = self._make_device(interfaces=["03:00:01"])
