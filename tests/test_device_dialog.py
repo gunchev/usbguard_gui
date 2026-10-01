@@ -6,7 +6,7 @@ import os
 
 import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QLabel, QMessageBox
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
 from usbguard_gui.device_dialog import DeviceActionDialog
@@ -313,6 +313,31 @@ class TestDismissAppliesNothing:
         assert client.apply_calls == []
 
 
+class TestDialogRetargeting:
+    """Device details and presence follow the instance the action will target."""
+
+    def test_retarget_updates_the_visible_details_and_presence(self, qapp, qtbot) -> None:
+        dialog = DeviceActionDialog(Device.from_dbus(1, _RULE), _FakeClient())
+        qtbot.addWidget(dialog)
+        dialog.set_device_present(False)
+        rule = _RULE.replace('name "Test Device"', 'name "Current Device"').replace('serial ""', 'serial "S1"')
+        rule = rule.replace("with-connect-type hotplug", "with-connect-type unknown")
+        current = Device.from_dbus(2, rule)
+
+        dialog.set_device(current)
+
+        assert dialog.device is current
+        assert dialog.device_present
+        labels = [label.text() for label in dialog.findChildren(QLabel)]
+        assert "Current Device" in labels
+        assert "S1" in labels
+        assert "unknown" in labels
+        assert "Test Device" not in labels
+        assert "hotplug" not in labels
+        assert "disconnected" not in dialog._timeout_label.text()
+        assert "no action is applied" in dialog._timeout_label.text()
+
+
 class TestCleanupIsIdempotent:
     """`finished` can arrive more than once; the second cleanup must not raise.
 
@@ -404,7 +429,7 @@ class TestTheAbsentDeviceNoticeSurvivesTheCountdown:
     def test_a_present_device_still_shows_the_countdown(self, dialog) -> None:
         dialog._tick()
 
-        assert dialog._timeout_label.text() == "Auto-close in 29s (device stays blocked)"
+        assert dialog._timeout_label.text() == "Auto-close in 29s (no action is applied)"
 
 
 class TestTheAwayNoticeKeepsTheClockVisible:

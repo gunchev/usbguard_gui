@@ -135,6 +135,9 @@ class _DBusThread(AsyncWorkerThread):
     # bloated policy can hold several rules for one device, and a failure on the
     # second is not the same story as a failure on the first.
     permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    # The clear succeeded, but the live Once action failed. The flag says
+    # whether any permanent rules were actually removed before that failure.
+    temporary_apply_failed = pyqtSignal(int, str, str, bool)
     # The `Once` half that succeeded but did not finish: the device's own rule is
     # gone, yet a broader rule that merely *covers* it is still in force.  Those
     # are deliberately not removed -- `allow id 1d6b:0002` is usually hand-written
@@ -351,7 +354,7 @@ class _DBusThread(AsyncWorkerThread):
                 # under a permanent rule nobody chose -- the divergence this
                 # whole change exists to eliminate.
                 try:
-                    await self._clear_device_rule(device_id, device_rule)
+                    removed = await self._clear_device_rule(device_id, device_rule)
                 except _PartialClear as e:
                     # _PartialClear is deliberately NOT a DBusError, so the arm
                     # below cannot swallow it whichever order the two are
@@ -387,7 +390,17 @@ class _DBusThread(AsyncWorkerThread):
                               device_id, e)
                     self.permanent_clear_failed.emit(device_id, target.name.lower(), str(e), False)
                     raise
-                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                try:
+                    await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                except DBusError as e:
+                    reason = str(e)
+                    if removed:
+                        listed = "; ".join(f"{text} (rule {rule_id})" for rule_id, text in removed)
+                        reason = f"{reason}\nAlready removed from the stored policy: {listed}."
+                    self.temporary_apply_failed.emit(device_id, target.name.lower(), reason, bool(removed))
+                    # Keep permission/business failures connected; the outer
+                    # handler alone owns the transport/reconnect decision.
+                    raise
                 log.info("Applied %s to device %d (ONCE)", target.name, device_id)
             else:
                 # No verbatim rule to write (no device_rule, or no policy iface).
@@ -503,8 +516,8 @@ class _DBusThread(AsyncWorkerThread):
                                          f"shadowing (ids {undecidable})")
         return _APPEND_RULE_AT_END, None
 
-    async def _clear_device_rule(self, device_id: int, device_rule: str | None) -> None:
-        """Delete the device's permanent rule, if it has one.
+    async def _clear_device_rule(self, device_id: int, device_rule: str | None) -> list[tuple[int, str]]:
+        """Delete the device's permanent rules and return the removed ids/texts.
 
         The ``Once`` half of the invariant.  Identity-keyed and verb-agnostic,
         so it removes whatever standing rule the device carries -- ``allow`` or
@@ -513,11 +526,11 @@ class _DBusThread(AsyncWorkerThread):
         identity to match on, and removing it is not this app's to decide.
         """
         if not device_rule:
-            return
+            return []
 
         identity = rule_identity(device_rule)
         if identity is None:
-            return
+            return []
 
         rules = await self._list_permanent_rules()
         own = [(rule_id, text) for rule_id, text in rules if rule_identity(text) == identity]
@@ -547,6 +560,7 @@ class _DBusThread(AsyncWorkerThread):
                 log.info("Rule %r still covers device %d and was not removed", text, device_id)
                 self.permanent_rule_remains.emit(device_id, verb, text)
                 break
+        return removed
 
     async def _persist_device_rule(self, device_id: int, rule: str) -> None:
         """Keep exactly one permanent rule for this device, where it will apply.
@@ -735,6 +749,7 @@ class USBGuardClient(QObject):
     remove_rule_result = pyqtSignal(bool)
     permanent_write_failed = pyqtSignal(int, str, str)
     permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    temporary_apply_failed = pyqtSignal(int, str, str, bool)
     permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -766,6 +781,7 @@ class USBGuardClient(QObject):
         self._thread.remove_rule_result.connect(self.remove_rule_result)
         self._thread.permanent_write_failed.connect(self.permanent_write_failed)
         self._thread.permanent_clear_failed.connect(self.permanent_clear_failed)
+        self._thread.temporary_apply_failed.connect(self.temporary_apply_failed)
         self._thread.permanent_rule_remains.connect(self.permanent_rule_remains)
         self._thread.start()
         return True

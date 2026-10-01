@@ -32,6 +32,7 @@ def mock_thread():
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
             permanent_clear_failed = pyqtSignal(int, str, str, bool)
+            temporary_apply_failed = pyqtSignal(int, str, str, bool)
             permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self):
@@ -216,6 +217,15 @@ class TestUSBGuardClient:
         client.list_devices()
         assert mock_thread._list_devices_calls == ["match"]
 
+    def test_temporary_apply_failure_signal_propagates(self, client, mock_thread):
+        received = []
+        client.temporary_apply_failed.connect(lambda *args: received.append(args))
+        client.connect()
+
+        mock_thread.temporary_apply_failed.emit(54, "block", "Not authorized", True)
+
+        assert received == [(54, "block", "Not authorized", True)]
+
     def test_list_devices_with_custom_query(self, client, mock_thread):
         client.connect()
         client.list_devices(query="match blocked")
@@ -346,6 +356,7 @@ class TestConnectRecyclesPreviousThread:
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
             permanent_clear_failed = pyqtSignal(int, str, str, bool)
+            temporary_apply_failed = pyqtSignal(int, str, str, bool)
             permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self, parent=None):

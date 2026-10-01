@@ -39,7 +39,7 @@ Click the tray icon to open the device list showing all connected USB devices. C
 
   `Close` is the default button, so **Enter** dismisses rather than allowing.
   Letting the dialog time out (30 s) does the same: no action is applied at all
-  and the device simply stays blocked.
+  and USBGuard's current live state is left alone.
 
 **Every action states whether it is durable.** The invariant is that a device's
 permanent rule always reflects your last *durable* decision — or there is none.
@@ -58,7 +58,11 @@ was applied at all and the tray raises *"Temporary decision not applied"*. A dev
 whose policy had grown several rules can fail halfway — some removed, some not — and
 that is reported separately as *"Temporary decision not applied — policy partly
 changed"*, because there the stored policy really did move and is worth checking by
-hand. If you see any of these, the decision needs to be made again (or the polkit
+hand. If the clear succeeds but the live *Allow Once* or *Block Once* fails, the tray
+reports *"Temporary decision not applied — permanent rules removed"* and names the
+rules already deleted. The stored policy has changed, but the requested live state
+was not applied. When no rule was removed, the warning is simply *"Temporary decision
+not applied"*. If you see any of these, the decision needs to be made again (or the polkit
 rule fixed) — otherwise the state is not what you clicked.
 
 **A device that disconnects while you are deciding keeps its dialog.** Hardware that
@@ -66,14 +70,22 @@ re-enumerates on its own — IR blasters, modems, anything that resets when it i
 configured — can vanish before you finish reading the prompt. The dialog stays open
 and says so, and your click still counts: *Always* writes the rule immediately (a
 permanent rule needs no live device, and it governs the next appearance), while
-*Once* is held and applied the moment the device comes back. The one exception is
-the HID contract below: a held *Allow* for a device with a HID interface hands the
-live authorization back to the lock-first flow rather than bypassing it. That held
-*Once* does not carry its other half there — no permanent rule is cleared, because
+*Once* is held and applied the moment the device comes back in the same USB topology,
+using its current device ID and rule. Parent hash and port are part of the identity:
+identical hubs can share a device hash, so moving to another port requires a new
+decision rather than inheriting another device's dialog or held choice. An existing
+dialog updates on every return, including when the device returns already allowed.
+The one exception is the HID contract below: a held *Allow* for a device with a
+HID interface hands the live authorization back to the lock-first flow rather
+than bypassing it. That held *Once* does not carry its other half there — no permanent
+rule is cleared, because
 dropping one on the strength of a click made while the device was away is the same
 stale-click problem the lock exists to refuse. The tray raises *"Held Allow cleared
 no permanent rule"* so the difference is visible, and you can decide again with
-the device connected.
+the device connected. This also applies while locking is inhibited or unavailable:
+the held Allow never becomes an automatic unlocked authorization. The normal prompt
+requires a fresh click when locking is inhibited; its actions remain disabled when
+locking is unavailable. No held choice changes policy while locking is unavailable.
 
 ### HID Devices
 

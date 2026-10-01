@@ -22,9 +22,9 @@ DEFAULT_TIMEOUT = 30
 class DeviceActionDialog(QDialog):
     """Dialog shown when a new blocked USB device is inserted.
 
-    The user can Allow (permanently), Allow Temporarily, Block, or Close.
+    The user can Allow or Block, Always or Once, or dismiss without deciding.
     'Close' is the default button: pressing Enter dismisses the dialog safely.
-    If no action is taken within the timeout, the device remains blocked.
+    If no action is taken within the timeout, no policy change is applied.
     """
 
     def __init__(self, device: Device, client: USBGuardClient, parent: QWidget | None = None,
@@ -55,15 +55,9 @@ class DeviceActionDialog(QDialog):
         layout.addWidget(title)
 
         # Device info form
-        form = QFormLayout()
-        form.addRow("Name:", QLabel(self.device.name or "(unknown)"))
-        form.addRow("USB ID:", QLabel(self.device.id))
-        form.addRow("Type:", QLabel(self.device.class_description_string() or "(unknown)"))
-        if self.device.serial:
-            form.addRow("Serial:", QLabel(self.device.serial))
-        form.addRow("Port:", QLabel(self.device.via_port or "(unknown)"))
-        form.addRow("Connection:", QLabel(self.device.with_connect_type or "(unknown)"))
-        layout.addLayout(form)
+        self._device_form = QFormLayout()
+        self._update_device_details()
+        layout.addLayout(self._device_form)
 
         # Timeout label
         self._timeout_label = QLabel()
@@ -129,6 +123,23 @@ class DeviceActionDialog(QDialog):
         for button in (self._btn_allow_always, self._btn_allow_once, self._btn_block_once,
                        self._btn_block_always, self._btn_close):
             button.setEnabled(enabled)
+
+    def _update_device_details(self) -> None:
+        while self._device_form.rowCount():
+            self._device_form.removeRow(0)
+        self._device_form.addRow("Name:", QLabel(self.device.name or "(unknown)"))
+        self._device_form.addRow("USB ID:", QLabel(self.device.id))
+        self._device_form.addRow("Type:", QLabel(self.device.class_description_string() or "(unknown)"))
+        if self.device.serial:
+            self._device_form.addRow("Serial:", QLabel(self.device.serial))
+        self._device_form.addRow("Port:", QLabel(self.device.via_port or "(unknown)"))
+        self._device_form.addRow("Connection:", QLabel(self.device.with_connect_type or "(unknown)"))
+
+    def set_device(self, device: Device) -> None:
+        """Retarget the dialog and its displayed details to a present instance."""
+        self.device = device
+        self._update_device_details()
+        self.set_device_present(True)
 
     def set_device_present(self, present: bool) -> None:
         """Reflect whether the device is on the bus right now.
@@ -196,7 +207,7 @@ class DeviceActionDialog(QDialog):
             self._timeout_label.setText("Device disconnected - your choice applies when it returns "
                                         f"(auto-close in {self._remaining}s)")
             return
-        self._timeout_label.setText(f"Auto-close in {self._remaining}s (device stays blocked)")
+        self._timeout_label.setText(f"Auto-close in {self._remaining}s (no action is applied)")
 
     def _action_blocked(self) -> bool:
         """Warn and return True if the action cannot be applied.

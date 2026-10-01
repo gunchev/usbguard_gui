@@ -872,6 +872,55 @@ class TestFailedClearIsReported:
         thread._devices_iface.call_apply_device_policy.assert_not_called()
 
 
+class TestFailedLiveOnceAction:
+    """A failed live action is announced after a successful permanent-rule clear."""
+
+    @pytest.mark.parametrize("target", [DeviceTarget.ALLOW, DeviceTarget.BLOCK])
+    @pytest.mark.parametrize("has_own_rule", [False, True])
+    @pytest.mark.parametrize("error_name, stays_connected", [
+        ("org.freedesktop.DBus.Error.AccessDenied", True),
+        ("org.freedesktop.DBus.Error.Failed", True),
+        ("org.freedesktop.DBus.Error.NoReply", False),
+    ])
+    def test_live_failure_reports_what_was_removed_and_preserves_connection_classification(
+            self, target, has_own_rule, error_name, stays_connected):
+        from dbus_fast import DBusError
+
+        rules = [(8, HUB_B)]
+        if has_own_rule:
+            rules.insert(0, (7, HUB_A))
+        policy = _FakePolicy(rules)
+        thread = _stub_thread(policy)
+        failures = []
+        clear_failures = []
+        thread.temporary_apply_failed.connect(lambda *args: failures.append(args))
+        thread.permanent_clear_failed.connect(lambda *args: clear_failures.append(args))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(error_name, "Live action failed")
+
+        _run(thread._do_apply_policy(54, target, Persistence.ONCE, BLOCKED_HUB))
+
+        assert policy.rules == [(8, HUB_B)], "The clear succeeded and must not remove the sibling's rule"
+        assert clear_failures == [], "This is a live failure, not a clear failure"
+        assert len(failures) == 1
+        device_id, action, reason, policy_changed = failures[0]
+        assert (device_id, action, policy_changed) == (54, target.name.lower(), has_own_rule)
+        assert "Live action failed" in reason
+        assert (HUB_A in reason) is has_own_rule
+        assert HUB_B not in reason
+        assert thread.is_connected is stays_connected
+
+    def test_successful_once_does_not_emit_a_live_failure(self):
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+        failures = []
+        thread.temporary_apply_failed.connect(lambda *args: failures.append(args))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ONCE, BLOCKED_HUB))
+
+        assert policy.rules == []
+        assert failures == []
+
+
 class TestOnceNeverRemovesABroaderRule:
     """Option A: a `Once` decision clears the device's own rule and nothing else.
 

@@ -71,10 +71,9 @@ HID_LOCK_NOTIFY_DELAY_MS = 5000
 MAX_PENDING_UNLOCK_CYCLES = 32
 
 # How long to stay quiet about a device identity that has already been prompted
-# for.  A device that flaps -- disconnecting and re-enumerating on its own --
-# closes its own dialog on every REMOVE, so a dialog-lifetime check alone
-# cannot stop it: each landing is free to prompt again the moment the previous
-# dialog is torn down.  This is the backstop.  The device is never silently
+# for, even after the user dismisses its dialog. A flapping device can otherwise
+# prompt again on each landing once the previous dialog is gone. This is the
+# backstop. The device is never silently
 # allowed during the cooldown, it simply is not re-announced; it stays wherever
 # USBGuard's policy put it.  Override with USBGUARD_GUI_PROMPT_COOLDOWN.
 PROMPT_COOLDOWN_SEC = int(os.environ.get("USBGUARD_GUI_PROMPT_COOLDOWN", "30"))
@@ -133,7 +132,7 @@ class USBGuardTrayApp:
         # incarnation and the next.  They stand until that device shows up
         # again, which is exactly what "block this even though it was only
         # plugged in for a second" means.
-        self._pending_decisions: dict[str, tuple[DeviceTarget, Persistence, str]] = {}
+        self._pending_decisions: dict[str, tuple[DeviceTarget, Persistence]] = {}
         self._screensaver_pending_devices: set[int] = set()
         self._hid_pending_devices: set[int] = set()
         # Outstanding screensaver-unlock cycles, keyed by the request id of the
@@ -258,6 +257,7 @@ class USBGuardTrayApp:
         self._client.list_rules_result.connect(self._on_list_rules_result)
         self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
         self._client.permanent_clear_failed.connect(self._on_permanent_clear_failed)
+        self._client.temporary_apply_failed.connect(self._on_temporary_apply_failed)
         self._client.permanent_rule_remains.connect(self._on_permanent_rule_remains)
 
     def _on_permanent_rule_remains(self, device_id: int, action: str, rule: str) -> None:
@@ -300,6 +300,20 @@ class USBGuardTrayApp:
             f"temporary {action} did not take effect.\n{reason}",
             QSystemTrayIcon.MessageIcon.Warning,
             10000,
+        )
+
+    def _on_temporary_apply_failed(self, device_id: int, action: str, reason: str, policy_changed: bool) -> None:
+        title = "Temporary decision not applied"
+        detail = ""
+        if policy_changed:
+            title += " — permanent rules removed"
+            detail = ("\nPermanent rules were removed before the live action failed. "
+                      "The stored policy has changed; check /etc/usbguard/rules.conf before deciding again.")
+        self._tray.showMessage(
+            title,
+            f"The temporary {action} for device {device_id} did not take effect.\n{reason}{detail}",
+            QSystemTrayIcon.MessageIcon.Warning,
+            15000,
         )
 
     def _on_permanent_write_failed(self, device_id: int, action: str, reason: str) -> None:
@@ -420,6 +434,9 @@ class USBGuardTrayApp:
                 return
 
             device = Device.from_dbus(device_id, device_rule)
+            # Synchronize retained dialogs even when this insertion will not
+            # prompt (already allowed, HID lock flow, or screensaver deferral).
+            self._retarget_device_dialog(device)
 
             # Before anything else: a decision the user already made about this
             # device outranks every reaction below, including the ones that never
@@ -458,11 +475,9 @@ class USBGuardTrayApp:
             # would no-op, the 'Locking screen…' notice would be a lie, and
             # the pending device could never be auto-allowed.  Fall back to
             # the normal prompt path (whose actions are disabled) instead.
-            # The conjunction itself lives in _hid_lock_flow_applies, the single
-            # source of truth shared with _apply_pending_decision -- a queued
-            # decision has to know exactly the flow it might bypass.  The
-            # components are spelled out here only so the log can say *which*
-            # one of them failed when the flow gets skipped.
+            # The automatic-flow conjunction lives in _hid_lock_flow_applies.
+            # A held HID Allow must obey the contract even when that flow cannot
+            # run; _apply_pending_decision then requires a fresh choice instead.
             hid_special_treatment = self._hid_lock_flow_applies(device)
             if hid_special_treatment:
                 if self._screensaver.active:
@@ -645,17 +660,29 @@ class USBGuardTrayApp:
 
     @staticmethod
     def _dialog_identity(device: Device) -> str:
-        """A key that survives re-enumeration.
+        """A device/topology key that survives re-enumeration on the same port.
 
-        ``device.number`` is assigned by the daemon per insertion and changes on
-        every re-enumeration -- which an IR blaster, a modem, or anything that
-        resets when it is configured does repeatedly.  Deduplicating on it
-        deduplicates nothing for exactly the devices that flap, so each landing
-        looked like a brand-new device.
+        Identical hubs can share a hash and even a serial. Include the parent
+        and port so one live device cannot inherit another's dialog or queued
+        choice. Tuple repr also keeps descriptor delimiters unambiguous.
         """
-        if device.hash:
-            return f"hash:{device.hash}"
-        return f"id:{device.id}|{device.via_port}"
+        return repr((device.id, device.serial, device.hash, device.parent_hash, device.via_port))
+
+    def _retarget_device_dialog(self, device: Device) -> bool:
+        """Synchronize an existing dialog with the current device instance."""
+        identity = self._dialog_identity(device)
+        open_number = self._open_dialog_identities.get(identity)
+        if open_number is None:
+            return False
+        dialog = self._open_dialogs.get(open_number)
+        if dialog is None:
+            return False
+        self._open_dialogs.pop(open_number, None)
+        dialog.set_device(device)
+        self._open_dialogs[device.number] = dialog
+        self._open_dialog_identities[identity] = device.number
+        log.info("Device %s re-appeared as id %d -- the open dialog now targets it", identity, device.number)
+        return True
 
     def _hid_lock_flow_applies(self, device: Device) -> bool:
         """Would this device take the auto-allow-then-lock path?
@@ -672,7 +699,7 @@ class USBGuardTrayApp:
                 and self._lock_available)
 
     def _apply_pending_decision(self, device: Device) -> bool:
-        """Apply a decision queued while `device` was off the bus. True if one was.
+        """Replay a held decision; return True if it consumes this insertion.
 
         Called before every other reaction to an insertion, because none of them
         apply to a device the user has already decided about.  Draining only
@@ -700,14 +727,19 @@ class USBGuardTrayApp:
         rule survived and can decide again with the device in hand.
         """
         identity = self._dialog_identity(device)
-        pending = self._pending_decisions.pop(identity, None)
+        pending = self._pending_decisions.get(identity)
         if pending is None:
             return False
-        target, persistence, rule = pending
+        target, persistence = pending
 
-        if target is DeviceTarget.ALLOW and self._hid_lock_flow_applies(device):
-            log.info("Device %s is back as id %d with a queued ALLOW, but it is a HID device -- the "
-                     "lock-first flow keeps the live authorize and the %s clear is not made",
+        # The HID contract does not disappear when the automatic lock flow
+        # cannot run. Inhibited/unavailable locking requires a fresh decision,
+        # never an unattended allow from a click made while the device was away.
+        if target is DeviceTarget.ALLOW and device.has_hid_interface() and not self._settings.disable_hid_treatment():
+            del self._pending_decisions[identity]
+            self._last_prompted_at.pop(identity, None)
+            log.info("Device %s is back as id %d with a queued ALLOW, but it is a HID device -- "
+                     "refusing the held authorize and the %s clear is not made",
                      identity, device.number, persistence.name)
             self._tray.showMessage(
                 HANDBACK_NOTICE_TITLE,
@@ -720,10 +752,16 @@ class USBGuardTrayApp:
             )
             return False
 
+        if not self._lock_available:
+            self._last_prompted_at.pop(identity, None)
+            log.info("Device %s is back, but screen locking is unavailable -- keeping its queued decision", identity)
+            return False
+
+        del self._pending_decisions[identity]
         log.info("Device %s is back as id %d -- applying the queued %s / %s",
                  identity, device.number, target.name, persistence.name)
         self._client.apply_device_policy(device.number, target, persistence,
-                                         rule if persistence is not Persistence.UNCHANGED else None)
+                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         return True
 
     def _show_device_dialog(self, device: Device) -> None:
@@ -741,37 +779,11 @@ class USBGuardTrayApp:
         if self._apply_pending_decision(device):
             return
 
-        open_number = self._open_dialog_identities.get(identity)
-        if open_number is not None:
-            dialog = self._open_dialogs.get(open_number)
-            if dialog is not None:
-                # Retarget the open dialog at the newest instance.  A device
-                # that re-enumerates faster than a person can click leaves the
-                # number captured at dialog-creation stale: clicking Allow Once
-                # then fails with "device id doesn't exist", because that
-                # incarnation is already gone and the user is left with an error
-                # for a click they made correctly.  The dialog has to act on the
-                # device that exists now.
-                self._open_dialogs.pop(open_number, None)
-                dialog.device = device
-                # The device is here now.  Without this the dialog keeps the
-                # "away" flag it set on the previous REMOVE, so a click right
-                # after a re-appearance takes the no-live-device path and the
-                # live half of the decision is silently skipped.
-                dialog.set_device_present(True)
-                self._open_dialogs[device.number] = dialog
-                self._open_dialog_identities[identity] = device.number
-                log.info("Device %s re-appeared as id %d -- the open dialog now targets it",
-                         identity, device.number)
-                return
+        if self._retarget_device_dialog(device):
+            return
 
-        # Cooldown, independent of whether a dialog is still open.  A device
-        # that flaps -- disconnecting and re-enumerating on its own -- closes
-        # its own dialog on every REMOVE, which frees the identity and lets the
-        # next landing straight back past the check above.  Without this a
-        # flapping IR blaster produces a notification and a dialog per cycle,
-        # forever.  The device is not silently allowed during the cooldown, it
-        # simply is not re-announced: it stays wherever policy put it.
+        # Cooldown also applies after the user dismisses a dialog. The device
+        # is not silently allowed: it stays wherever USBGuard's policy put it.
         now = time.monotonic()
         last = self._last_prompted_at.get(identity)
         if last is not None and now - last < PROMPT_COOLDOWN_SEC:
@@ -804,6 +816,13 @@ class USBGuardTrayApp:
             if self._open_dialog_identities.get(ident) == current.number:
                 self._open_dialog_identities.pop(ident, None)
             if target is not None:
+                # A fresh click supersedes a choice held during a lock-service
+                # outage, whether the device is present or absent now.
+                self._pending_decisions.pop(ident, None)
+                self._hid_pending_devices.discard(current.number)
+                self._screensaver_pending_devices.discard(current.number)
+                if not self._hid_pending_devices:
+                    self._hid_lock_timer.stop()
                 if not dialog.device_present and persistence is Persistence.ALWAYS:
                     # Nothing to defer.  A permanent rule is inert data and
                     # appendRule needs no device, so the durable half lands
@@ -830,7 +849,7 @@ class USBGuardTrayApp:
                         del self._pending_decisions[dropped_ident]
                         log.warning("Pending-decision cap (%d) reached -- dropping the oldest "
                                     "queued decision for %s", MAX_PENDING_DECISIONS, dropped_ident)
-                    self._pending_decisions[ident] = (target, persistence, current.raw_rule)
+                    self._pending_decisions[ident] = (target, persistence)
                     return
                 # Pass the exact reported rule so `Always` appends it verbatim
                 # (keeping this device's topology) and `Once` can derive the same

@@ -124,6 +124,9 @@ src/usbguard_gui/introspection/
 | `list_rules_result`       | `list[tuple[int, str]]`                 | result of `list_rules()`     |
 | `remove_rule_result`      | `bool`                                  | result of `remove_rule()`    |
 | `permanent_write_failed`  | `int, str, str` (device_id, action, reason) | a permanent rule that did **not** reach `rules.conf` |
+| `permanent_clear_failed`  | `int, str, str, bool` (device_id, action, reason, partial) | a failed `Once` clear, with whether any rules were removed |
+| `temporary_apply_failed`  | `int, str, str, bool` (device_id, action, reason, policy_changed) | a failed live `Once` action after the clear succeeded |
+| `permanent_rule_remains`  | `int, str, str` (device_id, action, rule) | a broader rule a `Once` choice deliberately leaves intact |
 
 `list_devices()` and `fetch_devices()` hit the same D-Bus call; they differ in
 delivery.  `list_devices()` answers on the shared, untagged `list_devices_result`
@@ -135,7 +138,7 @@ refresh can never consume it and answers may arrive in any order.  Both always
 terminate — a fast-fail or a `DBusError` still emits an empty list.
 
 `apply_device_policy()` has no **success** signal — callers follow up with `list_rules()` to
-confirm the new policy state. It does have a **failure** one, and that is deliberate rather
+confirm the new policy state. It does have **failure** signals, and that is deliberate rather
 than an omission.
 
 A permanent decision is two steps: make the device live, then append the durable rule. The
@@ -146,6 +149,24 @@ in a log file in a tray app nobody tails, so `_do_apply_policy` emits
 `USBGuardTrayApp._on_permanent_write_failed` turns it into a tray warning. Consumers must
 treat a permanent request as unconfirmed until either `list_rules()` shows the rule or this
 signal fires.
+
+`Once` clears device-specific permanent rules before changing the live target. A
+failed clear emits `permanent_clear_failed`; its flag distinguishes a total failure
+from a partial deletion. If the clear succeeds but the live action fails,
+`temporary_apply_failed` reports the live failure and whether the stored policy
+changed, including the removed rules in the reason. These outcomes must not be
+presented as a successful temporary decision. Permission and ordinary per-call
+failures keep the connection alive; only a transport failure triggers reconnection.
+
+Dialogs, cooldowns and held choices are keyed by device ID, serial, hash, parent
+hash and port, not the daemon's per-insertion number. A same-topology re-enumeration
+updates a retained dialog before any insertion early return. A different topology
+needs its own decision even if the device hash is identical. A held choice always
+uses the returning instance's raw rule, not a snapshot from the previous insertion.
+Held HID Allows with special treatment enabled are handed back to the lock-first
+flow or a fresh prompt even when locking is inhibited or unavailable. A fresh
+choice also cancels pending automatic handling for that instance, so a delayed
+HID allow cannot override an explicit Block.
 
 ## ScreensaverMonitor Signals
 

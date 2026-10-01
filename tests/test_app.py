@@ -116,6 +116,7 @@ class _FakeClient(QObject):
     remove_rule_result = pyqtSignal(bool)
     permanent_write_failed = pyqtSignal(int, str, str)
     permanent_clear_failed = pyqtSignal(int, str, str, bool)
+    temporary_apply_failed = pyqtSignal(int, str, str, bool)
     permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self) -> None:
@@ -1406,9 +1407,10 @@ class TestReappearingDeviceDoesNotStackDialogs:
         tray_app._show_device_dialog(Device.from_dbus(2, no_hash))
         assert len(tray_app._open_dialogs) == 1
 
-    def test_the_identity_key_prefers_the_hash(self) -> None:
+    def test_reenumeration_keeps_the_identity_key(self) -> None:
         device = Device.from_dbus(1, self._IR)
-        assert USBGuardTrayApp._dialog_identity(device) == "hash:irhash1"
+        reappeared = Device.from_dbus(2, self._IR)
+        assert USBGuardTrayApp._dialog_identity(device) == USBGuardTrayApp._dialog_identity(reappeared)
 
 
 class TestDialogTracksTheNewestInstance:
@@ -1451,14 +1453,14 @@ class TestDialogTracksTheNewestInstance:
         """`Once` derives the deletion identity from the rule string, so a stale
         rule would clear the wrong thing."""
         mocker.patch.object(tray_app._tray, "showMessage")
-        moved = self._IR.replace('via-port "1-2"', 'via-port "1-5"')
+        updated = self._IR.replace('with-connect-type "hotplug"', 'with-connect-type "unknown"')
         tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
         dialog = tray_app._open_dialogs[1]
-        tray_app._show_device_dialog(Device.from_dbus(2, moved))
+        tray_app._show_device_dialog(Device.from_dbus(2, updated))
 
         dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
 
-        assert fake_client.apply_policy_rules[-1] == moved
+        assert fake_client.apply_policy_rules[-1] == updated
 
     def test_no_reappearance_still_uses_the_original(self, tray_app, fake_client, mocker) -> None:
         mocker.patch.object(tray_app._tray, "showMessage")
@@ -1561,7 +1563,7 @@ class TestDecisionsSurviveAFlappingDevice:
 
     def test_the_pending_cap_drops_the_oldest_and_says_so(self, tray_app, mocker) -> None:
         for i in range(MAX_PENDING_DECISIONS):
-            tray_app._pending_decisions[f"hash:filler{i}"] = (DeviceTarget.BLOCK, Persistence.ONCE, "block x")
+            tray_app._pending_decisions[f"hash:filler{i}"] = (DeviceTarget.BLOCK, Persistence.ONCE)
         dropped = mocker.patch("usbguard_gui.app.log.warning")
 
         dialog = self._open(tray_app, mocker)
@@ -1772,6 +1774,174 @@ class TestAQueuedAllowStillObeysTheLockContract:
 
         assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
         assert tray_app._hid_pending_devices == set()
+
+
+class TestQueuedDecisionSafetyAndIdentity:
+    """Held choices obey the lock gate and cannot migrate to a sibling hub."""
+
+    @pytest.mark.parametrize("lock_state", ["unavailable", "inhibited"])
+    @pytest.mark.parametrize("interfaces", ["03:01:01", "{ 03:01:01 08:06:50 }"])
+    def test_held_hid_allow_requires_a_fresh_choice_when_lock_cannot_run(self, tray_app, fake_client,
+                                                                         fake_screensaver, queued_decision,
+                                                                         lock_state, interfaces):
+        rule = KEYBOARD_RULE.replace("with-interface 03:01:01", f"with-interface {interfaces}")
+        show = queued_decision(DeviceTarget.ALLOW, rule=rule)
+        if lock_state == "unavailable":
+            fake_screensaver._connected = False
+            fake_screensaver.connection_changed.emit(False)
+        else:
+            fake_screensaver._inhibited = True
+
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, rule, {})
+
+        assert not fake_screensaver.active
+        assert fake_client.apply_policy_calls == []
+        assert fake_client.persist_rule_calls == []
+        assert tray_app._pending_decisions == {}
+        assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
+        assert tray_app._open_dialogs[301].device_present
+        assert tray_app._hid_pending_devices == set()
+        assert not tray_app._hid_lock_timer.isActive()
+        if lock_state == "inhibited":
+            # A fresh click with the device in hand is the normal inhibited flow.
+            tray_app._open_dialogs[301]._on_allow_once()
+            assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
+
+    def test_same_hash_hubs_keep_separate_dialogs_and_click_targets(self, tray_app, fake_client):
+        first = IR_RULE
+        sibling = first.replace('via-port "1-2"', 'via-port "1-2.1"')
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, first, {})
+        first_dialog = tray_app._open_dialogs[1]
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, sibling, {})
+
+        assert set(tray_app._open_dialogs) == {1, 2}
+        assert tray_app._open_dialogs[1] is first_dialog
+        first_dialog._on_allow_once()
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.ONCE)]
+        assert fake_client.apply_policy_rules == [first]
+        assert 2 in tray_app._open_dialogs
+
+    @pytest.mark.parametrize("attribute", ["via-port", "parent-hash"])
+    def test_sibling_cannot_consume_a_queued_choice_or_its_cooldown(self, tray_app, fake_client,
+                                                                    queued_decision, attribute):
+        queued_decision(DeviceTarget.BLOCK, rule=IR_RULE)
+        original = Device.from_dbus(292, IR_RULE)
+        old_value = original.via_port if attribute == "via-port" else original.parent_hash
+        sibling = IR_RULE.replace(f'{attribute} "{old_value}"', f'{attribute} "different"')
+
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, sibling, {})
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._pending_decisions
+        assert 301 in tray_app._open_dialogs, "A sibling needs its own prompt, even during the cooldown"
+        tray_app._on_device_presence_changed(302, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        assert fake_client.apply_policy_calls == [(302, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._pending_decisions == {}
+
+    def test_queued_once_forwards_the_returning_instances_rule(self, tray_app, fake_client, queued_decision):
+        queued_decision(DeviceTarget.BLOCK, rule=IR_RULE)
+        updated = IR_RULE.replace('with-connect-type "hotplug"', 'with-connect-type "unknown"')
+
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.ALLOW, updated, {})
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert fake_client.apply_policy_rules == [updated]
+        assert tray_app._pending_decisions == {}
+
+    def test_queued_choice_waits_for_lock_availability_and_a_fresh_click_supersedes_it(
+            self, tray_app, fake_client, fake_screensaver, queued_decision):
+        queued_decision(DeviceTarget.BLOCK, rule=IR_RULE)
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._pending_decisions
+
+        fake_screensaver._connected = True
+        fake_screensaver.connection_changed.emit(True)
+        tray_app._open_dialogs[301]._on_allow_once()
+
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
+        assert tray_app._pending_decisions == {}, "The superseded block must never replay later"
+
+
+class TestRetainedDialogsOnEarlyReturnPaths:
+    """Every insertion updates a retained dialog before choosing a default flow."""
+
+    @pytest.mark.parametrize("return_path", ["allowed", "hid_lock", "locked_session"])
+    def test_current_instance_is_used_and_a_click_cancels_pending_defaults(self, tray_app, fake_client,
+                                                                           fake_screensaver, return_path):
+        rule = KEYBOARD_RULE if return_path == "hid_lock" else IR_RULE
+        fake_screensaver._inhibited = return_path == "hid_lock"
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, rule, {})
+        dialog = tray_app._open_dialogs[1]
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, rule, {})
+        updated = rule.replace('name "', 'name "Current ')
+        fake_screensaver._inhibited = False
+        fake_screensaver._active = return_path == "locked_session"
+        target = DeviceTarget.ALLOW if return_path == "allowed" else DeviceTarget.BLOCK
+
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, target, updated, {})
+
+        assert dialog.device.number == 2
+        assert dialog.device_present
+        assert dialog.device.raw_rule == updated
+        assert set(tray_app._open_dialogs) == {2}
+        dialog._on_block_once()
+        assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert fake_client.apply_policy_rules == [updated]
+        assert tray_app._pending_decisions == {}
+        assert tray_app._hid_pending_devices == set()
+        assert tray_app._screensaver_pending_devices == set()
+        assert not tray_app._hid_lock_timer.isActive()
+        tray_app._on_screensaver_locked(True)
+        assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
+
+    def test_a_fresh_block_preserves_the_lock_flow_for_other_pending_hid_devices(self, tray_app, fake_client,
+                                                                                 fake_screensaver):
+        fake_screensaver._inhibited = True
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, KEYBOARD_RULE, {})
+        dialog = tray_app._open_dialogs[1]
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, KEYBOARD_RULE, {})
+        fake_screensaver._inhibited = False
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, KEYBOARD_RULE, {})
+        other = KEYBOARD_RULE.replace('hash "kbhash1"', 'hash "other"').replace('via-port "1-3"', 'via-port "1-4"')
+        tray_app._on_device_presence_changed(3, PresenceEvent.INSERT, DeviceTarget.BLOCK, other, {})
+
+        dialog._on_block_once()
+
+        assert tray_app._hid_pending_devices == {3}
+        assert tray_app._hid_lock_timer.isActive()
+        fake_screensaver._active = True
+        tray_app._on_screensaver_locked(True)
+        assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE),
+                                                  (3, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+
+
+class TestFailedTemporaryActionWarning:
+    """A failed live action distinguishes a successful clear from an unchanged policy."""
+
+    @pytest.mark.parametrize("policy_changed", [False, True])
+    def test_signal_reports_live_failure_and_the_actual_policy_outcome(self, tray_app, fake_client,
+                                                                       mocker, policy_changed):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+
+        fake_client.temporary_apply_failed.emit(54, "block", "Not authorized", policy_changed)
+
+        show.assert_called_once()
+        title, body = show.call_args.args[:2]
+        assert "Temporary decision not applied" in title
+        assert "54" in body
+        assert "block" in body
+        assert "did not take effect" in body
+        assert "Not authorized" in body
+        if policy_changed:
+            assert "permanent rules removed" in title
+            assert "stored policy has changed" in body
+            assert "/etc/usbguard/rules.conf" in body
+        else:
+            assert "removed" not in title
+            assert "stored policy has changed" not in body
 
 
 class TestPartialClearIsAnnouncedDifferently:
