@@ -1267,6 +1267,79 @@ class TestUnlockQueueRaceReproductions:
         assert fake_client.fetch_devices_calls == []
 
 
+class TestUnlockSnapshotFreshness:
+    """New presence and user decisions invalidate older unlock-fetch snapshots."""
+
+    def test_removed_incarnation_cannot_retarget_the_newer_live_dialog(self, tray_app, fake_client,
+                                                                       fake_screensaver, mocker):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver._active = True
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        fake_screensaver._active = False
+        tray_app._on_screensaver_unlocked(False)
+        cycle_id = fake_client.fetch_devices_calls[-1]
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
+        current_rule = IR_RULE.replace('name "', 'name "Current ')
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, current_rule, {})
+        dialog = tray_app._open_dialogs[2]
+        notices = show.call_count
+
+        tray_app._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+
+        assert dialog.device.number == 2
+        assert dialog.device.raw_rule == current_rule
+        assert dialog.device_present
+        assert set(tray_app._open_dialogs) == {2}
+        assert show.call_count == notices
+        dialog._on_block_once()
+        assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
+
+    def test_removal_preserves_other_devices_in_each_outstanding_cycle(self, tray_app):
+        first = tray_app._register_unlock_cycle({1, 3})
+        second = tray_app._register_unlock_cycle({1, 4})
+
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
+
+        assert tray_app._pending_unlock_cycles == {first: {3}, second: {4}}
+        other_rule = IR_RULE.replace('hash "irhash1"', 'hash "other"')
+        tray_app._on_correlated_devices(first, [Device.from_dbus(1, IR_RULE), Device.from_dbus(3, other_rule)])
+        assert set(tray_app._open_dialogs) == {3}
+        assert tray_app._pending_unlock_cycles == {second: {4}}
+
+    def test_empty_late_reply_cannot_resurrect_a_cancelled_cycle(self, tray_app, fake_client):
+        cycle_id = tray_app._register_unlock_cycle({1})
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
+
+        tray_app._on_correlated_devices(cycle_id, [])
+        tray_app._retry_pending_unlock_cycles()
+
+        assert tray_app._pending_unlock_cycles == {}
+        assert fake_client.fetch_devices_calls == []
+
+    def test_an_allowed_policy_change_prevents_an_old_blocked_snapshot_from_prompting(self, tray_app,
+                                                                                      fake_client):
+        cycle_id = tray_app._register_unlock_cycle({1})
+        allowed = IR_RULE.replace("block ", "allow ", 1)
+        fake_client.device_policy_changed.emit(1, DeviceTarget.BLOCK, DeviceTarget.ALLOW, allowed, 7, {})
+
+        tray_app._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+
+        assert tray_app._open_dialogs == {}
+        assert tray_app._pending_unlock_cycles == {}
+
+    @pytest.mark.parametrize("target", [DeviceTarget.ALLOW, DeviceTarget.BLOCK])
+    def test_a_fresh_decision_prevents_an_older_snapshot_from_reopening_the_prompt(self, tray_app,
+                                                                                   fake_client, target):
+        cycle_id = tray_app._register_unlock_cycle({1})
+
+        tray_app._apply_user_decision(Device.from_dbus(1, IR_RULE), target, Persistence.ONCE)
+        tray_app._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+
+        assert fake_client.apply_policy_calls == [(1, target, Persistence.ONCE)]
+        assert tray_app._open_dialogs == {}
+        assert tray_app._pending_unlock_cycles == {}
+
+
 class TestAutomaticAllowsNeverClearPersistence:
     """Slice 5 -- the three non-user allow paths must never delete a standing rule.
 

@@ -153,6 +153,9 @@ In both cases the failure direction is the safe one: the device stays blocked.
 - When the screen locks: the app tracks all device insertions that occur while locked.
 - When the screen unlocks: displays a notification listing all devices that connected during absence.
 - Opens an action dialog for each pending device so you can decide what to do.
+- A device removal, a newer choice, or an Allow policy change invalidates its
+  pending prompt. A delayed device snapshot cannot reopen an obsolete prompt or
+  retarget a live dialog to an earlier, disconnected incarnation.
 
 ### Device List Window
 

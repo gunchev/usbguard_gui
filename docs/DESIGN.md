@@ -137,6 +137,12 @@ cycle resolves only against the snapshot it asked for, so another consumer's
 refresh can never consume it and answers may arrive in any order.  Both always
 terminate — a fast-fail or a `DBusError` still emits an empty list.
 
+Correlation identifies the request but does not make its snapshot current.
+Removal, explicit decisions and Allow policy changes remove that incarnation's
+ID from every outstanding unlock cycle; empty cycles are retired. Late replies
+for retired cycles are ignored, including empty failure replies, while other
+devices in a partially invalidated cycle still get their prompts.
+
 `apply_device_policy()` has no **success** signal — callers follow up with `list_rules()` to
 confirm the new policy state. It does have **failure** signals, and that is deliberate rather
 than an omission.

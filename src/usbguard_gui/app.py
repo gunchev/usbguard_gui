@@ -417,13 +417,7 @@ class USBGuardTrayApp:
                     dialog.set_device_present(False)
                 # Drop the device from any pending set — it is gone, so it must
                 # neither be auto-allowed on lock nor prompted for on unlock.
-                self._hid_pending_devices.discard(device_id)
-                self._screensaver_pending_devices.discard(device_id)
-                # If this was the last HID device awaiting the deferred lock,
-                # cancel the lock: the user unplugged the device before it fired.
-                if not self._hid_pending_devices and self._hid_lock_timer.isActive():
-                    log.info("HID device %d removed before lock — cancelling scheduled lock", device_id)
-                    self._hid_lock_timer.stop()
+                self._cancel_pending_device(device_id)
                 return
 
             # Only react to new insertions — PRESENT fires for devices already
@@ -543,8 +537,7 @@ class USBGuardTrayApp:
                 if dialog:
                     log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
                     dialog.close()
-                self._screensaver_pending_devices.discard(device_id)
-                self._hid_pending_devices.discard(device_id)
+                self._cancel_pending_device(device_id)
                 # Seed the permanent-allow cache so future re-insertions skip
                 # HID treatment.
                 if rule_id > 0:
@@ -553,6 +546,18 @@ class USBGuardTrayApp:
                         self._permanent_allow_hashes.add(d.hash)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
+
+    def _cancel_pending_device(self, device_id: int) -> None:
+        """Invalidate deferred work and outstanding snapshots for one incarnation."""
+        self._hid_pending_devices.discard(device_id)
+        self._screensaver_pending_devices.discard(device_id)
+        for cycle_id, pending_ids in list(self._pending_unlock_cycles.items()):
+            pending_ids.discard(device_id)
+            if not pending_ids:
+                del self._pending_unlock_cycles[cycle_id]
+        if not self._hid_pending_devices and self._hid_lock_timer.isActive():
+            log.info("Device %d no longer awaits HID handling -- cancelling scheduled lock", device_id)
+            self._hid_lock_timer.stop()
 
     def _lock_for_pending_hid(self) -> None:
         """Lock the screen for a deferred HID insert, unless every triggering
@@ -832,10 +837,7 @@ class USBGuardTrayApp:
             device, device_present = dialog.device, dialog.device_present
             dialog.close()
         self._pending_decisions.pop(identity, None)
-        self._hid_pending_devices.discard(device.number)
-        self._screensaver_pending_devices.discard(device.number)
-        if not self._hid_pending_devices:
-            self._hid_lock_timer.stop()
+        self._cancel_pending_device(device.number)
         if not device_present and persistence is Persistence.ALWAYS:
             log.info("Device %s is off the bus -- writing the permanent %s rule now", identity, target.name.lower())
             self._client.persist_rule(device.number, target, device.raw_rule)
