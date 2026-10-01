@@ -49,6 +49,10 @@ reboot. **Reject is not offered.** A persisted `reject` rule removes the device 
 sight, so it never appears in the device list and there is no way back from the app
 until a rule editor exists; the code refuses to write one.
 
+Legacy duplicate rules for the same device and topology are consolidated by
+*Always*, so an older duplicate Allow cannot shadow a new Block. Rules for other
+topologies and broader class policy are left intact.
+
 **A durable decision that fails is reported.** *Always* writes the rule to
 `/etc/usbguard/rules.conf` as a separate step from making the device live. If that
 write is denied or fails, the device stays in the state you asked for **only until

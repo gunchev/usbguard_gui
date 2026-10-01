@@ -318,18 +318,16 @@ class TestPermanentRuleDeduplication:
 
         assert policy.kinds() == ["list"]
 
-    def test_preexisting_duplicates_update_the_first_and_report_the_rest(self, caplog):
-        """A policy already bloated by repeated decisions heals one rule at a
-        time, and never silently: the extra copies are reported rather than
-        deleted, because any of them could have been written by hand."""
+    def test_preexisting_duplicates_are_replaced_with_one_effective_rule(self, caplog):
+        """A retained duplicate allow must not shadow the new permanent block."""
         policy = _FakePolicy([(7, HUB_A), (9, HUB_A)])
         thread = _stub_thread(policy)
 
-        with caplog.at_level(logging.WARNING, logger="usbguard_gui.dbus_client"):
+        with caplog.at_level(logging.INFO, logger="usbguard_gui.dbus_client"):
             _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, HUB_A))
 
-        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7]
-        assert _rules_conf(policy) == [HUB_A, BLOCKED_HUB]
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7, 9]
+        assert _rules_conf(policy) == [BLOCKED_HUB]
         assert "9" in caplog.text
 
     def test_unreadable_ruleset_falls_back_to_appending(self):
@@ -350,6 +348,72 @@ class TestPermanentRuleDeduplication:
         assert _rules_conf(policy) == [HUB_A]
         # An ordinary per-call failure must not flip the connection.
         assert thread._connected is True
+
+
+class TestDuplicateRuleReplacement:
+    """Always heals device-owned duplicates and restores removals on failure."""
+
+    @pytest.mark.parametrize("target", [DeviceTarget.ALLOW, DeviceTarget.BLOCK])
+    def test_same_or_mixed_targets_collapse_to_the_last_durable_choice(self, target):
+        policy = _FakePolicy([(7, HUB_A), (8, BLOCKED_HUB), (9, HUB_A)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, target, Persistence.ALWAYS, BLOCKED_HUB))
+
+        expected = _retarget_device_rule(BLOCKED_HUB, target)
+        assert _rules_conf(policy) == [expected]
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7, 8, 9]
+
+    def test_duplicate_replacement_preserves_sibling_and_class_policy(self):
+        class_rule = "block with-interface all-of { 08:*:* }"
+        policy = _FakePolicy([(7, HUB_A), (8, HUB_A), (9, HUB_B), (10, class_rule)])
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_B, class_rule, BLOCKED_HUB]
+        assert [c[1] for c in policy.calls if c[0] == "remove"] == [7, 8]
+
+    def test_failure_on_a_later_removal_restores_the_rules_already_removed(self):
+        from dbus_fast import DBusError
+
+        policy = _FakePolicy([(7, HUB_A), (8, HUB_A)])
+        remove = policy.call_remove_rule
+
+        async def fail_second(rule_id):
+            if rule_id == 8:
+                raise DBusError("org.freedesktop.DBus.Error.AccessDenied", "Removal denied")
+            await remove(rule_id)
+
+        policy.call_remove_rule = fail_second
+        thread = _stub_thread(policy)
+        failures = []
+        thread.permanent_write_failed.connect(lambda *args: failures.append(args))
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_A, HUB_A]
+        assert failures == [(54, "block", "Removal denied")]
+        assert thread.is_connected
+
+    def test_failed_append_restores_all_removed_duplicate_rules(self):
+        from dbus_fast import DBusError
+
+        stale = HUB_A.replace('name "USB2.0 Hub"', 'name "Old Hub"')
+        policy = _FakePolicy([(7, HUB_A), (8, stale)])
+        append = policy.call_append_rule
+
+        async def fail_replacement(rule, parent_id, temporary):
+            if rule.startswith("block "):
+                raise DBusError("org.freedesktop.DBus.Error.AccessDenied", "Append denied")
+            return await append(rule, parent_id, temporary)
+
+        policy.call_append_rule = fail_replacement
+        thread = _stub_thread(policy)
+
+        _run(thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert _rules_conf(policy) == [HUB_A, stale]
 
 
 class TestOnceClearsThePermanentRule:

@@ -150,6 +150,12 @@ in a log file in a tray app nobody tails, so `_do_apply_policy` emits
 treat a permanent request as unconfirmed until either `list_rules()` shows the rule or this
 signal fires.
 
+An `Always` replacement removes every exact device/topology-identity duplicate
+before appending one new rule. Removing just the first leaves another old rule
+above the replacement, defeating first-match-wins. If a removal or append fails,
+all rules already removed are restored best-effort and the write failure is
+reported; sibling topologies and broader policy are never owned by this rewrite.
+
 `Once` clears device-specific permanent rules before changing the live target. A
 failed clear emits `permanent_clear_failed`; its flag distinguishes a total failure
 from a partial deletion. If the clear succeeds but the live action fails,

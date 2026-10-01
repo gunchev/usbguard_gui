@@ -93,9 +93,8 @@ def _normalize_rule(rule: str) -> str:
 class _PartialClear(Exception):
     """A `Once` clear that stopped partway, carrying what it had already removed.
 
-    A device can own more than one permanent rule -- `_persist_device_rule`
-    warns about that state rather than pruning it, since any of them could be
-    hand-written -- so the clear is a loop, and a loop can fail after it has
+    Older policies can hold more than one permanent rule for a device,
+    so the clear is a loop, and a loop can fail after it has
     already changed rules.conf.  What it managed is the difference between "your
     decision did not take effect" and "your decision did not take effect *and*
     the stored policy is no longer what it was", which is the user's cue to go
@@ -603,16 +602,11 @@ class _DBusThread(AsyncWorkerThread):
             others = [(rule_id, text) for rule_id, text in rules if rule_identity(text) != identity]
 
         if len(own) > 1:
-            # Already-bloated policy: earlier builds of this path left one
-            # rule per decision.  Update the first and say so out loud --
-            # deleting the rest is not ours to decide, since any of them
-            # could have been written by hand.
-            log.warning("%d permanent rules share device %d's identity (ids %s) -- updating the "
-                        "first, prune the rest by hand",
-                        len(own), device_id, [rule_id for rule_id, _ in own])
+            log.info("Replacing %d permanent rules for device %d's identity (ids %s)",
+                     len(own), device_id, [rule_id for rule_id, _ in own])
         existing = own[0] if own else None
 
-        if existing is not None and _normalize_rule(existing[1]) == _normalize_rule(rule):
+        if len(own) == 1 and existing is not None and _normalize_rule(existing[1]) == _normalize_rule(rule):
             log.info("Permanent rule %d already covers device %d -- not appending a duplicate",
                      existing[0], device_id)
             return
@@ -620,18 +614,17 @@ class _DBusThread(AsyncWorkerThread):
         parent_id, placement_note = (self._placement_for(others, Device.from_dbus(device_id, rule))
                                      if identity is not None else (_APPEND_RULE_AT_END, None))
 
-        if existing is not None:
-            # Remove before appending, never after: appending first would
-            # leave the older rule above the new one, and first-match-wins
-            # would go on honouring it -- silently ignoring a fresh `block`
-            # until the removal landed, and forever if it did not.
-            await self._policy_iface.call_remove_rule(existing[0])
-
+        removed: list[tuple[int, str]] = []
         try:
+            # Every exact-identity rule is device-owned, just as in Once. A
+            # retained duplicate allow could otherwise shadow the new block.
+            for previous in own:
+                await self._policy_iface.call_remove_rule(previous[0])
+                removed.append(previous)
             rule_id = await self._policy_iface.call_append_rule(rule, parent_id, False)
         except DBusError:
-            if existing is not None:
-                await self._restore_permanent_rule(device_id, existing)
+            for previous in removed:
+                await self._restore_permanent_rule(device_id, previous)
             raise
 
         log.info("Stored permanent rule %d for device %d%s", rule_id, device_id,
