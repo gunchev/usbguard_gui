@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QAbstractTableModel, QByteArray, QModelIndex, QPoint, QSettings, QSortFilterProxyModel, Qt, \
@@ -180,10 +181,12 @@ class DeviceListWindow(QMainWindow):
 
     def __init__(self, client: USBGuardClient, parent: QWidget | None = None,
                  screensaver: ScreensaverMonitor | None = None,
-                 settings: QSettings | None = None) -> None:
+                 settings: QSettings | None = None,
+                 decision_handler: Callable[[Device, DeviceTarget, Persistence], None] | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._screensaver = screensaver
+        self._decision_handler = decision_handler
         # Window-geometry store, injected so tests can point it at a temp file
         # instead of the developer's ~/.config/usbguard_gui/device_list.conf
         # (which test runs would otherwise overwrite with offscreen geometry).
@@ -375,8 +378,11 @@ class DeviceListWindow(QMainWindow):
         # `Once` needs the raw rule too, not just `Always`: the client keys the
         # deletion on device identity, and that identity comes from this string.
         # Withholding it would make `Once` a silent no-op from the UI.
-        self._client.apply_device_policy(device.number, target, persistence,
-                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
+        if self._decision_handler is not None:
+            self._decision_handler(device, target, persistence)
+        else:
+            self._client.apply_device_policy(device.number, target, persistence,
+                                             device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         self._request_refresh()
 
 

@@ -173,6 +173,8 @@ In both cases the failure direction is the safe one: the device stays blocked.
   nothing recorded against the device).
 - Live updates via D-Bus signals (refreshes on device events).
 - Supports the same action set as the popup dialog, from the row context menu.
+  A choice from either surface supersedes held choices and cancels pending
+  automatic handling for that device, so a delayed HID Allow cannot override Block.
 - Column layout and window geometry are remembered between runs.
 
 ## If you lock yourself out

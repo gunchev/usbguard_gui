@@ -816,54 +816,47 @@ class USBGuardTrayApp:
             if self._open_dialog_identities.get(ident) == current.number:
                 self._open_dialog_identities.pop(ident, None)
             if target is not None:
-                # A fresh click supersedes a choice held during a lock-service
-                # outage, whether the device is present or absent now.
-                self._pending_decisions.pop(ident, None)
-                self._hid_pending_devices.discard(current.number)
-                self._screensaver_pending_devices.discard(current.number)
-                if not self._hid_pending_devices:
-                    self._hid_lock_timer.stop()
-                if not dialog.device_present and persistence is Persistence.ALWAYS:
-                    # Nothing to defer.  A permanent rule is inert data and
-                    # appendRule needs no device, so the durable half lands
-                    # now and the rule itself admits the device on its next
-                    # insertion.  The only half that needs a device is the live
-                    # authorize, and there is nothing to authorize while it is
-                    # away.
-                    log.info("Device %s is off the bus -- writing the permanent %s rule now; "
-                             "it governs the next appearance", ident, target.name.lower())
-                    self._client.persist_rule(current.number, target, current.raw_rule)
-                    return
-                if not dialog.device_present:
-                    # `Once` is a live state that expires, so it genuinely does
-                    # need the device.  Hold the decision rather than firing it
-                    # at an absent device and getting "device doesn't exist".
-                    log.info("Device %s is off the bus -- queuing %s / %s until it returns",
-                             ident, target.name, persistence.name)
-                    if len(self._pending_decisions) >= MAX_PENDING_DECISIONS:
-                        # Oldest first, which `dict.popitem()` is not -- it is
-                        # LIFO, so it evicted the decision the user had just
-                        # made and pinned the 32 stalest ones forever.  Dicts
-                        # keep insertion order, so the first key is the oldest.
-                        dropped_ident = next(iter(self._pending_decisions))
-                        del self._pending_decisions[dropped_ident]
-                        log.warning("Pending-decision cap (%d) reached -- dropping the oldest "
-                                    "queued decision for %s", MAX_PENDING_DECISIONS, dropped_ident)
-                    self._pending_decisions[ident] = (target, persistence)
-                    return
-                # Pass the exact reported rule so `Always` appends it verbatim
-                # (keeping this device's topology) and `Once` can derive the same
-                # identity to delete against.  Withholding it for `Once` would
-                # make the clear a silent no-op.
-                self._client.apply_device_policy(current.number, target, persistence,
-                                                 current.raw_rule if persistence is not Persistence.UNCHANGED else None)
+                self._apply_user_decision(current, target, persistence, dialog.device_present)
 
         dialog.finished.connect(on_finished)
         dialog.show()
 
+    def _apply_user_decision(self, device: Device, target: DeviceTarget, persistence: Persistence,
+                             device_present: bool = True) -> None:
+        """Dispatch a fresh choice from either UI surface, superseding pending work."""
+        identity = self._dialog_identity(device)
+        open_number = self._open_dialog_identities.get(identity)
+        dialog = self._open_dialogs.get(open_number) if open_number is not None else None
+        if dialog is not None:
+            # A device-list row/menu can be older than the retained dialog.
+            device, device_present = dialog.device, dialog.device_present
+            dialog.close()
+        self._pending_decisions.pop(identity, None)
+        self._hid_pending_devices.discard(device.number)
+        self._screensaver_pending_devices.discard(device.number)
+        if not self._hid_pending_devices:
+            self._hid_lock_timer.stop()
+        if not device_present and persistence is Persistence.ALWAYS:
+            log.info("Device %s is off the bus -- writing the permanent %s rule now", identity, target.name.lower())
+            self._client.persist_rule(device.number, target, device.raw_rule)
+            return
+        if not device_present:
+            log.info("Device %s is off the bus -- queuing %s / %s until it returns",
+                     identity, target.name, persistence.name)
+            if len(self._pending_decisions) >= MAX_PENDING_DECISIONS:
+                dropped_ident = next(iter(self._pending_decisions))
+                del self._pending_decisions[dropped_ident]
+                log.warning("Pending-decision cap (%d) reached -- dropping the oldest queued decision for %s",
+                            MAX_PENDING_DECISIONS, dropped_ident)
+            self._pending_decisions[identity] = (target, persistence)
+            return
+        self._client.apply_device_policy(device.number, target, persistence,
+                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
+
     def _show_device_list(self) -> None:
         if self._device_list_window is None:
-            self._device_list_window = DeviceListWindow(self._client, screensaver=self._screensaver)
+            self._device_list_window = DeviceListWindow(self._client, screensaver=self._screensaver,
+                                                        decision_handler=self._apply_user_decision)
         self._device_list_window.show()
         self._device_list_window.raise_()
         self._device_list_window.activateWindow()

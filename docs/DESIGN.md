@@ -168,6 +168,11 @@ flow or a fresh prompt even when locking is inhibited or unavailable. A fresh
 choice also cancels pending automatic handling for that instance, so a delayed
 HID allow cannot override an explicit Block.
 
+The device-list window receives the tray's decision handler as a callback. Both
+UI surfaces use it to supersede held choices, cancel automatic handling and
+dismiss an older popup before dispatching the new choice. Standalone windows
+without a handler retain the client-only API used by their isolated tests.
+
 ## ScreensaverMonitor Signals
 
 | Signal              | Parameters | Emitted by                                        |

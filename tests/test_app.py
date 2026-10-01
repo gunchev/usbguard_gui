@@ -1918,6 +1918,76 @@ class TestRetainedDialogsOnEarlyReturnPaths:
                                                   (3, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 
 
+class TestDeviceListDecisionCoordination:
+    """Device-list choices supersede held choices and automatic tray handling."""
+
+    @staticmethod
+    def _window(tray_app, fake_client, qtbot, tmp_path):
+        from PyQt6.QtCore import QSettings
+
+        from usbguard_gui.device_list import DeviceListWindow
+
+        settings = QSettings(str(tmp_path / "device-list.ini"), QSettings.Format.IniFormat)
+        window = DeviceListWindow(fake_client, screensaver=tray_app._screensaver, settings=settings,
+                                  decision_handler=tray_app._apply_user_decision)
+        qtbot.addWidget(window)
+        return window
+
+    @pytest.mark.parametrize("persistence", [Persistence.ONCE, Persistence.ALWAYS])
+    def test_a_device_list_block_is_not_overridden_by_the_pending_hid_allow(self, tray_app, fake_client,
+                                                                            fake_screensaver, qtbot, tmp_path,
+                                                                            persistence):
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, KEYBOARD_RULE, {})
+        window = self._window(tray_app, fake_client, qtbot, tmp_path)
+
+        window._apply(Device.from_dbus(1, KEYBOARD_RULE), DeviceTarget.BLOCK, persistence)
+        fake_client.device_policy_changed.emit(1, DeviceTarget.BLOCK, DeviceTarget.BLOCK, KEYBOARD_RULE, 0, {})
+        fake_screensaver._active = True
+        fake_screensaver.active_changed.emit(True)
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.BLOCK, persistence)]
+        assert tray_app._hid_pending_devices == set()
+        assert not tray_app._hid_lock_timer.isActive()
+
+    def test_a_new_allow_always_supersedes_a_held_block_once(self, tray_app, fake_client, fake_screensaver,
+                                                             queued_decision, qtbot, tmp_path):
+        queued_decision(DeviceTarget.BLOCK, rule=IR_RULE)
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        fake_screensaver._connected = True
+        fake_screensaver.connection_changed.emit(True)
+        window = self._window(tray_app, fake_client, qtbot, tmp_path)
+
+        window._apply(Device.from_dbus(301, IR_RULE), DeviceTarget.ALLOW, Persistence.ALWAYS)
+
+        assert tray_app._pending_decisions == {}
+        assert tray_app._open_dialogs == {}
+        fake_client.apply_policy_calls.clear()
+        tray_app._on_device_presence_changed(301, PresenceEvent.REMOVE, DeviceTarget.ALLOW, IR_RULE, {})
+        tray_app._on_device_presence_changed(302, PresenceEvent.INSERT, DeviceTarget.ALLOW, IR_RULE, {})
+        assert fake_client.apply_policy_calls == []
+
+    def test_device_list_uses_the_retained_dialogs_newest_instance(self, tray_app, fake_client, qtbot, tmp_path):
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        old_row = Device.from_dbus(1, IR_RULE)
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        window = self._window(tray_app, fake_client, qtbot, tmp_path)
+
+        window._apply(old_row, DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._open_dialogs == {}
+
+    def test_tray_wires_the_common_decision_handler_into_the_window(self, tray_app, mocker):
+        window_class = mocker.patch("usbguard_gui.app.DeviceListWindow")
+
+        tray_app._show_device_list()
+
+        assert window_class.call_args.kwargs["decision_handler"] == tray_app._apply_user_decision
+
+
 class TestFailedTemporaryActionWarning:
     """A failed live action distinguishes a successful clear from an unchanged policy."""
 
