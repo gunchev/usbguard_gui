@@ -150,6 +150,9 @@ class _DBusThread(AsyncWorkerThread):
         self._bus_iface: Any = None     # ProxyInterface — dbus-fast dynamic API
         self._devices_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._policy_iface: Any = None   # ProxyInterface — dbus-fast dynamic API
+        # Created unbound; acquired only on this worker's asyncio loop. All
+        # durable mutations share the lock, including their live half/rollback.
+        self._policy_lock = asyncio.Lock()
         self._connected = False
 
     @property
@@ -297,6 +300,16 @@ class _DBusThread(AsyncWorkerThread):
 
     async def _do_apply_policy(self, device_id: int, target: DeviceTarget, persistence: Persistence,
                                device_rule: str | None = None) -> None:
+        if persistence is Persistence.UNCHANGED:
+            # Lock-screen HID allows must not wait behind durable-write polkit
+            # prompts. This path never reads or rewrites permanent rules.
+            await self._apply_policy(device_id, target, persistence, device_rule)
+            return
+        async with self._policy_lock:
+            await self._apply_policy(device_id, target, persistence, device_rule)
+
+    async def _apply_policy(self, device_id: int, target: DeviceTarget, persistence: Persistence,
+                            device_rule: str | None = None) -> None:
         try:
             if persistence is Persistence.ALWAYS and target is DeviceTarget.REJECT:
                 # Ghost guard.  A permanent `reject` fires remove=1 on every
@@ -431,6 +444,11 @@ class _DBusThread(AsyncWorkerThread):
                     self._set_connected(False)
 
     async def _do_persist_only(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
+        """Serialize an absent device's durable decision with other policy changes."""
+        async with self._policy_lock:
+            await self._persist_only(device_id, target, device_rule)
+
+    async def _persist_only(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
         """Write the durable half of an `Always` decision with no device present.
 
         A permanent rule is inert data in rules.conf: ``appendRule`` takes a
@@ -661,6 +679,10 @@ class _DBusThread(AsyncWorkerThread):
             self.list_rules_result.emit([])
 
     async def _do_remove_rule(self, rule_id: int) -> None:
+        async with self._policy_lock:
+            await self._remove_rule(rule_id)
+
+    async def _remove_rule(self, rule_id: int) -> None:
         try:
             await self._policy_iface.call_remove_rule(rule_id)
             log.info("Removed rule %d", rule_id)

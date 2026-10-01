@@ -53,6 +53,10 @@ Legacy duplicate rules for the same device and topology are consolidated by
 *Always*, so an older duplicate Allow cannot shadow a new Block. Rules for other
 topologies and broader class policy are left intact.
 
+Durable choices are processed in order, including each rule read, removal,
+replacement and rollback. A later choice therefore sees the earlier choice's
+completed policy, rather than racing it with an outdated snapshot.
+
 **A durable decision that fails is reported.** *Always* writes the rule to
 `/etc/usbguard/rules.conf` as a separate step from making the device live. If that
 write is denied or fails, the device stays in the state you asked for **only until

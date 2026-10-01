@@ -416,6 +416,161 @@ class TestDuplicateRuleReplacement:
         assert _rules_conf(policy) == [HUB_A, stale]
 
 
+class TestConcurrentPolicyDecisions:
+    """Overlapping durable choices read the policy only after earlier writes finish."""
+
+    @pytest.mark.parametrize("absent_first", [False, True])
+    @pytest.mark.parametrize("last_persistence", [Persistence.ALWAYS, Persistence.ONCE])
+    def test_a_later_block_uses_the_policy_written_by_the_earlier_allow(self, absent_first, last_persistence):
+        async def scenario():
+            class InterleavedPolicy(_FakePolicy):
+                def __init__(self):
+                    super().__init__()
+                    self.first_read = asyncio.Event()
+                    self.release_first = asyncio.Event()
+                    self.first_append = asyncio.Event()
+                    self.snapshots = []
+
+                async def call_list_rules(self, label):
+                    snapshot = list(self.rules)
+                    self.snapshots.append(snapshot)
+                    if len(self.snapshots) == 1:
+                        self.first_read.set()
+                        await self.release_first.wait()
+                    else:
+                        # Without serialization this snapshot was already
+                        # captured empty before the earlier allow was written.
+                        await self.first_append.wait()
+                    return snapshot
+
+                async def call_append_rule(self, rule, parent_id, temporary):
+                    rule_id = await super().call_append_rule(rule, parent_id, temporary)
+                    self.first_append.set()
+                    return rule_id
+
+            policy = InterleavedPolicy()
+            thread = _stub_thread(policy)
+            first = (thread._do_persist_only(54, DeviceTarget.ALLOW, BLOCKED_HUB) if absent_first else
+                     thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
+            first_task = asyncio.create_task(first)
+            await policy.first_read.wait()
+            last_task = asyncio.create_task(thread._do_apply_policy(54, DeviceTarget.BLOCK,
+                                                                    last_persistence, BLOCKED_HUB))
+            await asyncio.sleep(0)
+            policy.release_first.set()
+            await asyncio.wait_for(asyncio.gather(first_task, last_task), timeout=2)
+
+            assert policy.snapshots[1] == [(1, HUB_A)], "The later decision must not use a stale empty snapshot"
+            assert _rules_conf(policy) == ([BLOCKED_HUB] if last_persistence is Persistence.ALWAYS else [])
+            assert thread._devices_iface.call_apply_device_policy.call_args_list[-1].args == (54, 1, False)
+
+        _run(scenario())
+
+    def test_failed_transaction_releases_the_lock_for_the_next_decision(self):
+        from dbus_fast import DBusError
+
+        async def scenario():
+            policy = _FakePolicy()
+            append = policy.call_append_rule
+
+            async def deny_allow(rule, parent_id, temporary):
+                if rule.startswith("allow "):
+                    raise DBusError("org.freedesktop.DBus.Error.AccessDenied", "Write denied")
+                return await append(rule, parent_id, temporary)
+
+            policy.call_append_rule = deny_allow
+            thread = _stub_thread(policy)
+            await asyncio.wait_for(asyncio.gather(
+                thread._do_apply_policy(54, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB),
+                thread._do_apply_policy(54, DeviceTarget.BLOCK, Persistence.ALWAYS, BLOCKED_HUB),
+            ), timeout=2)
+            assert _rules_conf(policy) == [BLOCKED_HUB]
+            assert thread.is_connected
+
+        _run(scenario())
+
+    def test_cancelled_transaction_releases_the_lock_for_a_waiting_decision(self):
+        async def scenario():
+            policy = _FakePolicy()
+            entered = asyncio.Event()
+            reads = 0
+
+            async def paused_first_read(label):
+                nonlocal reads
+                reads += 1
+                if reads == 1:
+                    entered.set()
+                    await asyncio.Event().wait()
+                return list(policy.rules)
+
+            policy.call_list_rules = paused_first_read
+            thread = _stub_thread(policy)
+            first = asyncio.create_task(thread._do_apply_policy(54, DeviceTarget.ALLOW,
+                                                                Persistence.ALWAYS, BLOCKED_HUB))
+            await entered.wait()
+            last = asyncio.create_task(thread._do_apply_policy(54, DeviceTarget.BLOCK,
+                                                               Persistence.ALWAYS, BLOCKED_HUB))
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            await asyncio.wait_for(last, timeout=2)
+            assert _rules_conf(policy) == [BLOCKED_HUB]
+
+        _run(scenario())
+
+    def test_rule_removal_waits_until_a_replacement_transaction_finishes(self):
+        async def scenario():
+            policy = _FakePolicy([(7, HUB_A)])
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            remove = policy.call_remove_rule
+
+            async def paused_remove(rule_id):
+                if rule_id == 7:
+                    entered.set()
+                    await release.wait()
+                await remove(rule_id)
+
+            policy.call_remove_rule = paused_remove
+            thread = _stub_thread(policy)
+            first = asyncio.create_task(thread._do_apply_policy(54, DeviceTarget.BLOCK,
+                                                                Persistence.ALWAYS, BLOCKED_HUB))
+            await entered.wait()
+            # The replacement gets id 8; removal must run after it exists.
+            last = asyncio.create_task(thread._do_remove_rule(8))
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(first, last), timeout=2)
+            assert _rules_conf(policy) == []
+
+        _run(scenario())
+
+    def test_lock_screen_allow_does_not_wait_for_a_durable_write_prompt(self):
+        async def scenario():
+            policy = _FakePolicy()
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def paused_read(label):
+                entered.set()
+                await release.wait()
+                return list(policy.rules)
+
+            policy.call_list_rules = paused_read
+            thread = _stub_thread(policy)
+            durable = asyncio.create_task(thread._do_persist_only(54, DeviceTarget.ALLOW, BLOCKED_HUB))
+            await entered.wait()
+            try:
+                await asyncio.wait_for(thread._do_apply_policy(55, DeviceTarget.ALLOW,
+                                                               Persistence.UNCHANGED), timeout=2)
+                thread._devices_iface.call_apply_device_policy.assert_called_once_with(55, 0, False)
+            finally:
+                release.set()
+                await durable
+
+        _run(scenario())
+
+
 class TestOnceClearsThePermanentRule:
     """`Once` deletes -- it is not merely a refusal to write.
 

@@ -156,6 +156,13 @@ above the replacement, defeating first-match-wins. If a removal or append fails,
 all rules already removed are restored best-effort and the write failure is
 reported; sibling topologies and broader policy are never owned by this rewrite.
 
+A worker-local `asyncio.Lock` serializes `Always`, `Once`, persist-only and
+explicit rule-removal transactions, including live changes and rollback. Internal
+rewrite helpers do not reacquire it. Read-only requests remain asynchronous.
+Automatic `UNCHANGED` live authorizations do not acquire the policy lock: a
+lock-screen keyboard must not wait behind a durable-write polkit prompt, and
+those authorizations never mutate the permanent ruleset.
+
 `Once` clears device-specific permanent rules before changing the live target. A
 failed clear emits `permanent_clear_failed`; its flag distinguishes a total failure
 from a partial deletion. If the clear succeeds but the live action fails,
