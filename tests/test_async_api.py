@@ -271,8 +271,8 @@ class TestScreensaverConnectionState:
 
 class TestScreensaverNameOwnerChangedHandler:
     """_on_name_owner_changed must react only to the ScreenSaver bus name,
-    emitting connected(False) on owner loss and connected(True) on owner
-    gain — so a screen-locker crash/restart is detected immediately instead
+    emitting connected(False) until the current owner's state is confirmed
+    — so a screen-locker crash/restart is detected immediately instead
     of only on the next lock()/GetActive call that happens to fail."""
 
     def test_ignores_other_names(self):
@@ -286,7 +286,7 @@ class TestScreensaverNameOwnerChangedHandler:
 
         assert emitted == []
 
-    def test_service_appearance_emits_connected_true(self):
+    def test_service_appearance_waits_for_confirmed_state(self):
         from usbguard_gui.screensaver import _ScreensaverThread
 
         thread = _ScreensaverThread()
@@ -295,7 +295,7 @@ class TestScreensaverNameOwnerChangedHandler:
 
         thread._on_name_owner_changed("org.freedesktop.ScreenSaver", "", ":1.42")
 
-        assert emitted == [True]
+        assert emitted == [False]
 
     def test_service_disappearance_emits_connected_false(self):
         from usbguard_gui.screensaver import _ScreensaverThread
@@ -403,6 +403,76 @@ class TestScreensaverReappearanceReseedsActive:
         assert state["get_active_calls"] >= 2
         assert active_events[-1] is True
         assert thread._active is True
+
+
+class TestScreensaverStateFreshness:
+    """Late queries must not reintroduce a stale lock state or service owner."""
+
+    def test_disconnect_invalidates_active_without_reporting_an_unlock(self):
+        from usbguard_gui.screensaver import ScreensaverMonitor
+
+        monitor = ScreensaverMonitor()
+        monitor._on_active_changed(True)
+        events = []
+        monitor.active_changed.connect(events.append)
+
+        monitor._on_connected(False)
+
+        assert not monitor.active
+        assert events == []
+
+    def test_a_departed_owners_query_cannot_restore_availability(self):
+        import asyncio
+
+        from usbguard_gui.screensaver import SCREENSAVER_BUS_NAME, _ScreensaverThread
+
+        async def scenario():
+            thread = _ScreensaverThread()
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            events = []
+            thread.connected.connect(events.append)
+
+            async def get_active():
+                entered.set()
+                await release.wait()
+                return True
+
+            thread._proxy = MagicMock(call_get_active=get_active)
+            query = asyncio.create_task(thread._sync_active())
+            await entered.wait()
+            thread._on_name_owner_changed(SCREENSAVER_BUS_NAME, ":old", "")
+            release.set()
+            await query
+            assert events == [False]
+            assert not thread.active
+
+        asyncio.run(scenario())
+
+    def test_a_newer_unlock_signal_outranks_a_delayed_locked_query(self):
+        import asyncio
+
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        async def scenario():
+            thread = _ScreensaverThread()
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def get_active():
+                entered.set()
+                await release.wait()
+                return True
+
+            thread._proxy = MagicMock(call_get_active=get_active)
+            query = asyncio.create_task(thread._sync_active())
+            await entered.wait()
+            thread._on_active_changed(False)
+            release.set()
+            await query
+            assert not thread.active
+
+        asyncio.run(scenario())
 
 
 class TestScreensaverThreadRetry:

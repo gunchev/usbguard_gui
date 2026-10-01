@@ -61,6 +61,8 @@ class _ScreensaverThread(AsyncWorkerThread):
         self._active = False
         self._inhibited = False
         self._connected = False
+        self._owner_generation = 0
+        self._active_revision = 0
 
     @property
     def active(self) -> bool:
@@ -130,7 +132,6 @@ class _ScreensaverThread(AsyncWorkerThread):
         if not self._running:
             return
 
-        self.connected.emit(True)
         log.info("Connected to freedesktop ScreenSaver D-Bus")
         await self._sync_active()  # seed the cache from current state
 
@@ -209,6 +210,7 @@ class _ScreensaverThread(AsyncWorkerThread):
         return False
 
     def _on_active_changed(self, active: bool) -> None:
+        self._active_revision += 1
         self._active = active
         log.debug("Screensaver active: %s", active)
         self.active_changed.emit(active)
@@ -221,6 +223,11 @@ class _ScreensaverThread(AsyncWorkerThread):
         """
         if name != SCREENSAVER_BUS_NAME:
             return
+        self._owner_generation += 1
+        self._active = False
+        # Availability is unknown until this owner's GetActive succeeds. In
+        # particular, a pre-restart True must never authorize a new keyboard.
+        self.connected.emit(False)
         if new_owner:
             log.info("Screensaver D-Bus service appeared on the bus (%s)", new_owner)
             # No ActiveChanged signals reached us while the service was
@@ -230,18 +237,27 @@ class _ScreensaverThread(AsyncWorkerThread):
             # loop exists to run it (a not-yet-started thread has none,
             # and the coroutine would be dropped un-awaited).
             if self._loop is not None and self._running:
-                self._schedule(self._sync_active())
+                self._schedule(self._sync_active(self._owner_generation))
         else:
             log.warning("Screensaver D-Bus service left the bus (was %s)", old_owner)
-        self.connected.emit(bool(new_owner))
 
-    async def _sync_active(self) -> None:
+    async def _sync_active(self, generation: int | None = None) -> None:
+        generation = self._owner_generation if generation is None else generation
+        if generation != self._owner_generation or self._proxy is None:
+            return
+        revision = self._active_revision
         try:
             active = await self._proxy.call_get_active()
-            self._on_active_changed(bool(active))
+            if generation != self._owner_generation:
+                return
+            # A newer ActiveChanged signal outranks this query's snapshot.
+            if revision == self._active_revision:
+                self._on_active_changed(bool(active))
+            self.connected.emit(True)
         except DBusError as e:
             log.debug("GetActive failed: %s", e)
-            self.connected.emit(False)
+            if generation == self._owner_generation:
+                self.connected.emit(False)
 
     async def _sleep(self, seconds: float) -> bool:
         """Sleep in small slices so stop() is noticed promptly.
@@ -330,6 +346,10 @@ class ScreensaverMonitor(QObject):
             else:
                 log.warning("Screen locking unavailable — device actions must be disabled")
         self._connected = connected
+        if not connected:
+            # Losing the state source invalidates the cache, but is not an
+            # actual unlock event and must not generate unlock-cycle prompts.
+            self._active = False
         self.connection_changed.emit(connected)
 
     def _on_active_changed(self, active: bool) -> None:

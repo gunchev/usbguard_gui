@@ -124,6 +124,9 @@ assumption and the app refuses to act rather than pretending:
   a keyboard without being able to lock first would hand an attacker an unlocked session,
   so the app will not touch the policy at all. Devices stay blocked by USBGuard's own
   policy. The tray announces it again when locking becomes available.
+  A locker restart invalidates the old lock state; actions are re-enabled only
+  after the replacement service's current state has been fetched. An earlier
+  locked state cannot automatically authorize a device during the restart.
 - **A logind idle/block inhibitor is held** (a `dnf`/`rpm` transaction, a *"Prevent screen
   lock"* toggle, `systemd-inhibit --what=idle`, …). The auto-allow-then-lock flow is
   skipped and the HID device falls through to the normal prompt path, where it is **not**

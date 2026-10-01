@@ -2163,6 +2163,41 @@ class TestAHandbackQueuedAllowSaysWhatWasLost:
         assert tray_app._pending_decisions == {}
 
 
+class TestLockerRestartInvalidatesLockState:
+    """A replacement locker cannot authorize HID using the departed owner's state."""
+
+    def test_unlocked_replacement_does_not_auto_allow_before_its_state_arrives(self, tray_app, fake_client):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from usbguard_gui.screensaver import SCREENSAVER_BUS_NAME, ScreensaverMonitor, _ScreensaverThread
+
+        monitor = ScreensaverMonitor()
+        tray_app._screensaver = monitor
+        monitor.connection_changed.connect(tray_app._on_lock_availability_changed)
+        monitor.active_changed.connect(tray_app._on_screensaver_locked)
+        worker = _ScreensaverThread()
+        worker.connected.connect(monitor._on_connected)
+        worker.active_changed.connect(monitor._on_active_changed)
+
+        async def scenario():
+            worker._loop = asyncio.get_running_loop()
+            worker._proxy = MagicMock(call_get_active=AsyncMock(return_value=False))
+            worker._on_active_changed(True)
+            worker._on_name_owner_changed(SCREENSAVER_BUS_NAME, ":old", "")
+            worker._on_name_owner_changed(SCREENSAVER_BUS_NAME, "", ":new")
+            tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, KEYBOARD_RULE, {})
+            assert not monitor.connected
+            assert not monitor.active
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+        assert monitor.connected
+        assert not monitor.active
+        assert fake_client.apply_policy_calls == []
+
+
 class TestTheHandbackWarningPromisesNothingItCannotKeep:
     """F6 -- the warning fires *before* the already-allowed early return.
 

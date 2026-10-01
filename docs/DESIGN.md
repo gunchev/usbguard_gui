@@ -180,6 +180,11 @@ While `connection_changed` is `False` (screen locking unavailable), the app
 disables **all** allow/deny actions: allowing a keyboard without the ability
 to lock first would hand an attached-device attacker an unlocked session.
 
+ScreenSaver owner changes invalidate the cached lock state without emitting a
+synthetic unlock event. Availability is restored only after `GetActive` succeeds
+for the current owner. Owner generations reject replies from departed services,
+and newer `ActiveChanged` signals outrank an in-flight query's snapshot.
+
 ## dasbus → dbus-fast API mapping
 
 | dasbus                        | dbus-fast                                                      |
