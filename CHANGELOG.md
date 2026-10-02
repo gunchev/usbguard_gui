@@ -1,3 +1,18 @@
+## 0.9.0 — 2026-10-02
+
+### Changes since v0.8.0
+
+- baac0f3 fix: re-prompt on a blocked return after Allow
+- efea1b6 fix: invalidate stale device snapshots in pending unlock cycles
+- 6f03697 fix: serialize durable policy-changing transactions
+- c15f649 fix: replace all device-owned duplicate permanent rules
+- 91701e0 fix: coordinate device-list and popup decisions with pending actions
+- 0bc52d5 fix: invalidate stale lock state across locker restarts
+- b9cb89f fix: preserve HID replay safety and topology-specific device decisions
+- 9bc3433 fix: make the Always/Once action set survive flaps, absence and the HID lock
+- e50f2b6 docs(readme): credit the v0.8.0 release agent
+- 567ef8c docs(todo): PR #8 merged as 2e5eea4, shipped in v0.8.0
+
 ## 0.8.0 — 2026-09-13
 
 ### Changes since v0.7.4
