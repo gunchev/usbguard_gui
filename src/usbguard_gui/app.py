@@ -71,11 +71,10 @@ HID_LOCK_NOTIFY_DELAY_MS = 5000
 MAX_PENDING_UNLOCK_CYCLES = 32
 
 # How long to stay quiet about a device identity that has already been prompted
-# for, even after the user dismisses its dialog. A flapping device can otherwise
-# prompt again on each landing once the previous dialog is gone. This is the
-# backstop. The device is never silently
-# allowed during the cooldown, it simply is not re-announced; it stays wherever
-# USBGuard's policy put it.  Override with USBGUARD_GUI_PROMPT_COOLDOWN.
+# for, after dismissal or Block. Allow clears it: if a temporary authorization
+# expires on disconnect, the next blocked insertion needs a fresh prompt.
+# A flapping device is never silently allowed during the cooldown; it stays
+# wherever USBGuard's policy put it. Override with USBGUARD_GUI_PROMPT_COOLDOWN.
 PROMPT_COOLDOWN_SEC = int(os.environ.get("USBGUARD_GUI_PROMPT_COOLDOWN", "30"))
 
 # Cap on decisions held for devices that are off the bus.  They normally drain
@@ -531,6 +530,8 @@ class USBGuardTrayApp:
                 _enum_name(DeviceTarget, target_new, fallback=str(target_new)),
             )
             if target_new == int(DeviceTarget.ALLOW):
+                d = Device.from_dbus(device_id, device_rule)
+                self._last_prompted_at.pop(self._dialog_identity(d), None)
                 # Device was allowed by a permanent rule after the initial block —
                 # dismiss any dialog that opened on the INSERT event.
                 dialog = self._open_dialogs.pop(device_id, None)
@@ -540,10 +541,8 @@ class USBGuardTrayApp:
                 self._cancel_pending_device(device_id)
                 # Seed the permanent-allow cache so future re-insertions skip
                 # HID treatment.
-                if rule_id > 0:
-                    d = Device.from_dbus(device_id, device_rule)
-                    if d.hash:
-                        self._permanent_allow_hashes.add(d.hash)
+                if rule_id > 0 and d.hash:
+                    self._permanent_allow_hashes.add(d.hash)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
 
@@ -763,6 +762,8 @@ class USBGuardTrayApp:
             return False
 
         del self._pending_decisions[identity]
+        if target is DeviceTarget.ALLOW:
+            self._last_prompted_at.pop(identity, None)
         log.info("Device %s is back as id %d -- applying the queued %s / %s",
                  identity, device.number, target.name, persistence.name)
         self._client.apply_device_policy(device.number, target, persistence,
@@ -787,8 +788,8 @@ class USBGuardTrayApp:
         if self._retarget_device_dialog(device):
             return
 
-        # Cooldown also applies after the user dismisses a dialog. The device
-        # is not silently allowed: it stays wherever USBGuard's policy put it.
+        # Dismissal and Block keep the cooldown; Allow clears it so a subsequent
+        # blocked insertion can prompt again. Never silently replay an Allow.
         now = time.monotonic()
         last = self._last_prompted_at.get(identity)
         if last is not None and now - last < PROMPT_COOLDOWN_SEC:
@@ -838,6 +839,11 @@ class USBGuardTrayApp:
             dialog.close()
         self._pending_decisions.pop(identity, None)
         self._cancel_pending_device(device.number)
+        if target is DeviceTarget.ALLOW:
+            # The user wanted this device usable, not quietly blocked on return.
+            # Clear at dispatch too: an unsuccessful apply or durable write must
+            # not suppress the next chance to decide, waiting for an ALLOW signal.
+            self._last_prompted_at.pop(identity, None)
         if not device_present and persistence is Persistence.ALWAYS:
             log.info("Device %s is off the bus -- writing the permanent %s rule now", identity, target.name.lower())
             self._client.persist_rule(device.number, target, device.raw_rule)

@@ -1446,10 +1446,7 @@ class TestReappearingDeviceDoesNotStackDialogs:
         assert len(tray_app._open_dialogs) == 2
 
     def test_closing_the_dialog_does_not_let_the_next_flap_prompt_immediately(self, tray_app, mocker) -> None:
-        """Closing the dialog frees the identity for stacking purposes, but the
-        cooldown still holds.  This is the whole point: a flapping device closes
-        its own dialog on every REMOVE, so without the cooldown each flap would
-        prompt again the instant the previous dialog was torn down."""
+        """An explicit dismissal keeps a flapping device quiet for the cooldown."""
         mocker.patch.object(tray_app._tray, "showMessage")
         tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
         tray_app._open_dialogs[1].reject()
@@ -1457,6 +1454,57 @@ class TestReappearingDeviceDoesNotStackDialogs:
         tray_app._show_device_dialog(Device.from_dbus(2, self._IR))
 
         assert 2 not in tray_app._open_dialogs, "still inside the cooldown"
+
+    @pytest.mark.parametrize("persistence", [Persistence.ONCE, Persistence.ALWAYS])
+    @pytest.mark.parametrize("allow_confirmed", [False, True])
+    def test_a_blocked_return_after_allow_prompts_immediately(self, tray_app, fake_client, mocker,
+                                                              persistence, allow_confirmed) -> None:
+        """Allow Once expires on disconnect; a failed Always must also be recoverable."""
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        mocker.patch("usbguard_gui.app.time.monotonic", return_value=100.0)
+        tray_app._on_device_presence_changed(154, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+        tray_app._open_dialogs[154]._choose(DeviceTarget.ALLOW, persistence)
+        if allow_confirmed:
+            allowed_rule = self._IR.replace("block ", "allow ", 1)
+            fake_client.device_policy_changed.emit(154, DeviceTarget.BLOCK, DeviceTarget.ALLOW, allowed_rule, 0, {})
+
+        tray_app._on_device_presence_changed(154, PresenceEvent.REMOVE, DeviceTarget.ALLOW, self._IR, {})
+        tray_app._on_device_presence_changed(155, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+
+        assert 155 in tray_app._open_dialogs, "a new blocked insertion needs a fresh decision, without waiting 30s"
+        assert show.call_count == 2
+        assert fake_client.apply_policy_calls == [(154, DeviceTarget.ALLOW, persistence)], "no automatic replay"
+        dialog = tray_app._open_dialogs[155]
+        tray_app._on_device_presence_changed(155, PresenceEvent.REMOVE, DeviceTarget.BLOCK, self._IR, {})
+        tray_app._on_device_presence_changed(156, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+        assert tray_app._open_dialogs == {156: dialog}, "further flaps reuse the new dialog"
+        assert show.call_count == 2
+
+    @pytest.mark.parametrize("persistence", [Persistence.ONCE, Persistence.ALWAYS])
+    def test_a_block_choice_keeps_the_next_flap_quiet(self, tray_app, mocker, persistence) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        mocker.patch("usbguard_gui.app.time.monotonic", return_value=100.0)
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+        tray_app._open_dialogs[1]._choose(DeviceTarget.BLOCK, persistence)
+
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, self._IR, {})
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+
+        assert tray_app._open_dialogs == {}, "the user asked to keep this device blocked"
+
+    def test_an_external_allow_does_not_suppress_the_next_blocked_return(self, tray_app, fake_client, mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        mocker.patch("usbguard_gui.app.time.monotonic", return_value=100.0)
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+        allowed_rule = self._IR.replace("block ", "allow ", 1)
+        fake_client.device_policy_changed.emit(1, DeviceTarget.BLOCK, DeviceTarget.ALLOW, allowed_rule, 0, {})
+        assert tray_app._open_dialogs == {}
+
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.ALLOW, allowed_rule, {})
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+
+        assert 2 in tray_app._open_dialogs
+        assert fake_client.apply_policy_calls == [], "observing an allow must not apply one"
 
     def test_after_the_cooldown_expires_the_next_landing_prompts_again(self, tray_app, mocker) -> None:
         """The cooldown is a quiet period, not a permanent silence -- a device
@@ -1625,6 +1673,21 @@ class TestDecisionsSurviveAFlappingDevice:
 
         assert tray_app._tray.showMessage.call_count == before, "the user already decided"
         assert len(tray_app._open_dialogs) == 0, "the answered dialog closed; no new one opens"
+
+    def test_a_held_allow_once_does_not_suppress_the_following_blocked_return(self, tray_app, fake_client,
+                                                                              mocker) -> None:
+        mocker.patch("usbguard_gui.app.time.monotonic", return_value=100.0)
+        dialog = self._open(tray_app, mocker)
+        self._remove(tray_app)
+        dialog._choose(DeviceTarget.ALLOW, Persistence.ONCE)
+        tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+        assert tray_app._open_dialogs == {}, "this return consumes the held choice"
+
+        self._remove(tray_app, 301)
+        tray_app._on_device_presence_changed(302, PresenceEvent.INSERT, DeviceTarget.BLOCK, self._IR, {})
+
+        assert 302 in tray_app._open_dialogs, "the held Once was consumed and expired on disconnect"
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
 
     def test_a_choice_made_while_present_applies_immediately(self, tray_app, fake_client, mocker) -> None:
         dialog = self._open(tray_app, mocker)
@@ -2052,6 +2115,22 @@ class TestDeviceListDecisionCoordination:
 
         assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
         assert tray_app._open_dialogs == {}
+
+    @pytest.mark.parametrize("persistence", [Persistence.ONCE, Persistence.ALWAYS])
+    def test_a_device_list_allow_does_not_suppress_the_next_blocked_return(self, tray_app, fake_client, qtbot,
+                                                                           tmp_path, mocker, persistence) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        mocker.patch("usbguard_gui.app.time.monotonic", return_value=100.0)
+        tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+        window = self._window(tray_app, fake_client, qtbot, tmp_path)
+        window._apply(Device.from_dbus(1, IR_RULE), DeviceTarget.ALLOW, persistence)
+        assert tray_app._open_dialogs == {}
+
+        tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.ALLOW, IR_RULE, {})
+        tray_app._on_device_presence_changed(2, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
+
+        assert 2 in tray_app._open_dialogs
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, persistence)]
 
     def test_tray_wires_the_common_decision_handler_into_the_window(self, tray_app, mocker):
         window_class = mocker.patch("usbguard_gui.app.DeviceListWindow")

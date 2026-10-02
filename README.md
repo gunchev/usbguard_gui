@@ -95,6 +95,12 @@ the held Allow never becomes an automatic unlocked authorization. The normal pro
 requires a fresh click when locking is inhibited; its actions remain disabled when
 locking is unavailable. No held choice changes policy while locking is unavailable.
 
+**A blocked return after Allow prompts again immediately.** In the normal dialog
+flow, *Allow Once* expires when the device disconnects, including a hardware reset.
+If it returns blocked, you get a new dialog; the previous Allow is not automatically repeated. Further
+resets update that open dialog rather than stacking new ones. After Close, timeout,
+or Block, repeated appearances stay quiet for the prompt cooldown (30 s by default).
+
 ### HID Devices
 
 Any device that exposes at least one HID interface — a pure keyboard/mouse **or** a composite
