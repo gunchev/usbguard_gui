@@ -7,7 +7,7 @@ import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.device import Device, DeviceTarget, Persistence, enum_name
+from usbguard_gui.device import Device, DeviceTarget, Persistence, enum_name, parse_device_rule
 from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
@@ -162,6 +162,32 @@ class DecisionEngine(QObject):
 
         for device in pending_devices:
             self.show_dialog.emit(device)
+
+    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
+        """Rebuild the permanent-allow cache from a fresh ruleset snapshot."""
+        self._permanent_allow_hashes.clear()
+        for _, rule_str in rules:
+            parsed = parse_device_rule(rule_str)
+            if parsed["rule"] == "allow" and parsed["hash"]:
+                self._permanent_allow_hashes.add(str(parsed["hash"]))
+
+    def _on_list_devices_result(self, devices: list[Device]) -> None:
+        # Opportunistic HID safety net: a fresh snapshot taken while the screen
+        # is actually locked lets any pending HID device in — that is the moment
+        # a newly-attached keyboard is safe to activate (unlocking requires a
+        # password).  The primary path is _on_screensaver_locked(); this only
+        # matters if that signal was missed.  Allowing them while the screen is
+        # still unlocked would hand a just-plugged keyboard keystrokes on an
+        # unlocked session, so the active check stays.  Deferred-unlock cycles
+        # are NOT resolved here — they need the snapshot fetched specifically
+        # for them, see _on_correlated_devices.
+        if self._hid_pending_devices and self._screensaver.active:
+            pending_ids = self._hid_pending_devices
+            self._hid_pending_devices = set()
+            for device_number in pending_ids:
+                if any(d.number == device_number for d in devices):
+                    self._client.apply_device_policy(device_number, DeviceTarget.ALLOW,
+                                                     persistence=Persistence.UNCHANGED)
 
     def _cancel_pending_device(self, device_id: int) -> None:
         """Invalidate deferred work and outstanding snapshots for one incarnation."""

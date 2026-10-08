@@ -1251,7 +1251,7 @@ class TestAutomaticAllowsNeverClearPersistence:
         fake_screensaver._active = True
         tray_app._hid_pending_devices = {1}
 
-        tray_app._on_list_devices_result([Device.from_dbus(1, self._RULE)])
+        tray_app._engine._on_list_devices_result([Device.from_dbus(1, self._RULE)])
 
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         assert fake_client.remove_rule_calls == []

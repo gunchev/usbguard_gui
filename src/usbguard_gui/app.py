@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
 from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine, dialog_identity
-from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, enum_name, parse_device_rule
+from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, enum_name
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
@@ -271,9 +271,9 @@ class USBGuardTrayApp:
             )
 
     def _connect_client_signals(self) -> None:
-        self._client.list_devices_result.connect(self._on_list_devices_result)
+        self._client.list_devices_result.connect(self._engine._on_list_devices_result)
         self._client.list_devices_correlated.connect(self._engine._on_correlated_devices)
-        self._client.list_rules_result.connect(self._on_list_rules_result)
+        self._client.list_rules_result.connect(self._engine._on_list_rules_result)
         self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
         self._client.permanent_clear_failed.connect(self._on_permanent_clear_failed)
         self._client.temporary_apply_failed.connect(self._on_temporary_apply_failed)
@@ -347,31 +347,6 @@ class USBGuardTrayApp:
             QSystemTrayIcon.MessageIcon.Warning,
             10000,
         )
-
-    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
-        self._permanent_allow_hashes.clear()
-        for _, rule_str in rules:
-            parsed = parse_device_rule(rule_str)
-            if parsed["rule"] == "allow" and parsed["hash"]:
-                self._permanent_allow_hashes.add(str(parsed["hash"]))
-
-    def _on_list_devices_result(self, devices: list[Device]) -> None:
-        # Opportunistic HID safety net: a fresh snapshot taken while the screen
-        # is actually locked lets any pending HID device in — that is the moment
-        # a newly-attached keyboard is safe to activate (unlocking requires a
-        # password).  The primary path is _on_screensaver_locked(); this only
-        # matters if that signal was missed.  Allowing them while the screen is
-        # still unlocked would hand a just-plugged keyboard keystrokes on an
-        # unlocked session, so the active check stays.  Deferred-unlock cycles
-        # are NOT resolved here — they need the snapshot fetched specifically
-        # for them, see _on_correlated_devices.
-        if self._hid_pending_devices and self._screensaver.active:
-            pending_ids = self._hid_pending_devices
-            self._hid_pending_devices = set()
-            for device_number in pending_ids:
-                if any(d.number == device_number for d in devices):
-                    self._client.apply_device_policy(device_number, DeviceTarget.ALLOW,
-                                                     persistence=Persistence.UNCHANGED)
 
     def start(self) -> None:
         """Initialize D-Bus connections and start the application.
