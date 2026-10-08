@@ -2570,3 +2570,57 @@ class TestApplyPendingDecisionReturnContract:
         assert tray_app._pending_decisions == {identity: (DeviceTarget.BLOCK, Persistence.ONCE)}, \
             "the choice must survive until locking can run"
         assert fake_client.apply_policy_calls == []
+
+
+class TestDecisionEngineStateSeam:
+    """Phase 3: the tray's decision state is storage owned by DecisionEngine.
+
+    The shims on `USBGuardTrayApp` must be transparent — assignment through
+    the tray reaches the engine and engine-side changes show through the
+    tray — or the handlers (still on their old paths) and the tests poking
+    `tray_app._x` would be reading a private copy instead of the truth.
+    """
+
+    def test_the_engine_starts_with_an_empty_decision_state(self, tray_app) -> None:
+        engine = tray_app._engine
+
+        assert engine._pending_decisions == {}
+        assert engine._last_prompted_at == {}
+        assert engine._hid_pending_devices == set()
+        assert engine._screensaver_pending_devices == set()
+        assert engine._pending_unlock_cycles == {}
+        assert engine._next_unlock_cycle_id == 0
+        assert engine._permanent_allow_hashes == set()
+        assert engine._lock_available is True
+        assert engine._lock_state_confirmed is False
+
+    def test_the_effect_signals_are_declared_for_phase_4(self, tray_app) -> None:
+        for name in ("show_dialog", "dialog_retarget", "notify", "lock_now"):
+            assert hasattr(tray_app._engine, name), f"the engine must expose {name}"
+
+    def test_assignment_through_the_tray_reaches_the_engine(self, tray_app) -> None:
+        tray_app._hid_pending_devices = {7}
+        tray_app._lock_available = False
+        tray_app._next_unlock_cycle_id = 3
+
+        assert tray_app._engine._hid_pending_devices == {7}
+        assert tray_app._engine._lock_available is False
+        assert tray_app._engine._next_unlock_cycle_id == 3
+
+    def test_engine_side_changes_show_through_the_tray(self, tray_app) -> None:
+        tray_app._engine._pending_decisions["x"] = (DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert tray_app._pending_decisions["x"] == (DeviceTarget.BLOCK, Persistence.ONCE)
+
+    def test_the_engine_reads_the_monitors_state_at_construction(
+            self, qapp, fake_client, fake_screensaver, fake_settings) -> None:
+        fake_screensaver._connected = False
+
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp, settings=fake_settings)
+
+        assert app._engine._lock_available is False
+        app._quit()

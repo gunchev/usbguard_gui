@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
+from usbguard_gui.decision import MAX_PENDING_DECISIONS, MAX_PENDING_UNLOCK_CYCLES, DecisionEngine
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
@@ -67,27 +68,12 @@ RECONNECT_MAX_INTERVAL = 60
 # the tray notification time to appear before the screen blanks.
 HID_LOCK_NOTIFY_DELAY_MS = 5000
 
-# Cap on queued screensaver-unlock cycles.  Entries are only consumed by a
-# non-empty list_devices() result (a failed/empty snapshot deliberately does not
-# consume one, so a transient daemon disconnect cannot drop a prompt), which means
-# a daemon that stays down while the user keeps locking/unlocking would otherwise
-# grow the queue for the life of the process.  Dropping the oldest cycle loses only
-# a prompt; the devices stay blocked.
-MAX_PENDING_UNLOCK_CYCLES = 32
-
 # How long to stay quiet about a device identity that has already been prompted
 # for, after dismissal or Block. Allow clears it: if a temporary authorization
 # expires on disconnect, the next blocked insertion needs a fresh prompt.
 # A flapping device is never silently allowed during the cooldown; it stays
 # wherever USBGuard's policy put it. Override with USBGUARD_GUI_PROMPT_COOLDOWN.
 PROMPT_COOLDOWN_SEC = int(os.environ.get("USBGUARD_GUI_PROMPT_COOLDOWN", "30"))
-
-# Cap on decisions held for devices that are off the bus.  They normally drain
-# within a second or two of the next appearance, but a device the user decided
-# about and then threw away would otherwise leave the entry for the life of the
-# process.  Dropping the oldest loses a queued decision; nothing is applied
-# that nobody asked for.
-MAX_PENDING_DECISIONS = 32
 
 # Tray title for the notice raised when a queued `Allow` is handed back to the
 # lock-first flow.  Named so the tests can select the message by identity rather
@@ -127,35 +113,13 @@ class USBGuardTrayApp:
         # file; production (main()) passes nothing and gets the QSettings
         # singleton.  See SettingsProtocol for why this seam exists.
         self._settings: SettingsProtocol = settings if settings is not None else Settings()
+        # Every piece of state a decision is made from lives in the engine
+        # (DecisionEngine); the property shims below keep the handlers — still
+        # in this class until Phase 4 — and the tests on their old paths.
+        self._engine = DecisionEngine(self._client, self._screensaver, self._settings)
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
         self._open_dialog_identities: dict[str, int] = {}
-        self._last_prompted_at: dict[str, float] = {}
-        # Decisions made while the device was off the bus, keyed by identity:
-        # a flapping device is worth deciding about in the gap between one
-        # incarnation and the next.  They stand until that device shows up
-        # again, which is exactly what "block this even though it was only
-        # plugged in for a second" means.
-        self._pending_decisions: dict[str, tuple[DeviceTarget, Persistence]] = {}
-        self._screensaver_pending_devices: set[int] = set()
-        self._hid_pending_devices: set[int] = set()
-        # Outstanding screensaver-unlock cycles, keyed by the request id of the
-        # fetch_devices() call whose snapshot answers that cycle.  A FIFO list
-        # here had to assume that every list_devices_result on the shared signal
-        # belonged to an unlock cycle, and that answers arrived in call order.
-        # Neither holds: the device-list window issues its own list_devices()
-        # calls on that same signal, and D-Bus makes no ordering promise, so a
-        # cycle could be matched against somebody else's (or a later cycle's)
-        # snapshot and its prompt silently dropped.  Keyed by id, a cycle is
-        # resolved only by its own snapshot, arriving in any order.
-        self._pending_unlock_cycles: dict[int, set[int]] = {}
-        self._next_unlock_cycle_id: int = 0
-        self._permanent_allow_hashes: set[str] = set()
-        # Whether screen locking is available (ScreenSaver service reachable).
-        # While False, the HID lock-first flow cannot work and the UI must
-        # refuse all allow/deny actions — see _on_lock_availability_changed.
-        self._lock_available = self._screensaver.connected
-        self._lock_state_confirmed = False
 
         # Reconnect timer with exponential backoff. Single-shot: each failed
         # attempt (connection_changed(False)) reschedules it with a doubled
@@ -176,6 +140,83 @@ class USBGuardTrayApp:
         self._setup_tray()
         self._connect_signals()
         self._connect_client_signals()
+
+    # --- Decision state (Phase 3 seam) --------------------------------------
+    # The engine owns the storage; these shims keep the handlers — still in
+    # this class — and the tests on their old access paths, so nothing moves
+    # twice.  They are deleted again once Phase 4 has moved the handlers out.
+
+    @property
+    def _pending_decisions(self) -> dict[str, tuple[DeviceTarget, Persistence]]:
+        return self._engine._pending_decisions
+
+    @_pending_decisions.setter
+    def _pending_decisions(self, value: dict[str, tuple[DeviceTarget, Persistence]]) -> None:
+        self._engine._pending_decisions = value
+
+    @property
+    def _last_prompted_at(self) -> dict[str, float]:
+        return self._engine._last_prompted_at
+
+    @_last_prompted_at.setter
+    def _last_prompted_at(self, value: dict[str, float]) -> None:
+        self._engine._last_prompted_at = value
+
+    @property
+    def _hid_pending_devices(self) -> set[int]:
+        return self._engine._hid_pending_devices
+
+    @_hid_pending_devices.setter
+    def _hid_pending_devices(self, value: set[int]) -> None:
+        self._engine._hid_pending_devices = value
+
+    @property
+    def _screensaver_pending_devices(self) -> set[int]:
+        return self._engine._screensaver_pending_devices
+
+    @_screensaver_pending_devices.setter
+    def _screensaver_pending_devices(self, value: set[int]) -> None:
+        self._engine._screensaver_pending_devices = value
+
+    @property
+    def _pending_unlock_cycles(self) -> dict[int, set[int]]:
+        return self._engine._pending_unlock_cycles
+
+    @_pending_unlock_cycles.setter
+    def _pending_unlock_cycles(self, value: dict[int, set[int]]) -> None:
+        self._engine._pending_unlock_cycles = value
+
+    @property
+    def _next_unlock_cycle_id(self) -> int:
+        return self._engine._next_unlock_cycle_id
+
+    @_next_unlock_cycle_id.setter
+    def _next_unlock_cycle_id(self, value: int) -> None:
+        self._engine._next_unlock_cycle_id = value
+
+    @property
+    def _permanent_allow_hashes(self) -> set[str]:
+        return self._engine._permanent_allow_hashes
+
+    @_permanent_allow_hashes.setter
+    def _permanent_allow_hashes(self, value: set[str]) -> None:
+        self._engine._permanent_allow_hashes = value
+
+    @property
+    def _lock_available(self) -> bool:
+        return self._engine._lock_available
+
+    @_lock_available.setter
+    def _lock_available(self, value: bool) -> None:
+        self._engine._lock_available = value
+
+    @property
+    def _lock_state_confirmed(self) -> bool:
+        return self._engine._lock_state_confirmed
+
+    @_lock_state_confirmed.setter
+    def _lock_state_confirmed(self, value: bool) -> None:
+        self._engine._lock_state_confirmed = value
 
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(_app_icon(), self._app)
