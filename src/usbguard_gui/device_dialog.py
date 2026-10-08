@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
+from usbguard_gui.gate import BlockReason, block_reason, lock_gate_open
 from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 if TYPE_CHECKING:
@@ -117,7 +118,7 @@ class DeviceActionDialog(QDialog):
         session — exactly what this app exists to prevent.  The app
         therefore refuses to touch the policy at all, not just allows.
         """
-        return self._screensaver is None or self._screensaver.connected
+        return lock_gate_open(self._screensaver)
 
     def _update_actions_enabled(self) -> None:
         enabled = self._actions_enabled()
@@ -217,14 +218,15 @@ class DeviceActionDialog(QDialog):
         back — silently accepting the click would make them believe the
         action was applied.
         """
-        if not self._client.connected:
+        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver))
+        if reason is BlockReason.DAEMON_DISCONNECTED:
             QMessageBox.warning(
                 self,
                 MESSAGE_BOX_TITLE,
                 DAEMON_NOT_CONNECTED_WARNING,
             )
             return True
-        if self._screensaver is not None and not self._screensaver.connected:
+        if reason is BlockReason.LOCK_UNAVAILABLE:
             QMessageBox.warning(
                 self,
                 MESSAGE_BOX_TITLE,

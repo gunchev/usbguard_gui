@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, 
     QVBoxLayout, QWidget
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_is_broader_than_device, rule_matches_device
+from usbguard_gui.gate import BlockReason, block_reason, lock_gate_open
 from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 log = logging.getLogger(__name__)
@@ -350,7 +351,8 @@ class DeviceListWindow(QMainWindow):
         # invariant: `Once` *must* remove, or the old rule survives the click
         # and silently re-asserts at the next reboot -- the exact divergence
         # this action set exists to eliminate.
-        if not self._client.connected:
+        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver))
+        if reason is BlockReason.DAEMON_DISCONNECTED:
             log.warning("Action %s on device %d not applied: USBGuard daemon not connected", target.name, device.number)
             QMessageBox.warning(
                 self,
@@ -362,7 +364,7 @@ class DeviceListWindow(QMainWindow):
         # unavailable: without the ability to lock first, allowing a
         # keyboard would hand an attached-device attacker an unlocked
         # session — exactly what this app exists to prevent.
-        if self._screensaver is not None and not self._screensaver.connected:
+        if reason is BlockReason.LOCK_UNAVAILABLE:
             log.warning(
                 "Action %s on device %d not applied: screen locking is unavailable",
                 target.name,
