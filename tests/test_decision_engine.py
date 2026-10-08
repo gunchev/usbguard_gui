@@ -195,6 +195,17 @@ class TestHIDAllowRequiresLockedScreen:
         assert fake_client.apply_policy_calls == []
         assert tray_app._engine._hid_pending_devices == {1}  # still pending for the lock
 
+    def test_failed_snapshot_leaves_the_pending_hid_set_alone(self, tray_app, fake_client, fake_screensaver) -> None:
+        """`None` is a failed query, not an empty bus: the safety net must not
+        touch the pending set — the devices may still be there."""
+        tray_app._engine._hid_pending_devices = {1}
+        fake_screensaver._active = True  # locked: a real snapshot would have allowed
+
+        fake_client.list_devices_result.emit(None)
+
+        assert tray_app._engine._hid_pending_devices == {1}
+        assert fake_client.apply_policy_calls == []
+
     def test_race_hid_inserted_during_unlock_check(self, tray_app, fake_client, fake_screensaver) -> None:
         """End-to-end repro of the unlock-window race:
 

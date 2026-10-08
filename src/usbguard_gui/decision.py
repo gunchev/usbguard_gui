@@ -172,7 +172,7 @@ class DecisionEngine(QObject):
             if parsed["rule"] == "allow" and parsed["hash"]:
                 self._permanent_allow_hashes.add(str(parsed["hash"]))
 
-    def _on_list_devices_result(self, devices: list[Device]) -> None:
+    def _on_list_devices_result(self, devices: list[Device] | None) -> None:
         # Opportunistic HID safety net: a fresh snapshot taken while the screen
         # is actually locked lets any pending HID device in — that is the moment
         # a newly-attached keyboard is safe to activate (unlocking requires a
@@ -182,6 +182,11 @@ class DecisionEngine(QObject):
         # unlocked session, so the active check stays.  Deferred-unlock cycles
         # are NOT resolved here — they need the snapshot fetched specifically
         # for them, see _on_correlated_devices.
+        if devices is None:
+            # A failed query is not an empty bus: keep the pending set and let
+            # the next snapshot take the safety net.
+            log.debug("list_devices failed transiently — HID safety net unchanged")
+            return
         if self._hid_pending_devices and self._screensaver.active:
             pending_ids = self._hid_pending_devices
             self._hid_pending_devices = set()

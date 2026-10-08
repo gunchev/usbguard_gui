@@ -23,7 +23,7 @@ class _FakeClient(QObject):
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
-    list_devices_result = pyqtSignal(list)
+    list_devices_result = pyqtSignal(object)
     list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)

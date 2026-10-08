@@ -113,6 +113,22 @@ class TestRefreshFlow:
         client.list_rules_result.emit([])
         assert window._model.rowCount() == 0
 
+    def test_transient_failure_keeps_the_previous_table(self, window, client):
+        """`None` (DBusError / daemon away) must not blank the table — only an
+        empty list from a live daemon means "no devices"."""
+        window._request_refresh()
+        client.list_devices_result.emit([_make_device(1)])
+        client.list_rules_result.emit([])
+        assert window._model.rowCount() == 1
+        rules_calls = client.list_rules_calls
+
+        window._request_refresh()          # next refresh cycle
+        client.list_devices_result.emit(None)  # transient failure
+
+        assert window._model.rowCount() == 1, "the previous table survives a hiccup"
+        assert window._refresh_pending is False, "the failed cycle ends"
+        assert client.list_rules_calls == rules_calls, "a failed device list never reaches the rules query"
+
     def test_timer_triggered_refresh_updates_model(self, window, client):
         """Refresh triggered by _schedule_refresh() (timer path) must update model.
 

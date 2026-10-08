@@ -119,7 +119,9 @@ class _DBusThread(AsyncWorkerThread):
     connection_changed = pyqtSignal(bool)
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-    list_devices_result = pyqtSignal(list)
+    # None = the query failed transiently (DBusError or daemon away); a real
+    # list, including an empty one, is the daemon's answer.
+    list_devices_result = pyqtSignal(object)
     list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
@@ -281,7 +283,7 @@ class _DBusThread(AsyncWorkerThread):
             log.error("Failed to list devices (query=%s): %s", query, e)
             if _is_connection_error(e):
                 self._set_connected(False)
-            self.list_devices_result.emit([])
+            self.list_devices_result.emit(None)
 
     async def _do_fetch_devices(self, request_id: int, query: str) -> None:
         """List devices for one specific caller and hand the snapshot back tagged
@@ -698,7 +700,7 @@ class _DBusThread(AsyncWorkerThread):
 
     def list_devices(self, query: str = "match") -> None:
         if not self._connected:
-            self.list_devices_result.emit([])
+            self.list_devices_result.emit(None)
             return
         if self._devices_iface and self._loop:
             self._schedule(self._do_list_devices(query))
@@ -758,7 +760,9 @@ class USBGuardClient(QObject):
     device_presence_changed = pyqtSignal(int, int, int, str, dict)
     device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
     connection_changed = pyqtSignal(bool)
-    list_devices_result = pyqtSignal(list)
+    # None = the query failed transiently (DBusError or daemon away); a real
+    # list, including an empty one, is the daemon's answer.
+    list_devices_result = pyqtSignal(object)
     list_devices_correlated = pyqtSignal(int, list)
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)

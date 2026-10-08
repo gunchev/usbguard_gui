@@ -268,8 +268,16 @@ class DeviceListWindow(QMainWindow):
         self._pending_devices = []
         self._client.list_devices()
 
-    def _on_list_devices_result(self, devices: list[Device]) -> None:
+    def _on_list_devices_result(self, devices: list[Device] | None) -> None:
         if not self._refresh_pending:
+            return
+        if devices is None:
+            # Transient failure (DBusError or daemon away): end this refresh
+            # cycle and keep the table we have.  An empty list means "the
+            # daemon answered: no devices", not "we could not ask" — blanking
+            # on a hiccup is how a busy bus made the window lie.
+            log.warning("Device refresh failed transiently — keeping the previous list")
+            self._refresh_pending = False
             return
         self._pending_devices = devices
         self._client.list_rules()

@@ -120,7 +120,7 @@ src/usbguard_gui/introspection/
 | `connection_changed`      | `bool`                                  | connect / disconnect / `org.usbguard1` NameOwnerChanged |
 | `device_presence_changed` | `int, int, int, str, dict`              | D-Bus DevicePresenceChanged  |
 | `device_policy_changed`   | `int, int, int, str, int, dict`         | D-Bus DevicePolicyChanged    |
-| `list_devices_result`     | `list[Device]`                          | result of `list_devices()`   |
+| `list_devices_result`     | `list[Device] | None`                    | result of `list_devices()`; `None` = transient failure |
 | `list_devices_correlated` | `int, list[Device]`                     | result of `fetch_devices(request_id)` |
 | `list_rules_result`       | `list[tuple[int, str]]`                 | result of `list_rules()`     |
 | `remove_rule_result`      | `bool`                                  | result of `remove_rule()`    |
@@ -136,7 +136,10 @@ window).  `fetch_devices(request_id)` answers on `list_devices_correlated` with
 the caller's id, which is what the screensaver-unlock path needs: each deferred
 cycle resolves only against the snapshot it asked for, so another consumer's
 refresh can never consume it and answers may arrive in any order.  Both always
-terminate — a fast-fail or a `DBusError` still emits an empty list.
+terminate — on the untagged path a fast-fail or a `DBusError` emits `None`, a
+failed query rather than an empty-bus answer, so consumers keep their previous
+state instead of blanking; the correlated path still emits an empty list and the
+unlock cycle re-queues it for retry.
 
 Correlation identifies the request but does not make its snapshot current.
 Removal, explicit decisions and Allow policy changes remove that incarnation's

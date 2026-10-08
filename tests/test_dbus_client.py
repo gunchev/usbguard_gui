@@ -26,7 +26,7 @@ def mock_thread():
             connection_changed = pyqtSignal(bool)
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-            list_devices_result = pyqtSignal(list)
+            list_devices_result = pyqtSignal(object)
             list_devices_correlated = pyqtSignal(int, list)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
@@ -350,7 +350,7 @@ class TestConnectRecyclesPreviousThread:
             connection_changed = pyqtSignal(bool)
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-            list_devices_result = pyqtSignal(list)
+            list_devices_result = pyqtSignal(object)
             list_devices_correlated = pyqtSignal(int, list)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
@@ -663,12 +663,12 @@ class TestDBusThreadFastFail:
 
     def test_list_devices_fast_fails_when_disconnected(self):
         thread = self._build_thread(connected=False)
-        emitted: list[list] = []
+        emitted: list = []
         thread.list_devices_result.connect(lambda v: emitted.append(v))
 
         thread.list_devices()
 
-        assert emitted == [[]]
+        assert emitted == [None]
         thread._loop.call_soon_threadsafe.assert_not_called()
 
     def test_list_devices_schedules_when_connected(self):
@@ -742,12 +742,12 @@ class TestDBusThreadFastFail:
     def test_breaker_recloses_on_reconnection(self):
         """After _connected flips back to True (simulating successful reconnect), calls schedule again."""
         thread = self._build_thread(connected=False)
-        emitted: list[list] = []
+        emitted: list = []
         thread.list_devices_result.connect(lambda v: emitted.append(v))
 
         # Open breaker: fast-fail, no schedule.
         thread.list_devices()
-        assert emitted == [[]]
+        assert emitted == [None]
         thread._loop.call_soon_threadsafe.assert_not_called()
 
         # Simulate successful reconnect (mirrors dbus_client.py:111 in _main()).
@@ -755,7 +755,7 @@ class TestDBusThreadFastFail:
 
         # Closed breaker: call is scheduled, no synthetic empty emit.
         thread.list_devices()
-        assert emitted == [[]]  # still just the earlier fast-fail
+        assert emitted == [None]  # still just the earlier fast-fail
         thread._loop.call_soon_threadsafe.assert_called_once()
         self._close_captured_coros(thread._loop)
 
@@ -902,6 +902,8 @@ class TestConnectionDropNarrowing:
 
         thread = self._thread()
         events = self._events(thread)
+        emitted: list = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
 
         async def raise_error(*args, **kwargs):
             raise DBusError(ErrorType.FAILED, "malformed query")
@@ -912,6 +914,7 @@ class TestConnectionDropNarrowing:
 
         assert thread._connected is True
         assert events == []
+        assert emitted == [None], "a failed query is None, never an empty-bus answer"
 
     def test_list_devices_connection_error_disconnects(self):
         import asyncio
@@ -920,6 +923,8 @@ class TestConnectionDropNarrowing:
 
         thread = self._thread()
         events = self._events(thread)
+        emitted: list = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
 
         async def raise_error(*args, **kwargs):
             raise DBusError(ErrorType.SERVICE_UNKNOWN, "gone")
@@ -930,6 +935,7 @@ class TestConnectionDropNarrowing:
 
         assert thread._connected is False
         assert events == [False]
+        assert emitted == [None]
 
 
 class TestCorrelatedFetchDevices:
