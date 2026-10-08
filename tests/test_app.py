@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fakes import _FakeSettings
 
-from usbguard_gui.app import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE, MAX_PENDING_DECISIONS, \
-    PROMPT_COOLDOWN_SEC, USBGuardTrayApp
+from usbguard_gui.app import MAX_PENDING_DECISIONS, PROMPT_COOLDOWN_SEC, USBGuardTrayApp
+from usbguard_gui.decision import dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
+from usbguard_gui.ui_strings import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -1453,7 +1454,7 @@ class TestReappearingDeviceDoesNotStackDialogs:
         tray_app._show_device_dialog(Device.from_dbus(1, self._IR))
         tray_app._open_dialogs[1].reject()
 
-        identity = USBGuardTrayApp._dialog_identity(Device.from_dbus(1, self._IR))
+        identity = dialog_identity(Device.from_dbus(1, self._IR))
         tray_app._last_prompted_at[identity] = time.monotonic() - (PROMPT_COOLDOWN_SEC + 1)
 
         tray_app._show_device_dialog(Device.from_dbus(2, self._IR))
@@ -1471,7 +1472,7 @@ class TestReappearingDeviceDoesNotStackDialogs:
     def test_reenumeration_keeps_the_identity_key(self) -> None:
         device = Device.from_dbus(1, self._IR)
         reappeared = Device.from_dbus(2, self._IR)
-        assert USBGuardTrayApp._dialog_identity(device) == USBGuardTrayApp._dialog_identity(reappeared)
+        assert dialog_identity(device) == dialog_identity(reappeared)
 
 
 class TestDialogTracksTheNewestInstance:
@@ -1559,7 +1560,7 @@ class TestDecisionsSurviveAFlappingDevice:
 
     @property
     def _ident(self) -> str:
-        return USBGuardTrayApp._dialog_identity(Device.from_dbus(292, self._IR))
+        return dialog_identity(Device.from_dbus(292, self._IR))
 
     def test_removal_keeps_the_dialog_open_but_marks_the_device_gone(self, tray_app, mocker) -> None:
         dialog = self._open(tray_app, mocker)
@@ -2516,7 +2517,7 @@ class TestInsertionEntryGuards:
     def test_a_stale_identity_entry_cannot_retarget_a_dialog_that_is_gone(self, tray_app) -> None:
         """Identity remembers a dialog the map no longer holds — return False, keep both maps intact."""
         device = Device.from_dbus(7, IR_RULE)
-        tray_app._open_dialog_identities[USBGuardTrayApp._dialog_identity(device)] = 99
+        tray_app._open_dialog_identities[dialog_identity(device)] = 99
 
         assert tray_app._retarget_device_dialog(device) is False
         assert tray_app._open_dialogs == {}
@@ -2535,24 +2536,24 @@ class TestApplyPendingDecisionReturnContract:
     """
 
     def test_nothing_queued_falls_through(self, tray_app) -> None:
-        assert tray_app._apply_pending_decision(Device.from_dbus(1, IR_RULE)) is False
+        assert tray_app._engine._apply_pending_decision(Device.from_dbus(1, IR_RULE)) is False
 
     def test_a_queued_block_is_consumed(self, tray_app, fake_client) -> None:
         device = Device.from_dbus(301, IR_RULE)
-        tray_app._pending_decisions[USBGuardTrayApp._dialog_identity(device)] = (DeviceTarget.BLOCK,
-                                                                                 Persistence.ONCE)
+        tray_app._pending_decisions[dialog_identity(device)] = (DeviceTarget.BLOCK,
+                                                                Persistence.ONCE)
 
-        assert tray_app._apply_pending_decision(device) is True
+        assert tray_app._engine._apply_pending_decision(device) is True
         assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
         assert tray_app._pending_decisions == {}
 
     def test_a_queued_hid_allow_is_handed_back_not_consumed(self, tray_app, fake_client, mocker) -> None:
         show = mocker.patch.object(tray_app._tray, "showMessage")
         device = Device.from_dbus(301, KEYBOARD_RULE)
-        tray_app._pending_decisions[USBGuardTrayApp._dialog_identity(device)] = (DeviceTarget.ALLOW,
-                                                                                 Persistence.ONCE)
+        tray_app._pending_decisions[dialog_identity(device)] = (DeviceTarget.ALLOW,
+                                                                Persistence.ONCE)
 
-        assert tray_app._apply_pending_decision(device) is False
+        assert tray_app._engine._apply_pending_decision(device) is False
         assert fake_client.apply_policy_calls == [], "a stale click may never authorize a HID device"
         assert tray_app._pending_decisions == {}, "the handback is not a re-queue"
         assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
@@ -2563,10 +2564,10 @@ class TestApplyPendingDecisionReturnContract:
         fake_screensaver._connected = False
         fake_screensaver.connection_changed.emit(False)
         device = Device.from_dbus(301, IR_RULE)
-        identity = USBGuardTrayApp._dialog_identity(device)
+        identity = dialog_identity(device)
         tray_app._pending_decisions[identity] = (DeviceTarget.BLOCK, Persistence.ONCE)
 
-        assert tray_app._apply_pending_decision(device) is False
+        assert tray_app._engine._apply_pending_decision(device) is False
         assert tray_app._pending_decisions == {identity: (DeviceTarget.BLOCK, Persistence.ONCE)}, \
             "the choice must survive until locking can run"
         assert fake_client.apply_policy_calls == []

@@ -30,3 +30,23 @@ TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE = "Temporary decision not applied"
 PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE = "Permanent rule not saved"
 HID_ATTACHED_NOTICE_TITLE = "New keyboard/HID attached"
 DEVICE_INSERTED_NOTICE_TITLE = "New USB device inserted"
+
+# Title for the notice raised when a queued `Allow` is handed back to the
+# lock-first flow.  Named so the tests can select the message by identity rather
+# than by matching prose: the wording is user-facing and will be reworded, and
+# the tests that police *what it is allowed to claim* should not have to move
+# every time somebody improves a sentence.  What it must never claim is a lock
+# screen -- see `TestTheHandbackWarningPromisesNothingItCannotKeep`.
+HANDBACK_NOTICE_TITLE = "Held Allow cleared no permanent rule"
+
+# Phrasings that would promise the user a live authorization this code path does
+# not control.  Whether the lock screen ever arrives is decided after
+# `_apply_pending_decision` returns, so the notice may describe the policy and
+# must not forecast the event.
+_LIVE_AUTHORIZE_PROMISES = (
+    "will be authorized",
+    "will authorize",
+    "will be allowed",
+    "goes through the lock",
+    "is authorized behind the lock screen for you",
+)

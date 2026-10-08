@@ -16,11 +16,10 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine
+from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine, dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
-from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
 from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, \
@@ -63,7 +62,7 @@ RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 60
 # Milliseconds between the HID warning notification and the actual screen lock.
 # The device stays blocked by USBGuard's default policy during this window (it is
-# only allowed after the screen has locked, in _on_screensaver_locked),
+# only allowed after the screen has locked, in DecisionEngine._on_screensaver_locked),
 # so this delay does not reopen the keystroke-injection window — it just gives
 # the tray notification time to appear before the screen blanks.
 HID_LOCK_NOTIFY_DELAY_MS = 5000
@@ -74,26 +73,6 @@ HID_LOCK_NOTIFY_DELAY_MS = 5000
 # A flapping device is never silently allowed during the cooldown; it stays
 # wherever USBGuard's policy put it. Override with USBGUARD_GUI_PROMPT_COOLDOWN.
 PROMPT_COOLDOWN_SEC = int(os.environ.get("USBGUARD_GUI_PROMPT_COOLDOWN", "30"))
-
-# Tray title for the notice raised when a queued `Allow` is handed back to the
-# lock-first flow.  Named so the tests can select the message by identity rather
-# than by matching prose: the wording is user-facing and will be reworded, and
-# the tests that police *what it is allowed to claim* should not have to move
-# every time somebody improves a sentence.  What it must never claim is a lock
-# screen -- see `TestTheHandbackWarningPromisesNothingItCannotKeep`.
-HANDBACK_NOTICE_TITLE = "Held Allow cleared no permanent rule"
-
-# Phrasings that would promise the user a live authorization this code path does
-# not control.  Whether the lock screen ever arrives is decided after
-# `_apply_pending_decision` returns, so the notice may describe the policy and
-# must not forecast the event.
-_LIVE_AUTHORIZE_PROMISES = (
-    "will be authorized",
-    "will authorize",
-    "will be allowed",
-    "goes through the lock",
-    "is authorized behind the lock screen for you",
-)
 
 
 class USBGuardTrayApp:
@@ -484,7 +463,7 @@ class USBGuardTrayApp:
             # reach a prompt.  A device that comes back already allowed, or a HID
             # device heading for the lock-first flow, used to skip straight past
             # the queue and do the default instead.
-            if self._apply_pending_decision(device):
+            if self._engine._apply_pending_decision(device):
                 return
 
             # Use the target from the signal directly — more reliable than
@@ -494,7 +473,7 @@ class USBGuardTrayApp:
                 return
 
             log.info("INSERT device %d %s %r identity=%s target=%s", device_id, device.id,
-                     device.name or "", self._dialog_identity(device), _enum_name(DeviceTarget, target))
+                     device.name or "", dialog_identity(device), _enum_name(DeviceTarget, target))
 
             # HID devices are handled before the screensaver check so that a
             # newly-attached keyboard can be used to unlock the screen.
@@ -519,7 +498,7 @@ class USBGuardTrayApp:
             # The automatic-flow conjunction lives in _hid_lock_flow_applies.
             # A held HID Allow must obey the contract even when that flow cannot
             # run; _apply_pending_decision then requires a fresh choice instead.
-            hid_special_treatment = self._hid_lock_flow_applies(device)
+            hid_special_treatment = self._engine._hid_lock_flow_applies(device)
             if hid_special_treatment:
                 if self._screensaver.active:
                     log.info(
@@ -579,7 +558,7 @@ class USBGuardTrayApp:
             )
             if target_new == int(DeviceTarget.ALLOW):
                 d = Device.from_dbus(device_id, device_rule)
-                self._last_prompted_at.pop(self._dialog_identity(d), None)
+                self._last_prompted_at.pop(dialog_identity(d), None)
                 # Device was allowed by a permanent rule after the initial block —
                 # dismiss any dialog that opened on the INSERT event.
                 dialog = self._open_dialogs.pop(device_id, None)
@@ -611,30 +590,9 @@ class USBGuardTrayApp:
             message_icon = QSystemTrayIcon.MessageIcon.Information
         self._tray.showMessage(title, body, message_icon, timeout)
 
-    def _on_screensaver_locked(self, active: bool) -> None:
-        """Screen locked: auto-allow pending HID devices so the newly-attached
-        keyboard can be used to unlock."""
-        if not active or not self._hid_pending_devices:
-            return
-
-        pending_ids = list(self._hid_pending_devices)
-        self._hid_pending_devices = set()
-        for device_number in pending_ids:
-            self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
-
-    @staticmethod
-    def _dialog_identity(device: Device) -> str:
-        """A device/topology key that survives re-enumeration on the same port.
-
-        Identical hubs can share a hash and even a serial. Include the parent
-        and port so one live device cannot inherit another's dialog or queued
-        choice. Tuple repr also keeps descriptor delimiters unambiguous.
-        """
-        return repr((device.id, device.serial, device.hash, device.parent_hash, device.via_port))
-
     def _retarget_device_dialog(self, device: Device) -> bool:
         """Synchronize an existing dialog with the current device instance."""
-        identity = self._dialog_identity(device)
+        identity = dialog_identity(device)
         open_number = self._open_dialog_identities.get(identity)
         if open_number is None:
             return False
@@ -648,101 +606,19 @@ class USBGuardTrayApp:
         log.info("Device %s re-appeared as id %d -- the open dialog now targets it", identity, device.number)
         return True
 
-    def _hid_lock_flow_applies(self, device: Device) -> bool:
-        """Would this device take the auto-allow-then-lock path?
-
-        `has_hid_interface()` catches composite devices (HID + MSC) too — any
-        HID interface can send keystrokes.  The flow is off when the user
-        disabled it, and skipped when locking is inhibited or unavailable,
-        because a deferred lock that never fires would auto-allow a keyboard
-        with no password prompt to gate it.
-        """
-        return (device.has_hid_interface()
-                and not self._settings.disable_hid_treatment()
-                and not self._screensaver.inhibited
-                and lock_gate_open(self._lock_available))
-
-    def _apply_pending_decision(self, device: Device) -> bool:
-        """Replay a held decision; return True if it consumes this insertion.
-
-        Called before every other reaction to an insertion, because none of them
-        apply to a device the user has already decided about.  Draining only
-        from the prompt path meant the returns that never reach a prompt --
-        the device came back already allowed, or it is a HID device heading for
-        the lock-first flow -- silently dropped the decision and did the default
-        instead.  For a queued `Block` on a keyboard that default was an
-        auto-allow: the exact opposite of the click.
-
-        The one thing a queued decision may not do is authorize a HID device
-        outside the lock.  That contract is about proving a person is at the
-        machine *now*, and a click made minutes ago while the device was off the
-        bus does not prove it, so a queued `Allow` on such a device is handed
-        back: the lock-first flow authorizes it behind the password prompt, or
-        -- when the device returns already allowed -- there was never a live
-        change left to make.  Which of the two happens is decided after this
-        method returns, so the notice speaks of neither as a promise.
-
-        What the handback does not carry is the other half of `Once`: the
-        standing permanent rule stays.  It is not deferred to the lock either --
-        dropping a permanent `block` widens what the *next* insertion is
-        allowed to do, which is the same stale-click problem one layer down,
-        and the lock-first flow authorizes with `UNCHANGED` so nothing else
-        makes the change.  Rather than lose it silently, the user is told the
-        rule survived and can decide again with the device in hand.
-        """
-        identity = self._dialog_identity(device)
-        pending = self._pending_decisions.get(identity)
-        if pending is None:
-            return False
-        target, persistence = pending
-
-        # The HID contract does not disappear when the automatic lock flow
-        # cannot run. Inhibited/unavailable locking requires a fresh decision,
-        # never an unattended allow from a click made while the device was away.
-        if target is DeviceTarget.ALLOW and device.has_hid_interface() and not self._settings.disable_hid_treatment():
-            del self._pending_decisions[identity]
-            self._last_prompted_at.pop(identity, None)
-            log.info("Device %s is back as id %d with a queued ALLOW, but it is a HID device -- "
-                     "refusing the held authorize and the %s clear is not made",
-                     identity, device.number, persistence.name)
-            self._tray.showMessage(
-                HANDBACK_NOTICE_TITLE,
-                f"Device {device.number}'s held Allow cleared no permanent rule: a device with a "
-                f"keyboard interface is authorized behind the lock screen, never from a click made "
-                f"while it was away.\n"
-                f"Decide again with the device connected if you meant to change it.",
-                QSystemTrayIcon.MessageIcon.Warning,
-                15000,
-            )
-            return False
-
-        if not lock_gate_open(self._lock_available):
-            self._last_prompted_at.pop(identity, None)
-            log.info("Device %s is back, but screen locking is unavailable -- keeping its queued decision", identity)
-            return False
-
-        del self._pending_decisions[identity]
-        if target is DeviceTarget.ALLOW:
-            self._last_prompted_at.pop(identity, None)
-        log.info("Device %s is back as id %d -- applying the queued %s / %s",
-                 identity, device.number, target.name, persistence.name)
-        self._client.apply_device_policy(device.number, target, persistence,
-                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
-        return True
-
     def _show_device_dialog(self, device: Device) -> None:
         # Don't open duplicate dialogs -- and don't re-notify either.  Keyed on
         # the device's identity rather than its daemon number: a device that
         # re-enumerates gets a fresh number every time, so the number-keyed
         # check let a flapping Smart IR Blaster stack notification after
         # notification with a dialog behind each one.
-        identity = self._dialog_identity(device)
+        identity = dialog_identity(device)
 
         # A decision made while this device was off the bus lands here the moment
         # it comes back, before any dedup or cooldown: the user already chose, so
         # there is nothing left to prompt for.  The INSERT handler drains the
         # queue too, for the returns that never reach a dialog at all.
-        if self._apply_pending_decision(device):
+        if self._engine._apply_pending_decision(device):
             return
 
         if self._retarget_device_dialog(device):
@@ -790,7 +666,7 @@ class USBGuardTrayApp:
     def _apply_user_decision(self, device: Device, target: DeviceTarget, persistence: Persistence,
                              device_present: bool = True) -> None:
         """Dispatch a fresh choice from either UI surface, superseding pending work."""
-        identity = self._dialog_identity(device)
+        identity = dialog_identity(device)
         open_number = self._open_dialog_identities.get(identity)
         dialog = self._open_dialogs.get(open_number) if open_number is not None else None
         if dialog is not None:

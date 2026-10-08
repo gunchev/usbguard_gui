@@ -11,6 +11,7 @@ from usbguard_gui.device import Device, DeviceTarget, Persistence
 from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
+from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -35,14 +36,24 @@ MAX_PENDING_UNLOCK_CYCLES = 32
 MAX_PENDING_DECISIONS = 32
 
 
+def dialog_identity(device: Device) -> str:
+    """A device/topology key that survives re-enumeration on the same port.
+
+    Identical hubs can share a hash and even a serial. Include the parent
+    and port so one live device cannot inherit another's dialog or queued
+    choice. Tuple repr also keeps descriptor delimiters unambiguous.
+    """
+    return repr((device.id, device.serial, device.hash, device.parent_hash, device.via_port))
+
+
 class DecisionEngine(QObject):
     """Owns every piece of state a policy decision is made from.
 
-    Phase 3 of the core refactor: storage only.  The tray app still runs the
-    handlers and reaches this state through property shims on itself, so no
-    call path changes yet; the effect signals below are declared for the
-    handlers that move over in Phase 4, one reviewable step at a time
-    against the HID lock-first contract.
+    The tray app reaches this state through property shims on itself; the
+    effect signals below are the engine's only UI surface — dialogs, tray
+    notices and the deferred lock are requests, never actions it performs
+    itself.  Handlers move here one reviewable step at a time against the
+    HID lock-first contract.
     """
 
     show_dialog = pyqtSignal(object)  # Device to prompt for
@@ -195,3 +206,85 @@ class DecisionEngine(QObject):
         self._hid_pending_devices = set()
         for device_number in pending_ids:
             self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
+
+    def _hid_lock_flow_applies(self, device: Device) -> bool:
+        """Would this device take the auto-allow-then-lock path?
+
+        `has_hid_interface()` catches composite devices (HID + MSC) too — any
+        HID interface can send keystrokes.  The flow is off when the user
+        disabled it, and skipped when locking is inhibited or unavailable,
+        because a deferred lock that never fires would auto-allow a keyboard
+        with no password prompt to gate it.
+        """
+        return (device.has_hid_interface()
+                and not self._settings.disable_hid_treatment()
+                and not self._screensaver.inhibited
+                and lock_gate_open(self._lock_available))
+
+    def _apply_pending_decision(self, device: Device) -> bool:
+        """Replay a held decision; return True if it consumes this insertion.
+
+        Called before every other reaction to an insertion, because none of them
+        apply to a device the user has already decided about.  Draining only
+        from the prompt path meant the returns that never reach a prompt --
+        the device came back already allowed, or it is a HID device heading for
+        the lock-first flow -- silently dropped the decision and did the default
+        instead.  For a queued `Block` on a keyboard that default was an
+        auto-allow: the exact opposite of the click.
+
+        The one thing a queued decision may not do is authorize a HID device
+        outside the lock.  That contract is about proving a person is at the
+        machine *now*, and a click made minutes ago while the device was off the
+        bus does not prove it, so a queued `Allow` on such a device is handed
+        back: the lock-first flow authorizes it behind the password prompt, or
+        -- when the device returns already allowed -- there was never a live
+        change left to make.  Which of the two happens is decided after this
+        method returns, so the notice speaks of neither as a promise.
+
+        What the handback does not carry is the other half of `Once`: the
+        standing permanent rule stays.  It is not deferred to the lock either --
+        dropping a permanent `block` widens what the *next* insertion is
+        allowed to do, which is the same stale-click problem one layer down,
+        and the lock-first flow authorizes with `UNCHANGED` so nothing else
+        makes the change.  Rather than lose it silently, the user is told the
+        rule survived and can decide again with the device in hand.
+        """
+        identity = dialog_identity(device)
+        pending = self._pending_decisions.get(identity)
+        if pending is None:
+            return False
+        target, persistence = pending
+
+        # The HID contract does not disappear when the automatic lock flow
+        # cannot run. Inhibited/unavailable locking requires a fresh decision,
+        # never an unattended allow from a click made while the device was away.
+        if target is DeviceTarget.ALLOW and device.has_hid_interface() and not self._settings.disable_hid_treatment():
+            del self._pending_decisions[identity]
+            self._last_prompted_at.pop(identity, None)
+            log.info("Device %s is back as id %d with a queued ALLOW, but it is a HID device -- "
+                     "refusing the held authorize and the %s clear is not made",
+                     identity, device.number, persistence.name)
+            self.notify.emit(
+                HANDBACK_NOTICE_TITLE,
+                f"Device {device.number}'s held Allow cleared no permanent rule: a device with a "
+                f"keyboard interface is authorized behind the lock screen, never from a click made "
+                f"while it was away.\n"
+                f"Decide again with the device connected if you meant to change it.",
+                NOTIFY_WARNING,
+                15000,
+            )
+            return False
+
+        if not lock_gate_open(self._lock_available):
+            self._last_prompted_at.pop(identity, None)
+            log.info("Device %s is back, but screen locking is unavailable -- keeping its queued decision", identity)
+            return False
+
+        del self._pending_decisions[identity]
+        if target is DeviceTarget.ALLOW:
+            self._last_prompted_at.pop(identity, None)
+        log.info("Device %s is back as id %d -- applying the queued %s / %s",
+                 identity, device.number, target.name, persistence.name)
+        self._client.apply_device_policy(device.number, target, persistence,
+                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
+        return True
