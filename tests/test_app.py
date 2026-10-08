@@ -599,7 +599,8 @@ class TestDeviceListDecisionCoordination:
 
         settings = QSettings(str(tmp_path / "device-list.ini"), QSettings.Format.IniFormat)
         window = DeviceListWindow(fake_client, screensaver=tray_app._screensaver, settings=settings,
-                                  decision_handler=tray_app._apply_user_decision)
+                                  decision_handler=tray_app._apply_user_decision,
+                                  app_settings=tray_app._settings)
         qtbot.addWidget(window)
         return window
 

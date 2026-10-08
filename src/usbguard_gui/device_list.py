@@ -186,7 +186,7 @@ class DeviceListWindow(QMainWindow):
                  screensaver: ScreensaverMonitor | None = None,
                  settings: QSettings | None = None,
                  decision_handler: Callable[[Device, DeviceTarget, Persistence], None] | None = None,
-                 app_settings: SettingsProtocol | None = None) -> None:
+                 *, app_settings: SettingsProtocol) -> None:
         super().__init__(parent)
         self._client = client
         self._screensaver = screensaver
@@ -336,9 +336,8 @@ class DeviceListWindow(QMainWindow):
         menu.exec(vp.mapToGlobal(pos))
 
     def _hid_treatment_enabled(self) -> bool:
-        """Special HID treatment as the gate sees it; without injected app
-        settings (unit tests, old callers) it counts on, so the gate is armed."""
-        return self._app_settings is None or not self._app_settings.disable_hid_treatment()
+        """Special HID treatment as the gate sees it."""
+        return not self._app_settings.disable_hid_treatment()
 
     def _action_enabled(self, device: Device, target: DeviceTarget) -> bool:
         """Whether `target` clears the lock gate for `device`.

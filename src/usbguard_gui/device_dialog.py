@@ -32,7 +32,7 @@ class DeviceActionDialog(QDialog):
 
     def __init__(self, device: Device, client: USBGuardClient, parent: QWidget | None = None,
                  timeout: int = DEFAULT_TIMEOUT, screensaver: ScreensaverMonitor | None = None,
-                 settings: SettingsProtocol | None = None) -> None:
+                 *, settings: SettingsProtocol) -> None:
         super().__init__(parent)
         self.device = device
         self._client = client
@@ -113,12 +113,8 @@ class DeviceActionDialog(QDialog):
         self._update_actions_enabled()
 
     def _hid_treatment_enabled(self) -> bool:
-        """Special HID treatment as the gate sees it.
-
-        A dialog built without settings (unit tests, headless use) counts it
-        on — the conservative reading, so the lock gate stays armed.
-        """
-        return self._settings is None or not self._settings.disable_hid_treatment()
+        """Special HID treatment as the gate sees it."""
+        return not self._settings.disable_hid_treatment()
 
     def _allow_enabled(self) -> bool:
         """Whether Allow may be applied from this dialog.

@@ -13,6 +13,11 @@ from usbguard_gui.device_dialog import DeviceActionDialog
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+def _dialog(*args, settings=None, **kwargs) -> DeviceActionDialog:
+    """Build a dialog with a default fake settings store unless a test passes its own."""
+    return DeviceActionDialog(*args, settings=settings if settings is not None else _FakeSettings(), **kwargs)
+
+
 _RULE = (
     'block id 1234:abcd serial "" name "Test Device" '
     'hash "abc123" parent-hash "" via-port "1-1" '
@@ -51,7 +56,7 @@ class TestDialogLockUnavailable:
     @pytest.fixture()
     def dialog_with_screensaver(self, qapp, qtbot):
         screensaver = _FakeScreensaver(connected=False)
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver,
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver,
                                     settings=_FakeSettings())
         qtbot.addWidget(dialog)
         return dialog, screensaver
@@ -62,7 +67,7 @@ class TestDialogLockUnavailable:
 
     def test_buttons_enabled_when_lock_available(self, qapp, qtbot) -> None:
         screensaver = _FakeScreensaver(connected=True)
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver)
         qtbot.addWidget(dialog)
 
         for btn in (dialog._btn_allow_always, dialog._btn_allow_once, dialog._btn_block_once,
@@ -71,7 +76,7 @@ class TestDialogLockUnavailable:
 
     def test_buttons_enabled_without_screensaver(self, qapp, qtbot) -> None:
         """Callers that do not pass a monitor are not gated (old behaviour)."""
-        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        dialog = _dialog(_make_device(), _FakeClient())
         qtbot.addWidget(dialog)
 
         for btn in (dialog._btn_allow_always, dialog._btn_allow_once, dialog._btn_block_once,
@@ -123,7 +128,7 @@ class TestDialogLockUnavailable:
     def test_non_hid_allow_stays_available_while_lock_unavailable(self, qapp, qtbot, mocker) -> None:
         """A non-HID device never relied on the lock, so Allow works."""
         screensaver = _FakeScreensaver(connected=False)
-        dialog = DeviceActionDialog(Device.from_dbus(1, self._HUB_RULE), _FakeClient(),
+        dialog = _dialog(Device.from_dbus(1, self._HUB_RULE), _FakeClient(),
                                     screensaver=screensaver, settings=_FakeSettings())
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
@@ -136,7 +141,7 @@ class TestDialogLockUnavailable:
     def test_treatment_disabled_keeps_hid_allow_while_lock_unavailable(self, qapp, qtbot, mocker) -> None:
         """Special HID treatment off ⇒ the gate is disarmed entirely."""
         screensaver = _FakeScreensaver(connected=False)
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver,
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver,
                                     settings=_FakeSettings(disable_hid_treatment=True))
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
@@ -151,7 +156,7 @@ class TestDialogLockUnavailable:
         """The tray menu toggle must re-arm/disarm an already-open dialog."""
         screensaver = _FakeScreensaver(connected=False)
         settings = _FakeSettings()
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver, settings=settings)
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver, settings=settings)
         qtbot.addWidget(dialog)
         assert not dialog._btn_allow_once.isEnabled()
 
@@ -167,12 +172,12 @@ class TestCloseIsDefaultButton:
     allow action.  This eliminates the need to swallow key events."""
 
     def test_close_button_text(self, qapp, qtbot) -> None:
-        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        dialog = _dialog(_make_device(), _FakeClient())
         qtbot.addWidget(dialog)
         assert dialog._btn_close.text() == "Close"
 
     def test_close_button_is_default(self, qapp, qtbot) -> None:
-        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        dialog = _dialog(_make_device(), _FakeClient())
         qtbot.addWidget(dialog)
         dialog.show()
         qapp.processEvents()
@@ -185,7 +190,7 @@ class TestCloseIsDefaultButton:
         from PyQt6.QtTest import QTest
 
         client = _FakeClient()
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         dialog.show()
         qapp.processEvents()
@@ -203,7 +208,7 @@ class TestCloseIsDefaultButton:
         from PyQt6.QtTest import QTest
 
         client = _FakeClient()
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         dialog.show()
         qapp.processEvents()
@@ -221,7 +226,7 @@ class TestCloseIsDefaultButton:
         from PyQt6.QtTest import QTest
 
         client = _FakeClient()
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         dialog.show()
         qapp.processEvents()
@@ -239,7 +244,7 @@ class TestCloseIsDefaultButton:
         from PyQt6.QtTest import QTest
 
         client = _FakeClient()
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         dialog.show()
         qapp.processEvents()
@@ -264,7 +269,7 @@ class TestDialogConnectionWarning:
     @pytest.mark.parametrize("handler", ["_on_allow_always", "_on_allow_once", "_on_block_once", "_on_block_always"])
     def test_all_actions_warn_when_disconnected(self, qapp, qtbot, mocker, handler: str) -> None:
         client = _FakeClient(connected=False)
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
 
@@ -288,7 +293,7 @@ class TestDialogConnectionWarning:
     def test_all_actions_record_choice_when_connected(self, qapp, qtbot, mocker, handler: str, target: DeviceTarget,
                                                       persistence: Persistence) -> None:
         client = _FakeClient(connected=True)
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
 
@@ -300,7 +305,7 @@ class TestDialogConnectionWarning:
 
     def test_button_labels_are_the_action_set(self, qapp, qtbot) -> None:
         """The labels are the contract the user reads; keep them exact."""
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(connected=True))
+        dialog = _dialog(_make_device(), _FakeClient(connected=True))
         qtbot.addWidget(dialog)
 
         assert [b.text() for b in (dialog._btn_allow_always, dialog._btn_allow_once,
@@ -323,7 +328,7 @@ class TestDismissAppliesNothing:
 
     def test_close_button_applies_nothing(self, qapp, qtbot) -> None:
         client = _FakeClient(connected=True)
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
 
         dialog._on_close()
@@ -334,7 +339,7 @@ class TestDismissAppliesNothing:
     def test_close_is_never_blocked(self, qapp, qtbot, mocker) -> None:
         """Closing has no action that could fail, so it must never warn or stick."""
         client = _FakeClient(connected=False)
-        dialog = DeviceActionDialog(_make_device(), client)
+        dialog = _dialog(_make_device(), client)
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
 
@@ -345,7 +350,7 @@ class TestDismissAppliesNothing:
 
     def test_timeout_applies_nothing(self, qapp, qtbot) -> None:
         client = _FakeClient(connected=True)
-        dialog = DeviceActionDialog(_make_device(), client, timeout=1)
+        dialog = _dialog(_make_device(), client, timeout=1)
         qtbot.addWidget(dialog)
 
         dialog._tick()
@@ -358,7 +363,7 @@ class TestDialogRetargeting:
     """Device details and presence follow the instance the action will target."""
 
     def test_retarget_updates_the_visible_details_and_presence(self, qapp, qtbot) -> None:
-        dialog = DeviceActionDialog(Device.from_dbus(1, _RULE), _FakeClient())
+        dialog = _dialog(Device.from_dbus(1, _RULE), _FakeClient())
         qtbot.addWidget(dialog)
         dialog.set_device_present(False)
         rule = _RULE.replace('name "Test Device"', 'name "Current Device"').replace('serial ""', 'serial "S1"')
@@ -390,7 +395,7 @@ class TestCleanupIsIdempotent:
 
     def test_close_then_reject_survives_the_second_finished(self, qapp) -> None:
         screensaver = _FakeScreensaver()
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver)
         dialog.show()
         qapp.processEvents()
 
@@ -402,7 +407,7 @@ class TestCleanupIsIdempotent:
 
     def test_the_monitor_is_detached_exactly_once(self, qapp) -> None:
         screensaver = _FakeScreensaver()
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver)
         dialog.show()
         qapp.processEvents()
         assert screensaver.receivers(screensaver.connection_changed) == 1
@@ -414,7 +419,7 @@ class TestCleanupIsIdempotent:
         assert screensaver.receivers(screensaver.connection_changed) == 0
 
     def test_cleanup_without_a_screensaver_is_still_safe(self, qapp) -> None:
-        dialog = DeviceActionDialog(_make_device(), _FakeClient())
+        dialog = _dialog(_make_device(), _FakeClient())
         dialog.show()
         qapp.processEvents()
         dialog.close()
@@ -435,7 +440,7 @@ class TestTheAbsentDeviceNoticeSurvivesTheCountdown:
 
     @pytest.fixture()
     def dialog(self, qapp, qtbot):
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), timeout=30)
+        dialog = _dialog(_make_device(), _FakeClient(), timeout=30)
         qtbot.addWidget(dialog)
         return dialog
 
@@ -484,7 +489,7 @@ class TestTheAwayNoticeKeepsTheClockVisible:
 
     @pytest.fixture()
     def dialog(self, qapp, qtbot):
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), timeout=30)
+        dialog = _dialog(_make_device(), _FakeClient(), timeout=30)
         qtbot.addWidget(dialog)
         return dialog
 

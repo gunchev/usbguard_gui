@@ -711,10 +711,12 @@ class TestCallSitesPassRawRule:
     falls back to the upserting code path and the bug returns."""
 
     def _window_and_device(self, qtbot):
+        from fakes import _FakeSettings
+
         from usbguard_gui.device_list import DeviceListWindow
 
         client = _RecordingClient()
-        window = DeviceListWindow(client, screensaver=_LockAvailable())
+        window = DeviceListWindow(client, screensaver=_LockAvailable(), app_settings=_FakeSettings())
         qtbot.addWidget(window)
         return window, client, Device.from_dbus(9, BLOCKED_HUB)
 

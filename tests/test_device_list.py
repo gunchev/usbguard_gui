@@ -47,7 +47,7 @@ def settings_store(tmp_path) -> QSettings:
 
 @pytest.fixture()
 def window(client, screensaver, settings_store, qtbot):
-    w = DeviceListWindow(client, screensaver=screensaver, settings=settings_store)
+    w = DeviceListWindow(client, screensaver=screensaver, settings=settings_store, app_settings=_FakeSettings())
     qtbot.addWidget(w)
     return w
 
