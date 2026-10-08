@@ -6,7 +6,7 @@ import os
 from typing import ClassVar
 
 import pytest
-from fakes import _FakeClient, _FakeScreensaver
+from fakes import _FakeClient, _FakeScreensaver, _FakeSettings
 from PyQt6.QtCore import QSettings, Qt
 
 from usbguard_gui import device_list
@@ -228,25 +228,80 @@ class TestApplyConnectionWarning:
 
 
 class TestApplyLockUnavailable:
-    """When screen locking is unavailable, every policy action must be
-    refused with a warning — the app cannot uphold its lock-first contract,
-    so it does not touch the policy at all."""
+    """When screen locking is unavailable only a HID allow is refused.
 
-    @pytest.mark.parametrize("target,persistence",
-                             [(DeviceTarget.ALLOW, Persistence.ALWAYS), (DeviceTarget.ALLOW, Persistence.ONCE),
-                              (DeviceTarget.BLOCK, Persistence.ONCE), (DeviceTarget.BLOCK, Persistence.ALWAYS)])
-    def test_apply_warns_and_does_not_apply_when_lock_unavailable(self, window, client, screensaver, mocker,
-                                                                  target: DeviceTarget,
-                                                                  persistence: Persistence) -> None:
+    Block always applies — denying a suspicious device must not depend on
+    the locker — and a non-HID allow never needed one.  Special HID
+    treatment off disarms the gate entirely."""
+
+    _NON_HID_RULE = (
+        'block id 1234:abcd serial "" name "Test Hub" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        "with-interface ff:00:00 with-connect-type hotplug"
+    )
+
+    @pytest.mark.parametrize("persistence", [Persistence.ALWAYS, Persistence.ONCE])
+    def test_hid_allow_refused_and_not_applied_when_lock_unavailable(self, window, client, screensaver, mocker,
+                                                                     persistence: Persistence) -> None:
         from PyQt6.QtWidgets import QMessageBox
 
         screensaver._connected = False
         warn = mocker.patch.object(QMessageBox, "warning")
 
-        window._apply(_make_device(1), target, persistence=persistence)
+        window._apply(_make_device(1), DeviceTarget.ALLOW, persistence=persistence)
 
         assert warn.called
         assert client.apply_policy_calls == []
+
+    @pytest.mark.parametrize("persistence", [Persistence.ONCE, Persistence.ALWAYS])
+    def test_block_applies_while_lock_unavailable(self, window, client, screensaver, mocker,
+                                                  persistence: Persistence) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        screensaver._connected = False
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(_make_device(1), DeviceTarget.BLOCK, persistence=persistence)
+
+        assert not warn.called
+        assert client.apply_policy_calls == [(1, DeviceTarget.BLOCK, persistence)]
+
+    def test_non_hid_allow_applies_while_lock_unavailable(self, window, client, screensaver, mocker) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        screensaver._connected = False
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        window._apply(Device.from_dbus(1, self._NON_HID_RULE), DeviceTarget.ALLOW,
+                      persistence=Persistence.ONCE)
+
+        assert not warn.called
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.ONCE)]
+
+    def test_treatment_disabled_keeps_hid_allow_while_lock_unavailable(self, client, screensaver, settings_store,
+                                                                       qtbot, mocker) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        w = DeviceListWindow(client, screensaver=screensaver, settings=settings_store,
+                             app_settings=_FakeSettings(disable_hid_treatment=True))
+        qtbot.addWidget(w)
+        screensaver._connected = False
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        w._apply(_make_device(1), DeviceTarget.ALLOW, persistence=Persistence.ONCE)
+
+        assert not warn.called
+        assert client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.ONCE)]
+
+    @pytest.mark.parametrize("target", [DeviceTarget.BLOCK, DeviceTarget.REJECT])
+    @pytest.mark.parametrize("is_hid", [True, False])
+    def test_action_enabled_matrix(self, window, screensaver, target: DeviceTarget, is_hid: bool) -> None:
+        """Menu gating mirrors the dialog: only HID Allow is refused."""
+        screensaver._connected = False
+        device = _make_device(1) if is_hid else Device.from_dbus(1, self._NON_HID_RULE)
+
+        expected = not (is_hid and target is DeviceTarget.ALLOW)
+        assert window._action_enabled(device, target) is expected
 
     def test_apply_without_warning_when_lock_available(self, window, client, screensaver, mocker):
         from PyQt6.QtWidgets import QMessageBox

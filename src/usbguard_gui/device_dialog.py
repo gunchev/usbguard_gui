@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
-from usbguard_gui.gate import BlockReason, block_reason, lock_gate_open
+from usbguard_gui.gate import BlockReason, block_reason, hid_allow_gated, lock_gate_open
 from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 if TYPE_CHECKING:
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     from usbguard_gui.dbus_client import USBGuardClient
     from usbguard_gui.screensaver import ScreensaverMonitor
+    from usbguard_gui.settings import SettingsProtocol
 
 # Auto-close timeout in seconds (blocks device if no user response)
 DEFAULT_TIMEOUT = 30
@@ -30,11 +31,13 @@ class DeviceActionDialog(QDialog):
     """
 
     def __init__(self, device: Device, client: USBGuardClient, parent: QWidget | None = None,
-                 timeout: int = DEFAULT_TIMEOUT, screensaver: ScreensaverMonitor | None = None) -> None:
+                 timeout: int = DEFAULT_TIMEOUT, screensaver: ScreensaverMonitor | None = None,
+                 settings: SettingsProtocol | None = None) -> None:
         super().__init__(parent)
         self.device = device
         self._client = client
         self._screensaver = screensaver
+        self._settings = settings
         self._result_target: DeviceTarget | None = None
         self._persistence: Persistence = Persistence.UNCHANGED
         self._remaining = timeout
@@ -96,8 +99,8 @@ class DeviceActionDialog(QDialog):
         # deciding, instead of triggering an allow action.
         self._btn_close.setDefault(True)
 
-        # Track lock availability so the buttons follow it while the dialog
-        # is open.  Without the monitor (old callers) no gating happens.
+        # Track lock availability so the Allow buttons follow it while the
+        # dialog is open.  Without the monitor (old callers) no gating happens.
         # Connected as a bound method (not a lambda) and explicitly torn
         # down in _on_finished_cleanup: a lambda closing over `self` gives
         # PyQt no way to auto-disconnect when the dialog is destroyed, which
@@ -109,22 +112,35 @@ class DeviceActionDialog(QDialog):
         self.finished.connect(self._on_finished_cleanup)
         self._update_actions_enabled()
 
-    def _actions_enabled(self) -> bool:
-        """Whether any policy action may be applied from this dialog.
+    def _hid_treatment_enabled(self) -> bool:
+        """Special HID treatment as the gate sees it.
 
-        All allow/deny functionality is disabled while screen locking is
-        unavailable: without the ability to lock first, allowing a
-        keyboard would hand an attached-device attacker an unlocked
-        session — exactly what this app exists to prevent.  The app
-        therefore refuses to touch the policy at all, not just allows.
+        A dialog built without settings (unit tests, headless use) counts it
+        on — the conservative reading, so the lock gate stays armed.
         """
-        return lock_gate_open(self._screensaver)
+        return self._settings is None or not self._settings.disable_hid_treatment()
+
+    def _allow_enabled(self) -> bool:
+        """Whether Allow may be applied from this dialog.
+
+        Only a lock-gated HID allow is refused (see `gate.hid_allow_gated`):
+        without a working screen lock, allowing a keyboard would hand an
+        attached-device attacker an unlocked session — exactly what this app
+        exists to prevent.  Block, Reject and non-HID allows need no lock, so
+        they stay available while the locker is down; denying a suspicious
+        device must not depend on infrastructure that is itself broken.
+        """
+        return not hid_allow_gated(lock_gate_open(self._screensaver), is_hid=self.device.has_hid_interface(),
+                                   hid_treatment_enabled=self._hid_treatment_enabled())
 
     def _update_actions_enabled(self) -> None:
-        enabled = self._actions_enabled()
-        for button in (self._btn_allow_always, self._btn_allow_once, self._btn_block_once,
-                       self._btn_block_always, self._btn_close):
-            button.setEnabled(enabled)
+        allow_enabled = self._allow_enabled()
+        for button in (self._btn_allow_always, self._btn_allow_once):
+            button.setEnabled(allow_enabled)
+
+    def refresh_actions_enabled(self) -> None:
+        """Recompute the button states — e.g. after the HID-treatment toggle."""
+        self._update_actions_enabled()
 
     def _update_device_details(self) -> None:
         while self._device_form.rowCount():
@@ -141,6 +157,7 @@ class DeviceActionDialog(QDialog):
         """Retarget the dialog and its displayed details to a present instance."""
         self.device = device
         self._update_device_details()
+        self._update_actions_enabled()
         self.set_device_present(True)
 
     def set_device_present(self, present: bool) -> None:
@@ -211,14 +228,17 @@ class DeviceActionDialog(QDialog):
             return
         self._timeout_label.setText(f"Auto-close in {self._remaining}s (no action is applied)")
 
-    def _action_blocked(self) -> bool:
+    def _action_blocked(self, target: DeviceTarget) -> bool:
         """Warn and return True if the action cannot be applied.
 
         The dialog stays open so the user can retry once the connection is
         back — silently accepting the click would make them believe the
-        action was applied.
+        action was applied.  The lock half refuses only a HID allow while
+        the screen cannot be locked; Block and Reject need no lock.
         """
-        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver))
+        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver), target=target,
+                              is_hid=self.device.has_hid_interface(),
+                              hid_treatment_enabled=self._hid_treatment_enabled())
         if reason is BlockReason.DAEMON_DISCONNECTED:
             QMessageBox.warning(
                 self,
@@ -237,7 +257,7 @@ class DeviceActionDialog(QDialog):
 
     def _choose(self, target: DeviceTarget, persistence: Persistence) -> None:
         """Record the decision and close, unless the action cannot be applied."""
-        if self._action_blocked():
+        if self._action_blocked(target):
             return
         self._result_target = target
         self._persistence = persistence

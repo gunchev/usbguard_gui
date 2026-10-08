@@ -145,6 +145,10 @@ class USBGuardTrayApp:
 
     def _on_disable_hid_toggled(self, checked: bool) -> None:
         self._settings.set_disable_hid_treatment(checked)
+        # The gate arms and disarms with this toggle, so any dialog already
+        # open must follow it — the Allow buttons are stale otherwise.
+        for dialog in self._open_dialogs.values():
+            dialog.refresh_actions_enabled()
 
     def _show_about(self) -> None:
         QMessageBox.about(
@@ -436,7 +440,8 @@ class USBGuardTrayApp:
             5000,
         )
 
-        dialog = DeviceActionDialog(device, client=self._client, screensaver=self._screensaver)
+        dialog = DeviceActionDialog(device, client=self._client, screensaver=self._screensaver,
+                                    settings=self._settings)
         self._open_dialogs[device.number] = dialog
         self._open_dialog_identities[identity] = device.number
 
@@ -473,7 +478,8 @@ class USBGuardTrayApp:
     def _show_device_list(self) -> None:
         if self._device_list_window is None:
             self._device_list_window = DeviceListWindow(self._client, screensaver=self._screensaver,
-                                                        decision_handler=self._apply_user_decision)
+                                                        decision_handler=self._apply_user_decision,
+                                                        app_settings=self._settings)
         self._device_list_window.show()
         self._device_list_window.raise_()
         self._device_list_window.activateWindow()

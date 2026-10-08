@@ -92,8 +92,9 @@ stale-click problem the lock exists to refuse. The tray raises *"Held Allow clea
 no permanent rule"* so the difference is visible, and you can decide again with
 the device connected. This also applies while locking is inhibited or unavailable:
 the held Allow never becomes an automatic unlocked authorization. The normal prompt
-requires a fresh click when locking is inhibited; its actions remain disabled when
-locking is unavailable. No held choice changes policy while locking is unavailable.
+requires a fresh click when locking is inhibited; while locking is unavailable its
+Allow stays disabled for HID devices (Block and Reject still work). A held Block, or
+a held Allow on a non-HID device, applies as soon as the device is back.
 
 **A blocked return after Allow prompts again immediately.** In the normal dialog
 flow, *Allow Once* expires when the device disconnects, including a hardware reset.
@@ -123,24 +124,28 @@ The entire HID special-treatment flow can be disabled via **Disable special HID 
 treatment** in the tray right-click menu (persisted in `~/.config/usbguard_gui/general.conf`).
 When disabled, HID devices get the same prompt dialog as any other device: nothing is
 allowed automatically, **but the lock-first guarantee goes with it** — you can then allow
-a keyboard while the session stays unlocked, and a newly-attached keyboard cannot be used
-to unlock the screen. "Different", not "more secure": keep the treatment enabled unless
-you specifically want prompt-driven HID handling.
+a keyboard while the session stays unlocked, a newly-attached keyboard cannot be used
+to unlock the screen, and Allow keeps working even while screen locking is unavailable
+(the gate is disarmed together with the treatment). "Different", not "more secure": keep
+the treatment enabled unless you specifically want prompt-driven HID handling.
 
 ### When Screen Locking Is Not Possible
 
 The lock-first design assumes the screen *can* be locked. Two situations break that
-assumption and the app refuses to act rather than pretending:
+assumption and the app refuses the one click that needs the lock rather than pretending:
 
 - **No screen-lock service** (the `org.freedesktop.ScreenSaver` service is unreachable —
   a locker-less or unusual session). The tray shows *"Screen locking unavailable"* and
-  **all allow/deny actions are disabled** — in the dialog and in the device list. Allowing
-  a keyboard without being able to lock first would hand an attacker an unlocked session,
-  so the app will not touch the policy at all. Devices stay blocked by USBGuard's own
-  policy. The tray announces it again when locking becomes available.
-  A locker restart invalidates the old lock state; actions are re-enabled only
-  after the replacement service's current state has been fetched. An earlier
-  locked state cannot automatically authorize a device during the restart.
+  **Allow is disabled for HID devices** — in the dialog and in the device list — while
+  special HID treatment is enabled: allowing a keyboard without being able to lock first
+  would hand an attacker an unlocked session. Everything else stays available: Block and
+  Reject always work, non-HID devices can still be allowed, and with special HID
+  treatment turned off nothing is gated at all (the lock-outage notices become log-only).
+  Devices stay blocked by USBGuard's own policy. The tray announces it again when
+  locking becomes available. A locker restart invalidates the old lock state; HID
+  allows are re-enabled only after the replacement service's current state has been
+  fetched. An earlier locked state cannot automatically authorize a device during the
+  restart.
 - **A logind idle/block inhibitor is held** (a `dnf`/`rpm` transaction, a *"Prevent screen
   lock"* toggle, `systemd-inhibit --what=idle`, …). The auto-allow-then-lock flow is
   skipped and the HID device falls through to the normal prompt path, where it is **not**

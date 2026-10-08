@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, 
     QVBoxLayout, QWidget
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_is_broader_than_device, rule_matches_device
-from usbguard_gui.gate import BlockReason, block_reason, lock_gate_open
+from usbguard_gui.gate import BlockReason, block_reason, hid_allow_gated, lock_gate_open
 from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 log = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from usbguard_gui.dbus_client import USBGuardClient
     from usbguard_gui.screensaver import ScreensaverMonitor
+    from usbguard_gui.settings import SettingsProtocol
 
 COLUMNS = ["#", "Status", "Persistence", "USB ID", "Name", "Serial", "Port", "Interfaces", "Type",
            "Connection"]
@@ -184,11 +185,13 @@ class DeviceListWindow(QMainWindow):
     def __init__(self, client: USBGuardClient, parent: QWidget | None = None,
                  screensaver: ScreensaverMonitor | None = None,
                  settings: QSettings | None = None,
-                 decision_handler: Callable[[Device, DeviceTarget, Persistence], None] | None = None) -> None:
+                 decision_handler: Callable[[Device, DeviceTarget, Persistence], None] | None = None,
+                 app_settings: SettingsProtocol | None = None) -> None:
         super().__init__(parent)
         self._client = client
         self._screensaver = screensaver
         self._decision_handler = decision_handler
+        self._app_settings = app_settings
         # Window-geometry store, injected so tests can point it at a temp file
         # instead of the developer's ~/.config/usbguard_gui/device_list.conf
         # (which test runs would otherwise overwrite with offscreen geometry).
@@ -317,10 +320,29 @@ class DeviceListWindow(QMainWindow):
         for index, (label, target, persistence) in enumerate(self._menu_actions(device)):
             if index == 2:
                 menu.addSeparator()
-            menu.addAction(label, lambda _checked=False, t=target, p=persistence: self._apply(device, t, p))
+            action = menu.addAction(label, lambda _checked=False, t=target, p=persistence: self._apply(device, t, p))
+            if action is not None and not self._action_enabled(device, target):
+                action.setEnabled(False)
         vp = self._view.viewport()
         assert vp is not None
         menu.exec(vp.mapToGlobal(pos))
+
+    def _hid_treatment_enabled(self) -> bool:
+        """Special HID treatment as the gate sees it; without injected app
+        settings (unit tests, old callers) it counts on, so the gate is armed."""
+        return self._app_settings is None or not self._app_settings.disable_hid_treatment()
+
+    def _action_enabled(self, device: Device, target: DeviceTarget) -> bool:
+        """Whether `target` clears the lock gate for `device`.
+
+        Mirrors the dialog: only a HID allow is refused while the screen
+        cannot be locked (and only with special HID treatment on); Block,
+        Reject and non-HID allows always work.
+        """
+        if target is not DeviceTarget.ALLOW:
+            return True
+        return not hid_allow_gated(lock_gate_open(self._screensaver), is_hid=device.has_hid_interface(),
+                                   hid_treatment_enabled=self._hid_treatment_enabled())
 
     #: The action set, shared verbatim with the tray dialog.
     _ACTION_SET: tuple[tuple[str, DeviceTarget, Persistence], ...] = (
@@ -351,7 +373,12 @@ class DeviceListWindow(QMainWindow):
         # invariant: `Once` *must* remove, or the old rule survives the click
         # and silently re-asserts at the next reboot -- the exact divergence
         # this action set exists to eliminate.
-        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver))
+        # The lock gate refuses only a HID allow while the screen cannot be
+        # locked (and only with special HID treatment on): Block and Reject
+        # need no lock and must stay available while the locker is down.
+        reason = block_reason(self._client.connected, lock_gate_open(self._screensaver), target=target,
+                              is_hid=device.has_hid_interface(),
+                              hid_treatment_enabled=self._hid_treatment_enabled())
         if reason is BlockReason.DAEMON_DISCONNECTED:
             log.warning("Action %s on device %d not applied: USBGuard daemon not connected", target.name, device.number)
             QMessageBox.warning(
@@ -360,10 +387,6 @@ class DeviceListWindow(QMainWindow):
                 DAEMON_NOT_CONNECTED_WARNING,
             )
             return
-        # All allow/deny functionality is disabled while screen locking is
-        # unavailable: without the ability to lock first, allowing a
-        # keyboard would hand an attached-device attacker an unlocked
-        # session — exactly what this app exists to prevent.
         if reason is BlockReason.LOCK_UNAVAILABLE:
             log.warning(
                 "Action %s on device %d not applied: screen locking is unavailable",

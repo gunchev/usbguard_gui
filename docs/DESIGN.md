@@ -32,6 +32,7 @@ dependencies = [
 | `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow/Block × Always/Once prompt |
 | `device_list.py`   | `DeviceListWindow` (+ table models)         | Device list window                         |
 | `settings.py`      | `SettingsProtocol`, `Settings`              | Settings seam (Protocol) + QSettings-backed singleton |
+| `gate.py`          | `block_reason()`, `lock_gate_open()`, `hid_allow_gated()` | Single action-gate authority: daemon first, then the narrow lock rule (HID allow × special treatment × lock unavailable) |
 
 ## Architecture
 

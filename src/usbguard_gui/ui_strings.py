@@ -17,8 +17,8 @@ DAEMON_NOT_CONNECTED_WARNING = (
     "try again once the connection is restored."
 )
 LOCK_UNAVAILABLE_WARNING = (
-    "Screen locking is unavailable — device actions are disabled.\n"
-    "Devices remain blocked by USBGuard's policy."
+    "Screen locking is unavailable — allowing this HID device is disabled.\n"
+    "Block and Reject still work; devices remain blocked by USBGuard's policy."
 )
 
 # Tray notification titles (the first argument of showMessage).

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from usbguard_gui.gate import BlockReason, block_reason, lock_gate_open
+import pytest
+
+from usbguard_gui.device import DeviceTarget
+from usbguard_gui.gate import BlockReason, block_reason, hid_allow_gated, lock_gate_open
 
 
 class TestLockGateOpen:
@@ -19,23 +22,52 @@ class TestLockGateOpen:
     def test_a_disconnected_monitor_is_closed(self) -> None:
         assert lock_gate_open(SimpleNamespace(connected=False)) is False
 
-    def test_the_trays_cached_bool_passes_through(self) -> None:
+    def test_the_engines_cached_bool_passes_through(self) -> None:
         assert lock_gate_open(True) is True
         assert lock_gate_open(False) is False
 
 
+class TestHidAllowGated:
+    """The narrow lock rule: HID allow, treatment on, lock down — and nothing else."""
+
+    @pytest.mark.parametrize(
+        "lock_gate,is_hid,treatment,expected",
+        [
+            (False, True, True, True),    # the one refused click
+            (False, True, False, False),  # treatment off ⇒ nothing gated
+            (False, False, True, False),  # non-HID never needed the lock
+            (True, True, True, False),    # lock up ⇒ nothing gated
+            (True, False, False, False),
+            (False, False, False, False),
+        ],
+    )
+    def test_table(self, lock_gate: bool, is_hid: bool, treatment: bool, expected: bool) -> None:
+        assert hid_allow_gated(lock_gate, is_hid=is_hid, hid_treatment_enabled=treatment) is expected
+
+
 class TestBlockReason:
-    """`block_reason` decides, in the order the views always checked."""
+    """The full decision table: connected / locked / HID / settings / target."""
 
-    def test_a_disconnected_daemon_blocks_first(self) -> None:
-        """Even with the lock down too, the transport is the answer the user gets."""
-        assert block_reason(daemon_connected=False, lock_gate=False) is BlockReason.DAEMON_DISCONNECTED
-
-    def test_a_down_lock_blocks_an_otherwise_healthy_click(self) -> None:
-        assert block_reason(daemon_connected=True, lock_gate=False) is BlockReason.LOCK_UNAVAILABLE
-
-    def test_a_healthy_setup_blocks_nothing(self) -> None:
-        assert block_reason(daemon_connected=True, lock_gate=True) is None
-
-    def test_a_down_lock_never_masks_a_disconnected_daemon(self) -> None:
-        assert block_reason(daemon_connected=False, lock_gate=True) is BlockReason.DAEMON_DISCONNECTED
+    @pytest.mark.parametrize(
+        "daemon,lock,target,is_hid,treatment,expected",
+        [
+            # The daemon is checked first, in the order the views always did.
+            (False, True, DeviceTarget.ALLOW, True, True, BlockReason.DAEMON_DISCONNECTED),
+            (False, False, DeviceTarget.BLOCK, True, True, BlockReason.DAEMON_DISCONNECTED),
+            (False, False, DeviceTarget.ALLOW, False, False, BlockReason.DAEMON_DISCONNECTED),
+            # The lock refuses exactly one click: HID allow, treatment on, lock down.
+            (True, False, DeviceTarget.ALLOW, True, True, BlockReason.LOCK_UNAVAILABLE),
+            # Every other combination clears — Block/Reject need no lock,
+            # non-HID allows never relied on one, treatment off disarms all of it.
+            (True, False, DeviceTarget.ALLOW, True, False, None),
+            (True, False, DeviceTarget.ALLOW, False, True, None),
+            (True, False, DeviceTarget.BLOCK, True, True, None),
+            (True, False, DeviceTarget.REJECT, True, True, None),
+            (True, True, DeviceTarget.ALLOW, True, True, None),
+            (True, False, DeviceTarget.ALLOW, False, False, None),
+        ],
+    )
+    def test_table(self, daemon: bool, lock: bool, target: DeviceTarget, is_hid: bool, treatment: bool,
+                   expected: BlockReason | None) -> None:
+        assert block_reason(daemon, lock, target=target, is_hid=is_hid,
+                            hid_treatment_enabled=treatment) is expected

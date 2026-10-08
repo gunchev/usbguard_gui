@@ -236,7 +236,12 @@ class DecisionEngine(QObject):
 
     def _on_lock_availability_changed(self, available: bool) -> None:
         """Track lock availability; notice the user on the first confirmed
-        report of a problem or on an actual transition."""
+        report of a problem or on an actual transition.
+
+        With special HID treatment disabled nothing is lock-gated, so the
+        changes are log-only then — a tray notice about actions being
+        unavailable would describe a gate that is not armed.
+        """
         # The monitor reports its state repeatedly (initial report plus
         # every failed retry), so notify only on the first confirmed report
         # or an actual transition.
@@ -244,18 +249,23 @@ class DecisionEngine(QObject):
         first = not self._lock_state_confirmed
         self._lock_available = available
         self._lock_state_confirmed = True
+        if self._settings.disable_hid_treatment():
+            if changed or first:
+                log.info("Screen locking is %s (special HID treatment disabled — nothing is gated)",
+                         "available" if available else "unavailable")
+            return
         if not available and (changed or first):
             self.notify.emit(
                 LOCK_UNAVAILABLE_NOTICE_TITLE,
-                "The screen cannot be locked, so device actions are disabled. "
-                "Devices remain blocked by USBGuard's policy.",
+                "Screen locking is unavailable, so HID devices cannot be allowed. "
+                "Block and Reject still work. Devices remain blocked by USBGuard's policy.",
                 NOTIFY_WARNING,
                 10000,
             )
         elif available and changed and not first:
             self.notify.emit(
                 LOCK_AVAILABLE_NOTICE_TITLE,
-                "USBGuard GUI device actions re-enabled.",
+                "Screen locking is available again — HID devices can be allowed.",
                 NOTIFY_INFO,
                 5000,
             )
@@ -328,11 +338,10 @@ class DecisionEngine(QObject):
             )
             return False
 
-        if not lock_gate_open(self._lock_available):
-            self._last_prompted_at.pop(identity, None)
-            log.info("Device %s is back, but screen locking is unavailable -- keeping its queued decision", identity)
-            return False
-
+        # Nothing else is lock-gated on a drain: a queued Block or Reject
+        # needs no lock, a non-HID allow never relied on one, and a HID allow
+        # with treatment on was handed back above (treatment off means no
+        # gating at all).
         del self._pending_decisions[identity]
         if target is DeviceTarget.ALLOW:
             self._last_prompted_at.pop(identity, None)

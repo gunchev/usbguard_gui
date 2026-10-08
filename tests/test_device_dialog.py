@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from fakes import _FakeClient, _FakeScreensaver
+from fakes import _FakeClient, _FakeScreensaver, _FakeSettings
 from PyQt6.QtWidgets import QLabel, QMessageBox
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
@@ -21,10 +21,16 @@ _RULE = (
 
 
 class TestDialogLockUnavailable:
-    """When screen locking is unavailable, every action button must be
-    disabled — allowing (or blocking) a device without the lock-first
-    guarantee breaks the app's security contract, so the UI refuses to
-    touch the policy at all and says why."""
+    """When screen locking is unavailable only a lock-gated HID allow is
+    refused.  Block, Reject and non-HID allows need no lock — denying a
+    suspicious device must not depend on infrastructure that is itself
+    broken — so they stay live while the locker is down."""
+
+    _HUB_RULE = (
+        'block id 1234:abcd serial "" name "Test Hub" '
+        'hash "abc123" parent-hash "" via-port "1-1" '
+        "with-interface ff:00:00 with-connect-type hotplug"
+    )
 
     @pytest.fixture()
     def buttons(self, dialog_with_screensaver):
@@ -33,15 +39,26 @@ class TestDialogLockUnavailable:
                 dialog._btn_block_always, dialog._btn_close]
 
     @pytest.fixture()
+    def allow_buttons(self, dialog_with_screensaver):
+        dialog = dialog_with_screensaver[0]
+        return [dialog._btn_allow_always, dialog._btn_allow_once]
+
+    @pytest.fixture()
+    def deny_buttons(self, dialog_with_screensaver):
+        dialog = dialog_with_screensaver[0]
+        return [dialog._btn_block_once, dialog._btn_block_always, dialog._btn_close]
+
+    @pytest.fixture()
     def dialog_with_screensaver(self, qapp, qtbot):
         screensaver = _FakeScreensaver(connected=False)
-        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver)
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver,
+                                    settings=_FakeSettings())
         qtbot.addWidget(dialog)
         return dialog, screensaver
 
-    def test_buttons_disabled_when_lock_unavailable(self, dialog_with_screensaver, buttons) -> None:
-        for btn in buttons:
-            assert not btn.isEnabled()
+    def test_allow_disabled_but_deny_live_when_lock_unavailable(self, allow_buttons, deny_buttons) -> None:
+        assert all(not btn.isEnabled() for btn in allow_buttons)
+        assert all(btn.isEnabled() for btn in deny_buttons)
 
     def test_buttons_enabled_when_lock_available(self, qapp, qtbot) -> None:
         screensaver = _FakeScreensaver(connected=True)
@@ -61,9 +78,11 @@ class TestDialogLockUnavailable:
                     dialog._btn_block_always, dialog._btn_close):
             assert btn.isEnabled()
 
-    def test_buttons_follow_lock_state_changes(self, dialog_with_screensaver, buttons) -> None:
+    def test_buttons_follow_lock_state_changes(self, dialog_with_screensaver, buttons, allow_buttons,
+                                               deny_buttons) -> None:
         _, screensaver = dialog_with_screensaver
-        assert all(not btn.isEnabled() for btn in buttons)
+        assert all(not btn.isEnabled() for btn in allow_buttons)
+        assert all(btn.isEnabled() for btn in deny_buttons)
 
         # The monitor updates its property and then emits (like the real
         # _on_connected), so mirror that ordering in the fake.
@@ -73,12 +92,13 @@ class TestDialogLockUnavailable:
 
         screensaver._connected = False
         screensaver.connection_changed.emit(False)
-        assert all(not btn.isEnabled() for btn in buttons)
+        assert all(not btn.isEnabled() for btn in allow_buttons)
+        assert all(btn.isEnabled() for btn in deny_buttons)
 
-    @pytest.mark.parametrize("handler", ["_on_allow_always", "_on_allow_once", "_on_block_once", "_on_block_always"])
-    def test_actions_warn_when_lock_unavailable(self, dialog_with_screensaver, mocker, handler: str) -> None:
-        """If a handler runs while lock is unavailable (e.g. the state flips
-        after the buttons were enabled), it must warn, not record the choice."""
+    @pytest.mark.parametrize("handler", ["_on_allow_always", "_on_allow_once"])
+    def test_allow_handlers_warn_and_record_nothing(self, dialog_with_screensaver, mocker, handler: str) -> None:
+        """If an allow handler runs while lock is unavailable (e.g. the state
+        flips after the buttons were enabled), it must warn, not record."""
         dialog, _ = dialog_with_screensaver
         warn = mocker.patch.object(QMessageBox, "warning")
 
@@ -87,6 +107,58 @@ class TestDialogLockUnavailable:
         assert warn.called
         assert dialog.result_target is None
         dialog.close()
+
+    @pytest.mark.parametrize("handler", ["_on_block_once", "_on_block_always"])
+    def test_block_handlers_apply_while_lock_unavailable(self, dialog_with_screensaver, mocker, handler: str) -> None:
+        """Block needs no lock: the click records normally, no warning."""
+        dialog, _ = dialog_with_screensaver
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        getattr(dialog, handler)()
+
+        assert not warn.called
+        assert dialog.result_target is DeviceTarget.BLOCK
+        dialog.close()
+
+    def test_non_hid_allow_stays_available_while_lock_unavailable(self, qapp, qtbot, mocker) -> None:
+        """A non-HID device never relied on the lock, so Allow works."""
+        screensaver = _FakeScreensaver(connected=False)
+        dialog = DeviceActionDialog(Device.from_dbus(1, self._HUB_RULE), _FakeClient(),
+                                    screensaver=screensaver, settings=_FakeSettings())
+        qtbot.addWidget(dialog)
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        dialog._on_allow_once()
+
+        assert not warn.called
+        assert dialog.result_target is DeviceTarget.ALLOW
+
+    def test_treatment_disabled_keeps_hid_allow_while_lock_unavailable(self, qapp, qtbot, mocker) -> None:
+        """Special HID treatment off ⇒ the gate is disarmed entirely."""
+        screensaver = _FakeScreensaver(connected=False)
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver,
+                                    settings=_FakeSettings(disable_hid_treatment=True))
+        qtbot.addWidget(dialog)
+        warn = mocker.patch.object(QMessageBox, "warning")
+
+        dialog._on_allow_once()
+
+        assert not warn.called
+        assert dialog.result_target is DeviceTarget.ALLOW
+        assert dialog._btn_allow_once.isEnabled()
+
+    def test_refresh_actions_enabled_follows_the_treatment_toggle(self, qapp, qtbot) -> None:
+        """The tray menu toggle must re-arm/disarm an already-open dialog."""
+        screensaver = _FakeScreensaver(connected=False)
+        settings = _FakeSettings()
+        dialog = DeviceActionDialog(_make_device(), _FakeClient(), screensaver=screensaver, settings=settings)
+        qtbot.addWidget(dialog)
+        assert not dialog._btn_allow_once.isEnabled()
+
+        settings.set_disable_hid_treatment(True)
+        dialog.refresh_actions_enabled()
+
+        assert dialog._btn_allow_once.isEnabled()
 
 
 class TestCloseIsDefaultButton:

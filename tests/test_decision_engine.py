@@ -575,7 +575,9 @@ class TestLockAvailability:
     """The app must track whether screen locking is available and, when it
     is not: (a) not schedule the HID lock flow (the 'Locking screen…' notice
     would be a lie and the pending devices could never be auto-allowed),
-    (b) tell the user, and (c) leave every policy action to the disabled UI."""
+    (b) tell the user the narrowed scope of the outage (HID allows only —
+    Block/Reject and non-HID allows stay live), and (c) leave the fine
+    gating to the dialog and device-list menu."""
 
     _HID_RULE = (
         'block id 1234:abcd serial "" name "Test Keyboard" '
@@ -594,12 +596,37 @@ class TestLockAvailability:
 
     def test_first_unavailable_report_notifies(self, tray_app, fake_screensaver, mocker) -> None:
         """When lock availability is confirmed down (first report), the user
-        must be told — the actions are being disabled under their feet."""
+        must be told — HID allows are being withdrawn under their feet."""
         notify = mocker.patch.object(tray_app._tray, "showMessage")
         fake_screensaver._connected = False
         fake_screensaver.connection_changed.emit(False)
 
         assert notify.called
+
+    def test_unavailable_notice_names_the_narrowed_scope(self, tray_app, fake_screensaver, mocker) -> None:
+        """The notice must promise exactly what still works: a vague 'actions
+        disabled' would tell the user to stop denying devices they can deny."""
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+
+        title, body = notify.call_args.args[0], notify.call_args.args[1]
+        assert title == "Screen locking unavailable"
+        assert "Block and Reject still work" in body
+        assert "HID" in body
+
+    def test_lock_notices_are_log_only_when_hid_treatment_disabled(self, tray_app, fake_screensaver, mocker) -> None:
+        """Treatment off ⇒ nothing is gated ⇒ a tray notice would describe a
+        gate that is not armed; the change is log-only."""
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        log_info = mocker.patch("usbguard_gui.decision.log.info")
+        tray_app._settings.set_disable_hid_treatment(True)
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+
+        assert not notify.called
+        assert log_info.called
+        assert tray_app._engine._lock_available is False
 
     def test_repeated_same_state_does_not_notify(self, tray_app, fake_screensaver, mocker) -> None:
         notify = mocker.patch.object(tray_app._tray, "showMessage")
@@ -610,7 +637,7 @@ class TestLockAvailability:
 
     def test_hid_insert_prompts_when_lock_unavailable(self, tray_app, fake_client, fake_screensaver) -> None:
         """No lock flow: the HID device goes through the normal prompt path
-        (whose actions are disabled) instead of the deferred lock."""
+        (whose Allow is gated, Block/Reject live) instead of the deferred lock."""
         fake_screensaver.connection_changed.emit(False)
 
         fake_client.device_presence_changed.emit(1, 1, int(DeviceTarget.BLOCK), self._HID_RULE, {})
@@ -1317,7 +1344,8 @@ class TestAQueuedAllowStillObeysTheLockContract:
 
 
 class TestQueuedDecisionSafetyAndIdentity:
-    """Held choices obey the lock gate and cannot migrate to a sibling hub."""
+    """Held HID allows are handed back, held Block/Reject drain freely, and
+    no held choice can migrate to a sibling hub."""
 
     @pytest.mark.parametrize("lock_state", ["unavailable", "inhibited"])
     @pytest.mark.parametrize("interfaces", ["03:01:01", "{ 03:01:01 08:06:50 }"])
@@ -1388,21 +1416,20 @@ class TestQueuedDecisionSafetyAndIdentity:
         assert fake_client.apply_policy_rules == [updated]
         assert tray_app._engine._pending_decisions == {}
 
-    def test_queued_choice_waits_for_lock_availability_and_a_fresh_click_supersedes_it(
-            self, tray_app, fake_client, fake_screensaver, queued_decision):
+    def test_queued_block_drains_while_lock_unavailable(self, tray_app, fake_client, fake_screensaver,
+                                                        queued_decision):
+        """Block needs no lock: a held choice applies the moment the device is
+        back — even with the locker down — and consumes the insertion, so no
+        fresh prompt is needed."""
         queued_decision(DeviceTarget.BLOCK, rule=IR_RULE)
         fake_screensaver._connected = False
         fake_screensaver.connection_changed.emit(False)
+
         tray_app._on_device_presence_changed(301, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
-        assert fake_client.apply_policy_calls == []
-        assert tray_app._engine._pending_decisions
 
-        fake_screensaver._connected = True
-        fake_screensaver.connection_changed.emit(True)
-        tray_app._open_dialogs[301]._on_allow_once()
-
-        assert fake_client.apply_policy_calls == [(301, DeviceTarget.ALLOW, Persistence.ONCE)]
-        assert tray_app._engine._pending_decisions == {}, "The superseded block must never replay later"
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._engine._pending_decisions == {}
+        assert tray_app._open_dialogs == {}
 
 
 def _handback_notice(show) -> tuple[str, str]:
@@ -1783,19 +1810,21 @@ class TestApplyPendingDecisionReturnContract:
         assert tray_app._engine._pending_decisions == {}, "the handback is not a re-queue"
         assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
 
-    def test_lock_unavailable_keeps_the_decision_pending(self, tray_app, fake_client, fake_screensaver,
-                                                         mocker) -> None:
+    @pytest.mark.parametrize("target", [DeviceTarget.BLOCK, DeviceTarget.ALLOW])
+    def test_lock_unavailable_still_drains_the_decision(self, tray_app, fake_client, fake_screensaver, mocker,
+                                                        target: DeviceTarget) -> None:
+        """Only a HID allow is lock-gated; a held choice on a non-HID device
+        (or any Block) drains while the locker is down."""
         mocker.patch.object(tray_app._tray, "showMessage")
         fake_screensaver._connected = False
         fake_screensaver.connection_changed.emit(False)
         device = Device.from_dbus(301, IR_RULE)
         identity = dialog_identity(device)
-        tray_app._engine._pending_decisions[identity] = (DeviceTarget.BLOCK, Persistence.ONCE)
+        tray_app._engine._pending_decisions[identity] = (target, Persistence.ONCE)
 
-        assert tray_app._engine._apply_pending_decision(device) is False
-        assert tray_app._engine._pending_decisions == {identity: (DeviceTarget.BLOCK, Persistence.ONCE)}, \
-            "the choice must survive until locking can run"
-        assert fake_client.apply_policy_calls == []
+        assert tray_app._engine._apply_pending_decision(device) is True
+        assert tray_app._engine._pending_decisions == {}
+        assert fake_client.apply_policy_calls == [(301, target, Persistence.ONCE)]
 
 
 class TestDecisionEngineStateOwnership:
