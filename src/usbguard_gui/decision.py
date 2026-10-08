@@ -11,7 +11,8 @@ from usbguard_gui.device import Device, DeviceTarget, Persistence, enum_name, pa
 from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
-from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE, HID_ATTACHED_NOTICE_TITLE
+from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE, HID_ATTACHED_NOTICE_TITLE, LOCK_AVAILABLE_NOTICE_TITLE, \
+    LOCK_UNAVAILABLE_NOTICE_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +234,32 @@ class DecisionEngine(QObject):
         for device_number in pending_ids:
             self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
 
+    def _on_lock_availability_changed(self, available: bool) -> None:
+        """Track lock availability; notice the user on the first confirmed
+        report of a problem or on an actual transition."""
+        # The monitor reports its state repeatedly (initial report plus
+        # every failed retry), so notify only on the first confirmed report
+        # or an actual transition.
+        changed = available != self._lock_available
+        first = not self._lock_state_confirmed
+        self._lock_available = available
+        self._lock_state_confirmed = True
+        if not available and (changed or first):
+            self.notify.emit(
+                LOCK_UNAVAILABLE_NOTICE_TITLE,
+                "The screen cannot be locked, so device actions are disabled. "
+                "Devices remain blocked by USBGuard's policy.",
+                NOTIFY_WARNING,
+                10000,
+            )
+        elif available and changed and not first:
+            self.notify.emit(
+                LOCK_AVAILABLE_NOTICE_TITLE,
+                "USBGuard GUI device actions re-enabled.",
+                NOTIFY_INFO,
+                5000,
+            )
+
     def _hid_lock_flow_applies(self, device: Device) -> bool:
         """Would this device take the auto-allow-then-lock path?
 
@@ -314,6 +341,38 @@ class DecisionEngine(QObject):
         self._client.apply_device_policy(device.number, target, persistence,
                                          device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         return True
+
+    def _apply_user_decision(self, device: Device, target: DeviceTarget, persistence: Persistence,
+                             device_present: bool = True) -> None:
+        """Supersede pending work and dispatch a fresh choice.
+
+        The app calls this after its dialog bookkeeping and the
+        `_cancel_pending_device` wrapper (which also stops the deferred
+        lock); everything from here is decision state and client calls.
+        """
+        identity = dialog_identity(device)
+        self._pending_decisions.pop(identity, None)
+        if target is DeviceTarget.ALLOW:
+            # The user wanted this device usable, not quietly blocked on return.
+            # Clear at dispatch too: an unsuccessful apply or durable write must
+            # not suppress the next chance to decide, waiting for an ALLOW signal.
+            self._last_prompted_at.pop(identity, None)
+        if not device_present and persistence is Persistence.ALWAYS:
+            log.info("Device %s is off the bus -- writing the permanent %s rule now", identity, target.name.lower())
+            self._client.persist_rule(device.number, target, device.raw_rule)
+            return
+        if not device_present:
+            log.info("Device %s is off the bus -- queuing %s / %s until it returns",
+                     identity, target.name, persistence.name)
+            if len(self._pending_decisions) >= MAX_PENDING_DECISIONS:
+                dropped_ident = next(iter(self._pending_decisions))
+                del self._pending_decisions[dropped_ident]
+                log.warning("Pending-decision cap (%d) reached -- dropping the oldest queued decision for %s",
+                            MAX_PENDING_DECISIONS, dropped_ident)
+            self._pending_decisions[identity] = (target, persistence)
+            return
+        self._client.apply_device_policy(device.number, target, persistence,
+                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
 
     def _on_device_allowed(self, device: Device, rule_id: int) -> None:
         """React to a device becoming allowed by policy.

@@ -15,14 +15,13 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine, dialog_identity
+from usbguard_gui.decision import NOTIFY_WARNING, DecisionEngine, dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, enum_name
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
-from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, \
-    LOCK_AVAILABLE_NOTICE_TITLE, LOCK_UNAVAILABLE_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
+from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
     PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE, TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE, \
     TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE
 
@@ -240,35 +239,11 @@ class USBGuardTrayApp:
         self._client.connection_changed.connect(self._on_connection_changed)
         self._screensaver.active_changed.connect(self._engine._on_screensaver_unlocked)
         self._screensaver.active_changed.connect(self._engine._on_screensaver_locked)
-        self._screensaver.connection_changed.connect(self._on_lock_availability_changed)
+        self._screensaver.connection_changed.connect(self._engine._on_lock_availability_changed)
         self._engine.show_dialog.connect(self._show_device_dialog)
         self._engine.notify.connect(self._on_engine_notify)
         self._engine.dialog_retarget.connect(self._retarget_device_dialog)
         self._engine.schedule_lock.connect(self._schedule_hid_lock)
-
-    def _on_lock_availability_changed(self, available: bool) -> None:
-        # The monitor reports its state repeatedly (initial report plus
-        # every failed retry), so notify only on the first confirmed report
-        # or an actual transition.
-        changed = available != self._lock_available
-        first = not self._lock_state_confirmed
-        self._lock_available = available
-        self._lock_state_confirmed = True
-        if not available and (changed or first):
-            self._tray.showMessage(
-                LOCK_UNAVAILABLE_NOTICE_TITLE,
-                "The screen cannot be locked, so device actions are disabled. "
-                "Devices remain blocked by USBGuard's policy.",
-                QSystemTrayIcon.MessageIcon.Warning,
-                10000,
-            )
-        elif available and changed and not first:
-            self._tray.showMessage(
-                LOCK_AVAILABLE_NOTICE_TITLE,
-                "USBGuard GUI device actions re-enabled.",
-                QSystemTrayIcon.MessageIcon.Information,
-                5000,
-            )
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._engine._on_list_devices_result)
@@ -567,29 +542,10 @@ class USBGuardTrayApp:
             # A device-list row/menu can be older than the retained dialog.
             device, device_present = dialog.device, dialog.device_present
             dialog.close()
-        self._pending_decisions.pop(identity, None)
+        # Clear the pending sets and stop the deferred lock first; the engine
+        # then drops the queued choice and dispatches to the daemon.
         self._cancel_pending_device(device.number)
-        if target is DeviceTarget.ALLOW:
-            # The user wanted this device usable, not quietly blocked on return.
-            # Clear at dispatch too: an unsuccessful apply or durable write must
-            # not suppress the next chance to decide, waiting for an ALLOW signal.
-            self._last_prompted_at.pop(identity, None)
-        if not device_present and persistence is Persistence.ALWAYS:
-            log.info("Device %s is off the bus -- writing the permanent %s rule now", identity, target.name.lower())
-            self._client.persist_rule(device.number, target, device.raw_rule)
-            return
-        if not device_present:
-            log.info("Device %s is off the bus -- queuing %s / %s until it returns",
-                     identity, target.name, persistence.name)
-            if len(self._pending_decisions) >= MAX_PENDING_DECISIONS:
-                dropped_ident = next(iter(self._pending_decisions))
-                del self._pending_decisions[dropped_ident]
-                log.warning("Pending-decision cap (%d) reached -- dropping the oldest queued decision for %s",
-                            MAX_PENDING_DECISIONS, dropped_ident)
-            self._pending_decisions[identity] = (target, persistence)
-            return
-        self._client.apply_device_policy(device.number, target, persistence,
-                                         device.raw_rule if persistence is not Persistence.UNCHANGED else None)
+        self._engine._apply_user_decision(device, target, persistence, device_present)
 
     def _show_device_list(self) -> None:
         if self._device_list_window is None:

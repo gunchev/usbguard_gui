@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fakes import _FakeSettings
 
-from usbguard_gui.app import MAX_PENDING_DECISIONS, PROMPT_COOLDOWN_SEC, USBGuardTrayApp
-from usbguard_gui.decision import dialog_identity
+from usbguard_gui.app import PROMPT_COOLDOWN_SEC, USBGuardTrayApp
+from usbguard_gui.decision import MAX_PENDING_DECISIONS, dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
 from usbguard_gui.ui_strings import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE
 
@@ -1639,7 +1639,7 @@ class TestDecisionsSurviveAFlappingDevice:
     def test_the_pending_cap_drops_the_oldest_and_says_so(self, tray_app, mocker) -> None:
         for i in range(MAX_PENDING_DECISIONS):
             tray_app._pending_decisions[f"hash:filler{i}"] = (DeviceTarget.BLOCK, Persistence.ONCE)
-        dropped = mocker.patch("usbguard_gui.app.log.warning")
+        dropped = mocker.patch("usbguard_gui.decision.log.warning")
 
         dialog = self._open(tray_app, mocker)
         self._remove(tray_app)
@@ -2335,7 +2335,7 @@ class TestLockerRestartInvalidatesLockState:
 
         monitor = ScreensaverMonitor()
         tray_app._screensaver = monitor
-        monitor.connection_changed.connect(tray_app._on_lock_availability_changed)
+        monitor.connection_changed.connect(tray_app._engine._on_lock_availability_changed)
         monitor.active_changed.connect(tray_app._engine._on_screensaver_locked)
         worker = _ScreensaverThread()
         worker.connected.connect(monitor._on_connected)
