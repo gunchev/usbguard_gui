@@ -83,8 +83,8 @@ class USBGuardTrayApp:
         # singleton.  See SettingsProtocol for why this seam exists.
         self._settings: SettingsProtocol = settings if settings is not None else Settings()
         # Every piece of state a decision is made from lives in the engine
-        # (DecisionEngine); the property shims below keep the handlers — still
-        # in this class until Phase 4 — and the tests on their old paths.
+        # (DecisionEngine); the property shims below bridge the app's few
+        # remaining reads and the tests' old access paths.
         self._engine = DecisionEngine(self._client, self._screensaver, self._settings)
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
@@ -111,9 +111,9 @@ class USBGuardTrayApp:
         self._connect_client_signals()
 
     # --- Decision state (Phase 3 seam) --------------------------------------
-    # The engine owns the storage; these shims keep the handlers — still in
-    # this class — and the tests on their old access paths, so nothing moves
-    # twice.  They are deleted again once Phase 4 has moved the handlers out.
+    # The engine owns the storage; these shims bridge the app's remaining
+    # read (the prompt cooldown in _show_device_dialog) and the tests' old
+    # access paths.  Deleted once the tests target the engine directly.
 
     @property
     def _pending_decisions(self) -> dict[str, tuple[DeviceTarget, Persistence]]:
