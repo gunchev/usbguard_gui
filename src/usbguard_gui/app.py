@@ -19,6 +19,7 @@ from usbguard_gui.dbus_client import USBGuardClient
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
+from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
 from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, \
@@ -568,7 +569,7 @@ class USBGuardTrayApp:
         if not self._hid_pending_devices:
             log.debug("HID lock timer fired with no pending devices — skipping lock")
             return
-        if not self._lock_available:
+        if not lock_gate_open(self._lock_available):
             # Locking became unavailable while the delay was running — do
             # not claim to lock.  The pending devices stay blocked (safe);
             # they are cleared on removal or the next lock.
@@ -704,7 +705,7 @@ class USBGuardTrayApp:
         return (device.has_hid_interface()
                 and not self._settings.disable_hid_treatment()
                 and not self._screensaver.inhibited
-                and self._lock_available)
+                and lock_gate_open(self._lock_available))
 
     def _apply_pending_decision(self, device: Device) -> bool:
         """Replay a held decision; return True if it consumes this insertion.
@@ -760,7 +761,7 @@ class USBGuardTrayApp:
             )
             return False
 
-        if not self._lock_available:
+        if not lock_gate_open(self._lock_available):
             self._last_prompted_at.pop(identity, None)
             log.info("Device %s is back, but screen locking is unavailable -- keeping its queued decision", identity)
             return False
