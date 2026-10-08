@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
+from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
@@ -219,17 +220,15 @@ class DeviceActionDialog(QDialog):
         if not self._client.connected:
             QMessageBox.warning(
                 self,
-                "USBGuard GUI",
-                "The USBGuard daemon is not connected.\nThe action was not applied — "
-                "try again once the tray icon shows 'connected'.",
+                MESSAGE_BOX_TITLE,
+                DAEMON_NOT_CONNECTED_WARNING,
             )
             return True
         if self._screensaver is not None and not self._screensaver.connected:
             QMessageBox.warning(
                 self,
-                "USBGuard GUI",
-                "Screen locking is unavailable — device actions are disabled.\n"
-                "Devices remain blocked by USBGuard's policy.",
+                MESSAGE_BOX_TITLE,
+                LOCK_UNAVAILABLE_WARNING,
             )
             return True
         return False

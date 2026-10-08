@@ -21,6 +21,10 @@ from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
+from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, \
+    HID_ATTACHED_NOTICE_TITLE, LOCK_AVAILABLE_NOTICE_TITLE, LOCK_UNAVAILABLE_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
+    PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE, TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE, \
+    TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +240,7 @@ class USBGuardTrayApp:
         self._lock_state_confirmed = True
         if not available and (changed or first):
             self._tray.showMessage(
-                "Screen locking unavailable",
+                LOCK_UNAVAILABLE_NOTICE_TITLE,
                 "The screen cannot be locked, so device actions are disabled. "
                 "Devices remain blocked by USBGuard's policy.",
                 QSystemTrayIcon.MessageIcon.Warning,
@@ -244,7 +248,7 @@ class USBGuardTrayApp:
             )
         elif available and changed and not first:
             self._tray.showMessage(
-                "Screen locking available",
+                LOCK_AVAILABLE_NOTICE_TITLE,
                 "USBGuard GUI device actions re-enabled.",
                 QSystemTrayIcon.MessageIcon.Information,
                 5000,
@@ -265,7 +269,7 @@ class USBGuardTrayApp:
         # Say so -- otherwise "Allow Once" reads as if it took effect while the
         # device is in fact permanently allowed.
         self._tray.showMessage(
-            "Temporary decision incomplete",
+            BROADER_RULE_NOTICE_TITLE,
             f"A broader permanent rule still covers device {device_id} and was not removed:\n"
             f"{rule}\n"
             f"The device stays permanently {action}. Edit /etc/usbguard/rules.conf to revoke "
@@ -285,7 +289,7 @@ class USBGuardTrayApp:
         # sends the user looking for a file that no longer matches.
         if partial:
             self._tray.showMessage(
-                "Temporary decision not applied — policy partly changed",
+                TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE,
                 f"Device {device_id}'s permanent rules were only partly removed, so the temporary "
                 f"{action} did not take effect and the stored policy is no longer what it was.\n"
                 f"{reason}\nCheck /etc/usbguard/rules.conf before deciding again.",
@@ -294,7 +298,7 @@ class USBGuardTrayApp:
             )
             return
         self._tray.showMessage(
-            "Temporary decision not applied",
+            TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE,
             f"The existing permanent rule for device {device_id} could not be removed, so the "
             f"temporary {action} did not take effect.\n{reason}",
             QSystemTrayIcon.MessageIcon.Warning,
@@ -302,7 +306,7 @@ class USBGuardTrayApp:
         )
 
     def _on_temporary_apply_failed(self, device_id: int, action: str, reason: str, policy_changed: bool) -> None:
-        title = "Temporary decision not applied"
+        title = TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE
         detail = ""
         if policy_changed:
             title += " — permanent rules removed"
@@ -321,7 +325,7 @@ class USBGuardTrayApp:
         # and finds out otherwise at the next boot -- the failure is otherwise
         # a log line in a tray app nobody tails.
         self._tray.showMessage(
-            "Permanent rule not saved",
+            PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE,
             f"The permanent {action} for device {device_id} could not be written; it applies only "
             f"until the device is unplugged.\n{reason}",
             QSystemTrayIcon.MessageIcon.Warning,
@@ -487,7 +491,7 @@ class USBGuardTrayApp:
                     return
                 self._hid_pending_devices.add(device_id)
                 self._tray.showMessage(
-                    "New keyboard/HID attached",
+                    HID_ATTACHED_NOTICE_TITLE,
                     "Locking screen. Enter your password to activate the device. "
                     "If you did not attach a keyboard, check for malicious devices.",
                     QSystemTrayIcon.MessageIcon.Warning,
@@ -802,7 +806,7 @@ class USBGuardTrayApp:
 
         # Tray notification
         self._tray.showMessage(
-            "New USB device inserted",
+            DEVICE_INSERTED_NOTICE_TITLE,
             f"{device.name or '(unknown)'}\n{device.class_description_string()}",
             QSystemTrayIcon.MessageIcon.Information,
             5000,
@@ -918,11 +922,11 @@ def main() -> None:
         runtime_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
     lock_file = QLockFile(f"{runtime_dir}/usbguard_gui.lock")
     if not lock_file.tryLock():
-        QMessageBox.warning(None, "USBGuard GUI", "Another instance is already running.")
+        QMessageBox.warning(None, MESSAGE_BOX_TITLE, "Another instance is already running.")
         sys.exit(0)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
-        QMessageBox.critical(None, "USBGuard GUI", "System tray is not available.")
+        QMessageBox.critical(None, MESSAGE_BOX_TITLE, "System tray is not available.")
         sys.exit(1)
 
     tray_app = USBGuardTrayApp(app, lock_file=lock_file)

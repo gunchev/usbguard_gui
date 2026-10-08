@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QMainWindow, QMenu, 
     QVBoxLayout, QWidget
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_is_broader_than_device, rule_matches_device
+from usbguard_gui.ui_strings import DAEMON_NOT_CONNECTED_WARNING, LOCK_UNAVAILABLE_WARNING, MESSAGE_BOX_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -353,9 +354,8 @@ class DeviceListWindow(QMainWindow):
             log.warning("Action %s on device %d not applied: USBGuard daemon not connected", target.name, device.number)
             QMessageBox.warning(
                 self,
-                "USBGuard GUI",
-                "The USBGuard daemon is not connected.\nThe action was not applied — "
-                "try again once the connection is restored.",
+                MESSAGE_BOX_TITLE,
+                DAEMON_NOT_CONNECTED_WARNING,
             )
             return
         # All allow/deny functionality is disabled while screen locking is
@@ -370,9 +370,8 @@ class DeviceListWindow(QMainWindow):
             )
             QMessageBox.warning(
                 self,
-                "USBGuard GUI",
-                "Screen locking is unavailable — device actions are disabled.\n"
-                "Devices remain blocked by USBGuard's policy.",
+                MESSAGE_BOX_TITLE,
+                LOCK_UNAVAILABLE_WARNING,
             )
             return
         # `Once` needs the raw rule too, not just `Always`: the client keys the
