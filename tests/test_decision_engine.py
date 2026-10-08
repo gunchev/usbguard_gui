@@ -336,7 +336,7 @@ class TestOverlappingUnlockCycles:
 
         # The in-flight fetch fails (e.g. daemon briefly disconnected):
         # an empty snapshot arrives for cycle 0.
-        fake_client.list_devices_correlated.emit(0, [])
+        fake_client.list_devices_correlated.emit(0, None)
         assert 10 not in tray_app._open_dialogs
         assert tray_app._engine._pending_unlock_cycles == {0: {10}}, (
             "a failed result must not consume the registered cycle"
@@ -358,7 +358,7 @@ class TestOverlappingUnlockCycles:
         tray_app._engine._screensaver_pending_devices = {10}
         tray_app._engine._on_screensaver_unlocked(False)
 
-        fake_client.list_devices_correlated.emit(0, [])
+        fake_client.list_devices_correlated.emit(0, None)
         # Next real snapshot does not contain A (it was unplugged):
         fake_client.list_devices_correlated.emit(0, [Device.from_dbus(30, self._RULE_B)])
 
@@ -833,7 +833,7 @@ class TestUnlockQueueRaceReproductions:
 
         tray_app._engine._screensaver_pending_devices = {10}
         tray_app._engine._on_screensaver_unlocked(False)
-        fake_client.list_devices_correlated.emit(0, [])  # daemon was down
+        fake_client.list_devices_correlated.emit(0, None)  # daemon was down
         assert tray_app._engine._pending_unlock_cycles == {0: {10}}
 
         fake_client.connection_changed.emit(True)
@@ -889,11 +889,22 @@ class TestUnlockSnapshotFreshness:
         assert set(tray_app._open_dialogs) == {3}
         assert tray_app._engine._pending_unlock_cycles == {second: {4}}
 
+    def test_genuinely_empty_snapshot_resolves_the_cycle(self, tray_app, fake_client):
+        """An empty list is the daemon's real answer (nothing on the bus), not a
+        failure: the cycle is resolved and not retried on reconnect."""
+        cycle_id = tray_app._engine._register_unlock_cycle({1})
+
+        tray_app._engine._on_correlated_devices(cycle_id, [])
+        tray_app._engine._retry_pending_unlock_cycles()
+
+        assert tray_app._engine._pending_unlock_cycles == {}
+        assert fake_client.fetch_devices_calls == []
+
     def test_empty_late_reply_cannot_resurrect_a_cancelled_cycle(self, tray_app, fake_client):
         cycle_id = tray_app._engine._register_unlock_cycle({1})
         tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
 
-        tray_app._engine._on_correlated_devices(cycle_id, [])
+        tray_app._engine._on_correlated_devices(cycle_id, None)
         tray_app._engine._retry_pending_unlock_cycles()
 
         assert tray_app._engine._pending_unlock_cycles == {}

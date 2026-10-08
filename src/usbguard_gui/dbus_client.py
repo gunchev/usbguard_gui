@@ -122,7 +122,7 @@ class _DBusThread(AsyncWorkerThread):
     # None = the query failed transiently (DBusError or daemon away); a real
     # list, including an empty one, is the daemon's answer.
     list_devices_result = pyqtSignal(object)
-    list_devices_correlated = pyqtSignal(int, list)
+    list_devices_correlated = pyqtSignal(int, object)  # devices is None on a transient failure
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     error_occurred = pyqtSignal(str)
@@ -296,7 +296,7 @@ class _DBusThread(AsyncWorkerThread):
             log.error("Failed to fetch devices (request=%d, query=%s): %s", request_id, query, e)
             if _is_connection_error(e):
                 self._set_connected(False)
-            self.list_devices_correlated.emit(request_id, [])
+            self.list_devices_correlated.emit(request_id, None)
             return
         self.list_devices_correlated.emit(request_id, devices)
 
@@ -712,10 +712,10 @@ class _DBusThread(AsyncWorkerThread):
         list_devices_correlated with the same id, so the caller can tell its own
         answer from anybody else's and does not care what order the answers
         arrive in.  Always terminates: a fast-fail or a D-Bus error still emits
-        ``(request_id, [])`` rather than leaving the caller waiting.
+        ``(request_id, None)`` rather than leaving the caller waiting.
         """
         if not self._connected:
-            self.list_devices_correlated.emit(request_id, [])
+            self.list_devices_correlated.emit(request_id, None)
             return
         if self._devices_iface and self._loop:
             self._schedule(self._do_fetch_devices(request_id, query))
@@ -763,7 +763,7 @@ class USBGuardClient(QObject):
     # None = the query failed transiently (DBusError or daemon away); a real
     # list, including an empty one, is the daemon's answer.
     list_devices_result = pyqtSignal(object)
-    list_devices_correlated = pyqtSignal(int, list)
+    list_devices_correlated = pyqtSignal(int, object)  # devices is None on a transient failure
     list_rules_result = pyqtSignal(list)
     remove_rule_result = pyqtSignal(bool)
     permanent_write_failed = pyqtSignal(int, str, str)
@@ -819,12 +819,12 @@ class USBGuardClient(QObject):
         list_devices_correlated(request_id, devices).
 
         With no worker thread there is nothing to ask, but the caller still gets
-        its (request_id, []) so no request can be left permanently outstanding.
+        its (request_id, None) so no request can be left permanently outstanding.
         """
         if self._thread:
             self._thread.fetch_devices(request_id, query)
         else:
-            self.list_devices_correlated.emit(request_id, [])
+            self.list_devices_correlated.emit(request_id, None)
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget,
                             persistence: Persistence = Persistence.UNCHANGED,

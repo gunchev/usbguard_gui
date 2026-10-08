@@ -27,7 +27,7 @@ def mock_thread():
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
             list_devices_result = pyqtSignal(object)
-            list_devices_correlated = pyqtSignal(int, list)
+            list_devices_correlated = pyqtSignal(int, object)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
@@ -351,7 +351,7 @@ class TestConnectRecyclesPreviousThread:
             device_presence_changed = pyqtSignal(int, int, int, str, dict)
             device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
             list_devices_result = pyqtSignal(object)
-            list_devices_correlated = pyqtSignal(int, list)
+            list_devices_correlated = pyqtSignal(int, object)
             list_rules_result = pyqtSignal(list)
             remove_rule_result = pyqtSignal(bool)
             permanent_write_failed = pyqtSignal(int, str, str)
@@ -972,7 +972,7 @@ class TestCorrelatedFetchDevices:
         assert emitted[0][0] == 7
         assert emitted[0][1][0].number == 10
 
-    def test_business_error_emits_empty_for_that_id_and_stays_connected(self):
+    def test_business_error_emits_none_for_that_id_and_stays_connected(self):
         import asyncio
 
         from dbus_fast import DBusError, ErrorType
@@ -986,10 +986,10 @@ class TestCorrelatedFetchDevices:
         thread._devices_iface.call_list_devices = raise_error
         asyncio.run(thread._do_fetch_devices(5, "match"))
 
-        assert emitted == [(5, [])]
+        assert emitted == [(5, None)]
         assert thread._connected is True
 
-    def test_connection_error_emits_empty_and_disconnects(self):
+    def test_connection_error_emits_none_and_disconnects(self):
         import asyncio
 
         from dbus_fast import DBusError, ErrorType
@@ -1003,7 +1003,7 @@ class TestCorrelatedFetchDevices:
         thread._devices_iface.call_list_devices = raise_error
         asyncio.run(thread._do_fetch_devices(5, "match"))
 
-        assert emitted == [(5, [])]
+        assert emitted == [(5, None)]
         assert thread._connected is False
 
     def test_thread_fast_fails_when_disconnected_but_still_answers(self):
@@ -1013,7 +1013,7 @@ class TestCorrelatedFetchDevices:
 
         thread.fetch_devices(9)
 
-        assert emitted == [(9, [])]
+        assert emitted == [(9, None)]
 
     def test_client_delegates_with_the_request_id(self, client, mock_thread):
         client.connect()
@@ -1033,7 +1033,7 @@ class TestCorrelatedFetchDevices:
 
         client.fetch_devices(11)
 
-        assert emitted == [(11, [])]
+        assert emitted == [(11, None)]
 
     def test_correlated_signal_is_wired_from_the_thread(self, client, mock_thread):
         client.connect()

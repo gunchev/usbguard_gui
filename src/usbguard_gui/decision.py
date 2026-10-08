@@ -133,7 +133,7 @@ class DecisionEngine(QObject):
         for cycle_id in list(self._pending_unlock_cycles):
             self._client.fetch_devices(cycle_id)
 
-    def _on_correlated_devices(self, request_id: int, devices: list[Device]) -> None:
+    def _on_correlated_devices(self, request_id: int, devices: list[Device] | None) -> None:
         """Resolve one unlock cycle against the snapshot fetched for it.
 
         Anything that is not a cycle still waiting — another caller's fetch, or a
@@ -145,12 +145,14 @@ class DecisionEngine(QObject):
         if pending_ids is None:
             return
 
-        if not devices:
-            # An empty snapshot means the fetch fast-failed (daemon
-            # disconnected) or hit a DBusError.  Put the cycle back: the
-            # devices may still be present, and dropping the entry here is how a
-            # transient disconnect silently lost the prompt.  It gets retried
-            # when the daemon returns — see _retry_pending_unlock_cycles().
+        if devices is None:
+            # None means the fetch fast-failed (daemon disconnected) or hit a
+            # DBusError.  Put the cycle back: the devices may still be present,
+            # and dropping the entry here is how a transient disconnect
+            # silently lost the prompt.  It gets retried when the daemon
+            # returns — see _retry_pending_unlock_cycles().  An empty list is
+            # the daemon's real answer (nothing on the bus) and resolves the
+            # cycle.
             self._pending_unlock_cycles[request_id] = pending_ids
             return
 
