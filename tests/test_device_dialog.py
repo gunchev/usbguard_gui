@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from PyQt6.QtCore import QObject, pyqtSignal
+from fakes import _FakeClient, _FakeScreensaver
 from PyQt6.QtWidgets import QLabel, QMessageBox
 
 from usbguard_gui.device import Device, DeviceTarget, Persistence
@@ -18,37 +18,6 @@ _RULE = (
     'hash "abc123" parent-hash "" via-port "1-1" '
     "with-interface 03:00:00 with-connect-type hotplug"
 )
-
-
-class _FakeClient:
-    """Minimal stand-in for USBGuardClient that records policy calls."""
-
-    def __init__(self, connected: bool = True) -> None:
-        self._connected = connected
-        self.apply_calls: list[tuple] = []
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
-
-    def apply_device_policy(self, device_id: int, target: DeviceTarget,
-                            persistence: Persistence = Persistence.UNCHANGED,
-                            device_rule: str | None = None) -> None:
-        self.apply_calls.append((device_id, target, persistence))
-
-
-class _FakeScreensaver(QObject):
-    """Minimal stand-in for ScreensaverMonitor (lock availability)."""
-
-    connection_changed = pyqtSignal(bool)
-
-    def __init__(self, connected: bool = True) -> None:
-        super().__init__()
-        self._connected = connected
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
 
 
 class TestDialogLockUnavailable:
@@ -189,7 +158,7 @@ class TestCloseIsDefaultButton:
         qapp.processEvents()
 
         assert dialog.result_target is None
-        assert client.apply_calls == []
+        assert client.apply_policy_calls == []
         assert not dialog.isVisible()
 
     def test_enter_does_not_trigger_allow(self, qapp, qtbot) -> None:
@@ -232,7 +201,7 @@ class TestDialogConnectionWarning:
         assert warn.called, f"{handler} did not warn while disconnected"
         # No choice was recorded, so the app will not apply anything.
         assert dialog.result_target is None
-        assert client.apply_calls == []
+        assert client.apply_policy_calls == []
         dialog.close()
 
     @pytest.mark.parametrize(
@@ -288,7 +257,7 @@ class TestDismissAppliesNothing:
         dialog._on_close()
 
         assert dialog.result_target is None
-        assert client.apply_calls == []
+        assert client.apply_policy_calls == []
 
     def test_close_is_never_blocked(self, qapp, qtbot, mocker) -> None:
         """Closing has no action that could fail, so it must never warn or stick."""
@@ -310,7 +279,7 @@ class TestDismissAppliesNothing:
         dialog._tick()
 
         assert dialog.result_target is None
-        assert client.apply_calls == []
+        assert client.apply_policy_calls == []
 
 
 class TestDialogRetargeting:

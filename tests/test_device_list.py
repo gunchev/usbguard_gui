@@ -6,55 +6,14 @@ import os
 from typing import ClassVar
 
 import pytest
-from PyQt6.QtCore import QObject, QSettings, Qt, pyqtSignal
+from fakes import _FakeClient, _FakeScreensaver
+from PyQt6.QtCore import QSettings, Qt
 
 from usbguard_gui import device_list
 from usbguard_gui.device import Device, DeviceTarget, Persistence
 from usbguard_gui.device_list import COLUMNS, DeviceListWindow, DeviceTableModel
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-
-class _FakeClient(QObject):
-    """Minimal stand-in for USBGuardClient that records calls and emits results on demand."""
-
-    device_presence_changed = pyqtSignal(int, int, int, str, dict)
-    device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-    connection_changed = pyqtSignal(bool)
-    list_devices_result = pyqtSignal(list)
-    list_rules_result = pyqtSignal(list)
-    remove_rule_result = pyqtSignal(bool)
-    permanent_write_failed = pyqtSignal(int, str, str)
-    permanent_clear_failed = pyqtSignal(int, str, str, bool)
-    permanent_rule_remains = pyqtSignal(int, str, str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._connected: bool = True
-        self.list_devices_calls: int = 0
-        self.list_rules_calls: int = 0
-        self.apply_policy_calls: list[tuple] = []
-        self.apply_policy_rules: list[str | None] = []
-        self.remove_rule_calls: list[int] = []
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
-
-    def list_devices(self, query: str = "match") -> None:
-        self.list_devices_calls += 1
-
-    def list_rules(self, label: str = "") -> None:
-        self.list_rules_calls += 1
-
-    def apply_device_policy(self, device_id: int, target,
-                            persistence: Persistence = Persistence.UNCHANGED,
-                            device_rule: str | None = None) -> None:
-        self.apply_policy_calls.append((device_id, target, persistence))
-        self.apply_policy_rules.append(device_rule)
-
-    def remove_rule(self, rule_id: int) -> None:
-        self.remove_rule_calls.append(rule_id)
 
 
 def _make_device(number: int = 1, rule: str = "block") -> Device:
@@ -64,20 +23,6 @@ def _make_device(number: int = 1, rule: str = "block") -> Device:
         "with-interface 03:00:00 with-connect-type hotplug"
     )
     return Device.from_dbus(number, rule_str)
-
-
-class _FakeScreensaver(QObject):
-    """Minimal stand-in for ScreensaverMonitor (lock availability)."""
-
-    connection_changed = pyqtSignal(bool)
-
-    def __init__(self, connected: bool = True) -> None:
-        super().__init__()
-        self._connected = connected
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
 
 
 @pytest.fixture()

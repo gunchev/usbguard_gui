@@ -8,7 +8,8 @@ import signal
 import time
 from unittest.mock import MagicMock, patch
 
-from PyQt6.QtCore import QObject, pyqtSignal
+import pytest
+from fakes import _FakeSettings
 
 from usbguard_gui.app import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE, MAX_PENDING_DECISIONS, \
     PROMPT_COOLDOWN_SEC, USBGuardTrayApp
@@ -106,95 +107,6 @@ class TestSignalHandlers:
 # ---------------------------------------------------------------------------
 
 
-class _FakeClient(QObject):
-    device_presence_changed = pyqtSignal(int, int, int, str, dict)
-    device_policy_changed = pyqtSignal(int, int, int, str, int, dict)
-    connection_changed = pyqtSignal(bool)
-    list_devices_result = pyqtSignal(list)
-    list_devices_correlated = pyqtSignal(int, list)
-    list_rules_result = pyqtSignal(list)
-    remove_rule_result = pyqtSignal(bool)
-    permanent_write_failed = pyqtSignal(int, str, str)
-    permanent_clear_failed = pyqtSignal(int, str, str, bool)
-    temporary_apply_failed = pyqtSignal(int, str, str, bool)
-    permanent_rule_remains = pyqtSignal(int, str, str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.apply_policy_calls: list[tuple] = []
-        self.persist_rule_calls: list[tuple] = []
-        self.apply_policy_rules: list[str | None] = []
-        self.remove_rule_calls: list[int] = []
-        self.list_devices_calls: int = 0
-        self.fetch_devices_calls: list[int] = []
-        self._connected = True
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
-
-    def list_devices(self, query: str = "match") -> None:
-        self.list_devices_calls += 1
-
-    def fetch_devices(self, request_id: int, query: str = "match") -> None:
-        self.fetch_devices_calls.append(request_id)
-
-    def apply_device_policy(self, device_id: int, target: DeviceTarget,
-                            persistence: Persistence = Persistence.UNCHANGED,
-                            device_rule: str | None = None) -> None:
-        self.apply_policy_calls.append((device_id, target, persistence))
-        self.apply_policy_rules.append(device_rule)
-
-    def persist_rule(self, device_id: int, target: DeviceTarget, device_rule: str) -> None:
-        self.persist_rule_calls.append((device_id, target, device_rule))
-
-    def list_rules(self, label: str = "") -> None:
-        pass
-
-    def remove_rule(self, rule_id: int) -> None:
-        self.remove_rule_calls.append(rule_id)
-
-    def connect(self) -> bool:  # type: ignore[override]
-        return True
-
-    def stop(self) -> None:
-        pass
-
-
-class _FakeScreensaver(QObject):
-    active_changed = pyqtSignal(bool)
-    inhibit_changed = pyqtSignal(bool)
-    connection_changed = pyqtSignal(bool)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.lock_calls: int = 0
-        self._active: bool = False
-        self._inhibited: bool = False
-        self._connected: bool = True
-
-    @property
-    def active(self) -> bool:
-        return self._active
-
-    @property
-    def inhibited(self) -> bool:
-        return self._inhibited
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
-
-    def connect(self) -> bool:  # type: ignore[override]
-        return True
-
-    def stop(self) -> None:
-        pass
-
-    def lock(self) -> None:
-        self.lock_calls += 1
-
-
 def _make_hid_device(number: int = 1) -> Device:
     rule_str = (
         'block id 1234:abcd serial "" name "Test Keyboard" '
@@ -202,45 +114,6 @@ def _make_hid_device(number: int = 1) -> Device:
         "with-interface 03:00:00 with-connect-type hotplug"
     )
     return Device.from_dbus(number, rule_str)
-
-
-import pytest  # noqa: E402 — after QObject subclasses so pyqtSignal is defined first
-
-
-class _FakeSettings:
-    """In-memory SettingsProtocol implementation.
-
-    Injected into USBGuardTrayApp so no test ever reads or writes the real
-    per-user config (~/.config/usbguard_gui/general.conf).  A preference
-    toggled in the running app used to flip HID test outcomes here; with the
-    seam, the suite controls its own settings.
-    """
-
-    def __init__(self, disable_hid_treatment: bool = False) -> None:
-        self._disable_hid: bool = disable_hid_treatment
-        self.write_calls: list[bool] = []
-
-    def disable_hid_treatment(self) -> bool:
-        return self._disable_hid
-
-    def set_disable_hid_treatment(self, value: bool) -> None:
-        self.write_calls.append(value)
-        self._disable_hid = value
-
-
-@pytest.fixture()
-def fake_client(qapp) -> _FakeClient:
-    return _FakeClient()
-
-
-@pytest.fixture()
-def fake_screensaver() -> _FakeScreensaver:
-    return _FakeScreensaver()
-
-
-@pytest.fixture()
-def fake_settings() -> _FakeSettings:
-    return _FakeSettings()
 
 
 @pytest.fixture()
