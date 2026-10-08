@@ -50,11 +50,11 @@ def dialog_identity(device: Device) -> str:
 class DecisionEngine(QObject):
     """Owns every piece of state a policy decision is made from.
 
-    The tray app reaches this state through property shims on itself; the
-    effect signals below are the engine's only UI surface — dialogs, tray
-    notices and the deferred lock are requests, never actions it performs
-    itself.  Handlers move here one reviewable step at a time against the
-    HID lock-first contract.
+    The effect signals below are the engine's only UI surface — dialogs,
+    tray notices and the deferred lock are requests, never actions it
+    performs itself.  The HID lock-first contract is specified in
+    `README.md`; this class and `gate.py` are where it is enforced, and the
+    app reads the fields it still needs directly through `_engine`.
     """
 
     show_dialog = pyqtSignal(object)  # Device to prompt for
@@ -91,8 +91,9 @@ class DecisionEngine(QObject):
         self._next_unlock_cycle_id: int = 0
         self._permanent_allow_hashes: set[str] = set()
         # Whether screen locking is available (ScreenSaver service reachable).
-        # While False, the HID lock-first flow cannot work and the UI must
-        # refuse all allow/deny actions — see _on_lock_availability_changed.
+        # While False, a lock-gated HID allow cannot proceed (gate.hid_allow_gated)
+        # and the user is noticed — see _on_lock_availability_changed.  Block,
+        # Reject and non-HID allows are never gated on it.
         self._lock_available: bool = screensaver.connected
         self._lock_state_confirmed: bool = False
 
@@ -450,7 +451,8 @@ class DecisionEngine(QObject):
         # locking is actually available: without it the deferred lock
         # would no-op, the 'Locking screen…' notice would be a lie, and
         # the pending device could never be auto-allowed.  Fall back to
-        # the normal prompt path (whose actions are disabled) instead.
+        # the normal prompt path (whose HID Allow buttons stay disabled
+        # while the lock stays down) instead.
         # The automatic-flow conjunction lives in _hid_lock_flow_applies.
         # A held HID Allow must obey the contract even when that flow cannot
         # run; _apply_pending_decision then requires a fresh choice instead.

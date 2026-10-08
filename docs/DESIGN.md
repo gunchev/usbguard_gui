@@ -229,7 +229,7 @@ to the GUI only through signals — it never touches QtWidgets:
 | `show_dialog`     | `Device`                         | a device needs a fresh prompt                    | `_show_device_dialog`        |
 | `dialog_retarget` | `Device`                         | a returning instance supersedes an open dialog   | `_retarget_device_dialog`    |
 | `notify`          | `str, str, str, int` (title, body, semantic icon, timeout) | lock-availability and handback notices | `_on_engine_notify` (maps the icon to `QSystemTrayIcon.MessageIcon`) |
-| `schedule_lock`   | —                                | the deferred HID lock delay elapsed, lock now    | `_schedule_hid_lock` (owns the single-shot `QTimer` and its never-restart guard) |
+| `schedule_lock`   | —                                | a HID device entered the pending set — start the deferred delay (never restarted) | `_schedule_hid_lock` (owns the single-shot `QTimer`) |
 
 The app-side handlers own presentation (tray notices, dialog lifecycle, the
 `QTimer`); the engine owns every piece of decision state behind

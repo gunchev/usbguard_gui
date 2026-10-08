@@ -9,9 +9,9 @@ Instructions for agentic coding agents working in this repository.
    app exists to enforce, and the flow is specified in `README.md` → *How It
    Works → HID Devices*. The implementation lives in `decision.py`
    (`DecisionEngine`), with `app.py` as its thin GUI host and `gate.py` as the
-   single authority for what a click may do. Touch either without the README
-   flow in hand and you risk re-opening a security bug, not just a functional
-   one.
+   single authority for what a click may do. Touch any of them without the
+   README flow in hand and you risk re-opening a security bug, not just a
+   functional one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
    not done. CI enforces it: the workflow runs plain `tox`, and `tox.ini` leads
    its envlist with `lint` and `typecheck` ahead of the `py310`–`py314` test

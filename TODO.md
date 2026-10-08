@@ -62,8 +62,9 @@
       confirmation — see `docs/REVIEW-2026-09-13-pr8-permanent-rules.md` for the review trail.
       Leaves two README lines behind: the unplaceable-first-rule case
       (`Policy::appendRule` rejects `parent_id = 0`, so nothing lands above rule #1) and the matcher's
-      undecidable-by-design `None` verdict. Land this **before** the lock-gate refinement below — its
-      tests are the baseline that change has to keep green — and its `rule_matches_device()` /
+      undecidable-by-design `None` verdict. (Sequenced before the lock-gate refinement,
+      which has since landed — the gate's tests are the baseline this race fix must keep
+      green.) Its `rule_matches_device()` /
       `rule_persistence_problem()` are the primitives the catch-all detection should reuse.
 - [x] Unlock-queue race: correlated per-call device fetch (Option 3) — `fetch_devices()` +
       `list_devices_correlated(id, devices)`, id→id-set dict in the app, device-list window
@@ -107,24 +108,33 @@
       **Supersedes** the *Permanent Block* item and **both** "warn when blocking a device that has
       a permanent allow rule" items: under this invariant a `Once` action clears the rule, so the
       silent divergence those items warned about no longer exists.
-- [ ] Lock-gate refinement: gate HID-capable devices only, and only while special HID treatment is enabled and
+- [x] Lock-gate refinement: gate HID-capable devices only, and only while special HID treatment is enabled and
       screen locking is unavailable (DESIGN.md contract + dialog/device-list gating + notification text + tests).
       Treatment disabled ⇒ no gating at all; lock-availability changes are log-only then.
       **Also narrow the gate to `ALLOW` only** — Block and Reject need no lock capability and
       make the situation strictly safer, yet today a ScreenSaver outage disables them too, so
       you cannot deny a suspicious device while the locker is down. Resolve together with
       `docs/REVIEW-2026-09-28.md` finding 10.
-- [ ] Stop the device list blanking to "no devices" on a transient D-Bus error.
+      (Done — `gate.py` is the single authority; dialog/device-list gate only HID
+      allows with treatment on; notices narrowed; table-driven tests in
+      `tests/test_gate.py`. Commit `3d218e9`.)
+- [x] Stop the device list blanking to "no devices" on a transient D-Bus error.
       `_do_list_devices` emits `[]` on `DBusError` and `DeviceListWindow` cannot tell that
       from a genuinely empty bus, so the table clears. Fix at the **signal** level (emit
       `None`, or add a success flag) rather than in the window, so no future consumer has to
       guess. The correlated path already proves the failure mode is real —
       `_on_correlated_devices` re-queues on an empty snapshot for exactly this reason.
       `docs/REVIEW-2026-09-28.md` finding 9.
-- [ ] Test the anti-lockout HID branch (`app.py:355-361`: HID inserted while the screen is
+      (Done — `list_devices_result` emits `None` on failure; both consumers keep
+      their previous state. Correlated path unchanged on purpose: its re-queue
+      retry still relies on `[]`. Commit `41f6324`.)
+- [x] Test the anti-lockout HID branch (HID inserted while the screen is
       already locked → immediate temporary allow). It is the only auto-allow path with no
       test, and a regression there locks the user out of their own machine rather than
       opening a hole. `docs/REVIEW-2026-09-28.md` finding 1.
+      (Done — `TestAntiLockoutBranch` in `tests/test_decision_engine.py`, added
+      in commit `747afae` before the split; the branch now lives in
+      `DecisionEngine._on_device_inserted`.)
 - [x] Delete or rename `Device.is_hid()` (all-interfaces-HID). Public, tested, used by
       nothing but its own tests; the security-correct check is `has_hid_interface()` (any
       interface). The name invites the wrong call and would silently exclude composite

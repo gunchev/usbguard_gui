@@ -83,8 +83,8 @@ class USBGuardTrayApp:
         # singleton.  See SettingsProtocol for why this seam exists.
         self._settings: SettingsProtocol = settings if settings is not None else Settings()
         # Every piece of state a decision is made from lives in the engine
-        # (DecisionEngine); the property shims below bridge the app's few
-        # remaining reads and the tests' old access paths.
+        # (DecisionEngine); the app's few remaining reads go straight through
+        # _engine (deliberate private access — there are no shims on the app).
         self._engine = DecisionEngine(self._client, self._screensaver, self._settings)
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
