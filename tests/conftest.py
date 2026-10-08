@@ -69,7 +69,7 @@ def queued_decision(tray_app, mocker):
         dialog = tray_app._open_dialogs[292]
         tray_app._on_device_presence_changed(292, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), rule, {})
         dialog._choose(target, persistence)
-        assert tray_app._pending_decisions, "precondition: the decision is queued"
+        assert tray_app._engine._pending_decisions, "precondition: the decision is queued"
         show.reset_mock()
         return show
 

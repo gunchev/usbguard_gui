@@ -211,7 +211,7 @@ class TestSettingsInjection:
 
         fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
 
-        assert app._hid_pending_devices == set()
+        assert app._engine._hid_pending_devices == set()
         assert not app._hid_lock_timer.isActive()
         assert fake_client.apply_policy_calls == []
         app._quit()
@@ -456,7 +456,7 @@ class TestReappearingDeviceDoesNotStackDialogs:
         tray_app._open_dialogs[1].reject()
 
         identity = dialog_identity(Device.from_dbus(1, self._IR))
-        tray_app._last_prompted_at[identity] = time.monotonic() - (PROMPT_COOLDOWN_SEC + 1)
+        tray_app._engine._last_prompted_at[identity] = time.monotonic() - (PROMPT_COOLDOWN_SEC + 1)
 
         tray_app._show_device_dialog(Device.from_dbus(2, self._IR))
 
@@ -560,9 +560,9 @@ class TestRetainedDialogsOnEarlyReturnPaths:
         dialog._on_block_once()
         assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
         assert fake_client.apply_policy_rules == [updated]
-        assert tray_app._pending_decisions == {}
-        assert tray_app._hid_pending_devices == set()
-        assert tray_app._screensaver_pending_devices == set()
+        assert tray_app._engine._pending_decisions == {}
+        assert tray_app._engine._hid_pending_devices == set()
+        assert tray_app._engine._screensaver_pending_devices == set()
         assert not tray_app._hid_lock_timer.isActive()
         tray_app._engine._on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
@@ -580,7 +580,7 @@ class TestRetainedDialogsOnEarlyReturnPaths:
 
         dialog._on_block_once()
 
-        assert tray_app._hid_pending_devices == {3}
+        assert tray_app._engine._hid_pending_devices == {3}
         assert tray_app._hid_lock_timer.isActive()
         fake_screensaver._active = True
         tray_app._engine._on_screensaver_locked(True)
@@ -616,7 +616,7 @@ class TestDeviceListDecisionCoordination:
         fake_screensaver.active_changed.emit(True)
 
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.BLOCK, persistence)]
-        assert tray_app._hid_pending_devices == set()
+        assert tray_app._engine._hid_pending_devices == set()
         assert not tray_app._hid_lock_timer.isActive()
 
     def test_a_new_allow_always_supersedes_a_held_block_once(self, tray_app, fake_client, fake_screensaver,
@@ -631,7 +631,7 @@ class TestDeviceListDecisionCoordination:
 
         window._apply(Device.from_dbus(301, IR_RULE), DeviceTarget.ALLOW, Persistence.ALWAYS)
 
-        assert tray_app._pending_decisions == {}
+        assert tray_app._engine._pending_decisions == {}
         assert tray_app._open_dialogs == {}
         fake_client.apply_policy_calls.clear()
         tray_app._on_device_presence_changed(301, PresenceEvent.REMOVE, DeviceTarget.ALLOW, IR_RULE, {})

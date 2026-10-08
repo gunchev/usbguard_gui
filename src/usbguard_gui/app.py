@@ -110,83 +110,6 @@ class USBGuardTrayApp:
         self._connect_signals()
         self._connect_client_signals()
 
-    # --- Decision state (Phase 3 seam) --------------------------------------
-    # The engine owns the storage; these shims bridge the app's remaining
-    # read (the prompt cooldown in _show_device_dialog) and the tests' old
-    # access paths.  Deleted once the tests target the engine directly.
-
-    @property
-    def _pending_decisions(self) -> dict[str, tuple[DeviceTarget, Persistence]]:
-        return self._engine._pending_decisions
-
-    @_pending_decisions.setter
-    def _pending_decisions(self, value: dict[str, tuple[DeviceTarget, Persistence]]) -> None:
-        self._engine._pending_decisions = value
-
-    @property
-    def _last_prompted_at(self) -> dict[str, float]:
-        return self._engine._last_prompted_at
-
-    @_last_prompted_at.setter
-    def _last_prompted_at(self, value: dict[str, float]) -> None:
-        self._engine._last_prompted_at = value
-
-    @property
-    def _hid_pending_devices(self) -> set[int]:
-        return self._engine._hid_pending_devices
-
-    @_hid_pending_devices.setter
-    def _hid_pending_devices(self, value: set[int]) -> None:
-        self._engine._hid_pending_devices = value
-
-    @property
-    def _screensaver_pending_devices(self) -> set[int]:
-        return self._engine._screensaver_pending_devices
-
-    @_screensaver_pending_devices.setter
-    def _screensaver_pending_devices(self, value: set[int]) -> None:
-        self._engine._screensaver_pending_devices = value
-
-    @property
-    def _pending_unlock_cycles(self) -> dict[int, set[int]]:
-        return self._engine._pending_unlock_cycles
-
-    @_pending_unlock_cycles.setter
-    def _pending_unlock_cycles(self, value: dict[int, set[int]]) -> None:
-        self._engine._pending_unlock_cycles = value
-
-    @property
-    def _next_unlock_cycle_id(self) -> int:
-        return self._engine._next_unlock_cycle_id
-
-    @_next_unlock_cycle_id.setter
-    def _next_unlock_cycle_id(self, value: int) -> None:
-        self._engine._next_unlock_cycle_id = value
-
-    @property
-    def _permanent_allow_hashes(self) -> set[str]:
-        return self._engine._permanent_allow_hashes
-
-    @_permanent_allow_hashes.setter
-    def _permanent_allow_hashes(self, value: set[str]) -> None:
-        self._engine._permanent_allow_hashes = value
-
-    @property
-    def _lock_available(self) -> bool:
-        return self._engine._lock_available
-
-    @_lock_available.setter
-    def _lock_available(self, value: bool) -> None:
-        self._engine._lock_available = value
-
-    @property
-    def _lock_state_confirmed(self) -> bool:
-        return self._engine._lock_state_confirmed
-
-    @_lock_state_confirmed.setter
-    def _lock_state_confirmed(self, value: bool) -> None:
-        self._engine._lock_state_confirmed = value
-
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(_app_icon(), self._app)
         self._tray.setToolTip("USBGuard GUI — connecting...")
@@ -496,13 +419,13 @@ class USBGuardTrayApp:
         # Dismissal and Block keep the cooldown; Allow clears it so a subsequent
         # blocked insertion can prompt again. Never silently replay an Allow.
         now = time.monotonic()
-        last = self._last_prompted_at.get(identity)
+        last = self._engine._last_prompted_at.get(identity)
         if last is not None and now - last < PROMPT_COOLDOWN_SEC:
             log.info("Device %s re-appeared as id %d %.1fs after the last prompt (cooldown %ds) -- "
                      "staying quiet; it remains blocked by policy",
                      identity, device.number, now - last, PROMPT_COOLDOWN_SEC)
             return
-        self._last_prompted_at[identity] = now
+        self._engine._last_prompted_at[identity] = now
         log.info("Prompting for device %d (identity %s)", device.number, identity)
 
         # Tray notification
