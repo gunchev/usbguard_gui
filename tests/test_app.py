@@ -2569,3 +2569,131 @@ class TestTheHandbackWarningPromisesNothingItCannotKeep:
 
         assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
         assert not any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
+
+
+class TestDecisionStateSources:
+    """The two signal feeds that decide before any prompt runs.
+
+    `_permanent_allow_hashes` decides whether a returning HID device is
+    skipped as already-whitelisted (app.py:485), and the permanent-write
+    failure is the only thing that tells the user a "permanent" choice
+    lasted until unplug.  Both arrive over client signals that no test had
+    ever emitted — the seeding path especially, since the whole cache was
+    being maintained untested.
+    """
+
+    _ALLOW = ('allow id 1234:abcd serial "" name "Camera" hash "camallow" '
+              'parent-hash "" via-port "1-1" with-interface 0e:01:00 with-connect-type "hotplug"')
+    _BLOCK = ('block id 1234:abcd serial "" name "Keyboard" hash "kbhash9" '
+              'parent-hash "" via-port "1-1" with-interface 03:00:00 with-connect-type "hotplug"')
+    _ALLOW_NO_HASH = 'allow id 1234:abcd serial "" name "NoHash" with-connect-type "hotplug"'
+
+    def test_allow_rule_hashes_seed_the_cache(self, tray_app, fake_client) -> None:
+        fake_client.list_rules_result.emit([(1, self._ALLOW), (2, self._BLOCK), (3, self._ALLOW_NO_HASH)])
+
+        assert tray_app._permanent_allow_hashes == {"camallow"}
+
+    def test_a_fresh_result_replaces_the_stale_cache(self, tray_app, fake_client) -> None:
+        tray_app._permanent_allow_hashes.add("gone")
+
+        fake_client.list_rules_result.emit([(1, self._ALLOW)])
+
+        assert tray_app._permanent_allow_hashes == {"camallow"}
+
+    def test_a_permanent_write_failure_announces_itself(self, tray_app, fake_client, mocker) -> None:
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+
+        fake_client.permanent_write_failed.emit(54, "allow", "Not authorized")
+
+        assert len(show.call_args_list) == 1
+        title, body, _icon, _ms = show.call_args.args
+        assert title == "Permanent rule not saved"
+        assert "54" in body and "allow" in body, f"the notice must name device and action: {body!r}"
+        assert "Not authorized" in body, "the daemon's reason is the only diagnosis the user gets"
+        assert "only until the device is unplugged" in body, \
+            "without this the user reads a failed permanent rule as done"
+
+
+class TestInsertionEntryGuards:
+    """The skips in front of the flow: only a fresh INSERT starts a reaction.
+
+    PRESENT fires for devices already connected at daemon start and UPDATE
+    on policy changes; treating either as an insertion would spawn dialogs
+    for every device at boot.  The empty-set guard on the HID lock timer
+    covers the mirror image: every pending device was unplugged during the
+    notification delay, and claiming a lock then would show a lie.
+    """
+
+    @pytest.mark.parametrize("event", [PresenceEvent.PRESENT, PresenceEvent.UPDATE])
+    def test_non_insert_events_open_nothing_and_apply_nothing(self, tray_app, fake_client, event) -> None:
+        fake_client.device_presence_changed.emit(1, int(event), int(DeviceTarget.BLOCK), KEYBOARD_RULE, {})
+
+        assert tray_app._open_dialogs == {}
+        assert tray_app._hid_pending_devices == set()
+        assert tray_app._screensaver_pending_devices == set()
+        assert fake_client.apply_policy_calls == []
+
+    def test_the_lock_timer_with_no_pending_devices_claims_no_lock(self, tray_app, fake_screensaver) -> None:
+        tray_app._hid_pending_devices.clear()
+
+        tray_app._lock_for_pending_hid()
+
+        assert fake_screensaver.lock_calls == 0
+
+    def test_a_stale_identity_entry_cannot_retarget_a_dialog_that_is_gone(self, tray_app) -> None:
+        """Identity remembers a dialog the map no longer holds — return False, keep both maps intact."""
+        device = Device.from_dbus(7, IR_RULE)
+        tray_app._open_dialog_identities[USBGuardTrayApp._dialog_identity(device)] = 99
+
+        assert tray_app._retarget_device_dialog(device) is False
+        assert tray_app._open_dialogs == {}
+
+
+class TestApplyPendingDecisionReturnContract:
+    """The drain's return value decides whether an insertion is consumed.
+
+    `_apply_pending_decision` runs before every other reaction at two call
+    sites (the INSERT handler and the prompt path): True means the user
+    already decided and nothing else may react; False means fall through to
+    the default flow.  The outcomes are reachable end-to-end through an
+    INSERT, but the method itself is what the engine extraction moves
+    wholesale — these pin it directly so a reordered branch fails here
+    before the flows that wrap it go green.
+    """
+
+    def test_nothing_queued_falls_through(self, tray_app) -> None:
+        assert tray_app._apply_pending_decision(Device.from_dbus(1, IR_RULE)) is False
+
+    def test_a_queued_block_is_consumed(self, tray_app, fake_client) -> None:
+        device = Device.from_dbus(301, IR_RULE)
+        tray_app._pending_decisions[USBGuardTrayApp._dialog_identity(device)] = (DeviceTarget.BLOCK,
+                                                                                 Persistence.ONCE)
+
+        assert tray_app._apply_pending_decision(device) is True
+        assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
+        assert tray_app._pending_decisions == {}
+
+    def test_a_queued_hid_allow_is_handed_back_not_consumed(self, tray_app, fake_client, mocker) -> None:
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        device = Device.from_dbus(301, KEYBOARD_RULE)
+        tray_app._pending_decisions[USBGuardTrayApp._dialog_identity(device)] = (DeviceTarget.ALLOW,
+                                                                                 Persistence.ONCE)
+
+        assert tray_app._apply_pending_decision(device) is False
+        assert fake_client.apply_policy_calls == [], "a stale click may never authorize a HID device"
+        assert tray_app._pending_decisions == {}, "the handback is not a re-queue"
+        assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
+
+    def test_lock_unavailable_keeps_the_decision_pending(self, tray_app, fake_client, fake_screensaver,
+                                                         mocker) -> None:
+        mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+        device = Device.from_dbus(301, IR_RULE)
+        identity = USBGuardTrayApp._dialog_identity(device)
+        tray_app._pending_decisions[identity] = (DeviceTarget.BLOCK, Persistence.ONCE)
+
+        assert tray_app._apply_pending_decision(device) is False
+        assert tray_app._pending_decisions == {identity: (DeviceTarget.BLOCK, Persistence.ONCE)}, \
+            "the choice must survive until locking can run"
+        assert fake_client.apply_policy_calls == []
