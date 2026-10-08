@@ -8,6 +8,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_client import USBGuardClient
 from usbguard_gui.device import Device, DeviceTarget, Persistence
+from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
 
@@ -150,3 +151,47 @@ class DecisionEngine(QObject):
 
         for device in pending_devices:
             self.show_dialog.emit(device)
+
+    def _cancel_pending_device(self, device_id: int) -> None:
+        """Invalidate deferred work and outstanding snapshots for one incarnation."""
+        self._hid_pending_devices.discard(device_id)
+        self._screensaver_pending_devices.discard(device_id)
+        for cycle_id, pending_ids in list(self._pending_unlock_cycles.items()):
+            pending_ids.discard(device_id)
+            if not pending_ids:
+                del self._pending_unlock_cycles[cycle_id]
+
+    def _lock_for_pending_hid(self) -> None:
+        """Lock the screen for a deferred HID insert, unless every triggering
+        device was unplugged during the notification delay."""
+        if not self._hid_pending_devices:
+            log.debug("HID lock timer fired with no pending devices — skipping lock")
+            return
+        if not lock_gate_open(self._lock_available):
+            # Locking became unavailable while the delay was running — do
+            # not claim to lock.  The pending devices stay blocked (safe);
+            # they are cleared on removal or the next lock.
+            log.warning("HID lock timer fired but screen locking is unavailable — devices stay blocked")
+            return
+        self._screensaver.lock()
+
+    def _on_screensaver_unlocked(self, active: bool) -> None:
+        """Screen unlocked: collect the devices deferred while the screen was
+        locked and show their summary prompts."""
+        if active or not self._screensaver_pending_devices:
+            return
+
+        cycle_id = self._register_unlock_cycle(self._screensaver_pending_devices)
+        self._screensaver_pending_devices.clear()
+        self._client.fetch_devices(cycle_id)
+
+    def _on_screensaver_locked(self, active: bool) -> None:
+        """Screen locked: auto-allow pending HID devices so the newly-attached
+        keyboard can be used to unlock."""
+        if not active or not self._hid_pending_devices:
+            return
+
+        pending_ids = list(self._hid_pending_devices)
+        self._hid_pending_devices = set()
+        for device_number in pending_ids:
+            self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
