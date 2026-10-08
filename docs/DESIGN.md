@@ -28,7 +28,9 @@ dependencies = [
 | `dbus_client.py`   | `_DBusThread`, `USBGuardClient`             | USBGuard system-bus D-Bus client           |
 | `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | ScreenSaver + logind session-bus monitor   |
 | `device.py`        | `Device`, `DeviceTarget`, `parse_device_rule` | Device model and rule-string parsing    |
-| `app.py`           | `USBGuardTrayApp`                           | Qt event loop, tray, routing               |
+| `decision.py`      | `DecisionEngine`                           | Lock-first decision flow: HID pending set, unlock cycles, queued decisions, effect signals |
+| `ui_strings.py`    | notice titles, warnings, live-authorization promises | Single home for user-visible strings |
+| `app.py`           | `USBGuardTrayApp`                           | Qt event loop, tray, dialogs, signal wiring |
 | `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow/Block × Always/Once prompt |
 | `device_list.py`   | `DeviceListWindow` (+ table models)         | Device list window                         |
 | `settings.py`      | `SettingsProtocol`, `Settings`              | Settings seam (Protocol) + QSettings-backed singleton |
@@ -205,13 +207,34 @@ without a handler retain the client-only API used by their isolated tests.
 | `inhibit_changed`   | `bool`     | logind ListInhibitors poll (idle-block mode)      |
 
 While `connection_changed` is `False` (screen locking unavailable), the app
-disables **all** allow/deny actions: allowing a keyboard without the ability
-to lock first would hand an attached-device attacker an unlocked session.
+refuses the one action the lock exists to guard: allowing a HID device while
+special HID treatment is enabled.  Block, Reject and non-HID allows keep
+working — denying a suspicious device must not depend on the locker — and
+with the treatment disabled nothing is gated (availability changes become
+log-only).  See `gate.py` for the rule and `README.md` for the user-facing
+contract.
 
 ScreenSaver owner changes invalidate the cached lock state without emitting a
 synthetic unlock event. Availability is restored only after `GetActive` succeeds
 for the current owner. Owner generations reject replies from departed services,
 and newer `ActiveChanged` signals outrank an in-flight query's snapshot.
+
+## DecisionEngine Signals
+
+`DecisionEngine` (`decision.py`) owns the lock-first decision flow and talks
+to the GUI only through signals — it never touches QtWidgets:
+
+| Signal            | Parameters                       | Emitted by                                      | Wired to (app side)          |
+|-------------------|----------------------------------|--------------------------------------------------|------------------------------|
+| `show_dialog`     | `Device`                         | a device needs a fresh prompt                    | `_show_device_dialog`        |
+| `dialog_retarget` | `Device`                         | a returning instance supersedes an open dialog   | `_retarget_device_dialog`    |
+| `notify`          | `str, str, str, int` (title, body, semantic icon, timeout) | lock-availability and handback notices | `_on_engine_notify` (maps the icon to `QSystemTrayIcon.MessageIcon`) |
+| `schedule_lock`   | —                                | the deferred HID lock delay elapsed, lock now    | `_schedule_hid_lock` (owns the single-shot `QTimer` and its never-restart guard) |
+
+The app-side handlers own presentation (tray notices, dialog lifecycle, the
+`QTimer`); the engine owns every piece of decision state behind
+`tray_app._engine` — there are deliberately no property shims on
+`USBGuardTrayApp`.
 
 ## dasbus → dbus-fast API mapping
 

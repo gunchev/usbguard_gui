@@ -7,8 +7,11 @@ Instructions for agentic coding agents working in this repository.
 1. **Preserve the HID lock-first contract.** A device exposing a HID interface may
    only be allowed while the screen is locked — that is the invariant this whole
    app exists to enforce, and the flow is specified in `README.md` → *How It
-   Works → HID Devices*. Touch `app.py` without it in hand and you risk re-
-   opening a security bug, not just a functional one.
+   Works → HID Devices*. The implementation lives in `decision.py`
+   (`DecisionEngine`), with `app.py` as its thin GUI host and `gate.py` as the
+   single authority for what a click may do. Touch either without the README
+   flow in hand and you risk re-opening a security bug, not just a functional
+   one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
    not done. CI enforces it: the workflow runs plain `tox`, and `tox.ini` leads
    its envlist with `lint` and `typecheck` ahead of the `py310`–`py314` test
@@ -145,11 +148,13 @@ diff exists, so `make check` actually fails on it.
 ### Settings & Test Isolation
 
 - App settings go through `SettingsProtocol` (`settings.py`), injected as
-  `USBGuardTrayApp(..., settings=...)`; `DeviceListWindow(..., settings=...)`
-  takes its `QSettings` geometry store the same way. Production injects nothing
-  and gets the real `Settings` singleton.
+  `USBGuardTrayApp(..., settings=...)`; `DeviceActionDialog(..., settings=...)`
+  and `DeviceListWindow(..., app_settings=...)` take the same protocol for the
+  lock gate, while `DeviceListWindow(..., settings=...)` is its `QSettings`
+  geometry store. Production injects nothing and gets the real `Settings`
+  singleton.
 - Adding a setting means extending **both** `SettingsProtocol` and `_FakeSettings`
-  (`tests/test_app.py`): the protocol is the contract, the fake is what the suite
+  (`tests/fakes.py`): the protocol is the contract, the fake is what the suite
   runs against. The device list gets a `tmp_path`-backed `QSettings` for the same
   reason — every test brings its own store, so a preference toggled in the running
   app can never change what the suite asserts.
@@ -160,24 +165,32 @@ diff exists, so `make check` actually fails on it.
 src/usbguard_gui/
     __init__.py       # Package init (exports __version__)
     __main__.py       # python -m entry point
-    app.py            # Main tray application (HID lock-first flow lives here)
+    app.py            # Main tray application: tray, dialogs, wiring (thin)
+    decision.py       # DecisionEngine — the HID lock-first flow lives here
     dbus_client.py    # D-Bus client for the USBGuard daemon
     dbus_common.py    # Shared worker-thread base: AsyncWorkerThread, get_introspection
     device.py         # Device model and rule parsing
     device_dialog.py  # Device action dialog window
     device_list.py    # Device list window
+    gate.py           # Action-gate authority: block_reason/lock_gate_open/hid_allow_gated
     screensaver.py    # Screensaver / lock-state monitoring
     settings.py       # SettingsProtocol + the QSettings-backed Settings singleton
+    ui_strings.py     # User-visible strings (notice titles, warnings)
     introspection/    # Bundled D-Bus introspection XML (must ship in the wheel)
 
 tests/
-    test_app.py             # Main tray application
+    fakes.py                # _FakeClient/_FakeScreensaver/_FakeSettings
+    conftest.py             # shared fixtures (fake_client, tray_app, queued_decision, rules)
+    test_app.py             # tray wiring / lifecycle
+    test_decision_engine.py # HID flow, unlock cycles, pending decisions, the gate
     test_device.py          # Device model
     test_device_dialog.py   # Action dialog
     test_device_list.py     # Device list window
     test_dbus_client.py     # D-Bus client
+    test_gate.py            # action-gate decision table
     test_async_api.py       # Async signal-based API
     test_settings.py        # SettingsProtocol conformance
+    test_permanent_rules.py # rules.conf write paths
     test_release.py         # Release scripts
 ```
 

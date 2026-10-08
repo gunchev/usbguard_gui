@@ -125,10 +125,11 @@
       already locked → immediate temporary allow). It is the only auto-allow path with no
       test, and a regression there locks the user out of their own machine rather than
       opening a hole. `docs/REVIEW-2026-09-28.md` finding 1.
-- [ ] Delete or rename `Device.is_hid()` (all-interfaces-HID). Public, tested, used by
+- [x] Delete or rename `Device.is_hid()` (all-interfaces-HID). Public, tested, used by
       nothing but its own tests; the security-correct check is `has_hid_interface()` (any
       interface). The name invites the wrong call and would silently exclude composite
       HID+MSC devices. `docs/REVIEW-2026-09-28.md` finding 4.
+      (Done — `is_hid` is gone; `tests/test_device.py` asserts it no longer exists.)
 - [ ] Test on LXQT (and XFCE if that machine is reachable).
 - [ ] Release v1.0 (`release.py`).
 
