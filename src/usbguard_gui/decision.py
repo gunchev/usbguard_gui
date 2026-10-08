@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.device import DeviceTarget, Persistence
+from usbguard_gui.device import Device, DeviceTarget, Persistence
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
+
+log = logging.getLogger(__name__)
+
+# Semantic notification icons — the engine never names a tray enum; the app
+# maps these onto QSystemTrayIcon.MessageIcon when it shows the message.
+NOTIFY_INFO = "info"
+NOTIFY_WARNING = "warning"
 
 # Cap on queued screensaver-unlock cycles.  Entries are only consumed by a
 # non-empty list_devices() result (a failed/empty snapshot deliberately does not
@@ -37,7 +46,7 @@ class DecisionEngine(QObject):
 
     show_dialog = pyqtSignal(object)  # Device to prompt for
     dialog_retarget = pyqtSignal(object)  # Device whose open dialog must follow it
-    notify = pyqtSignal(str, str, object, int)  # title, body, icon, timeout
+    notify = pyqtSignal(str, str, str, int)  # title, body, icon (NOTIFY_*), timeout
     lock_now = pyqtSignal()  # deferred HID lock is due
 
     def __init__(self, client: USBGuardClient, screensaver: ScreensaverMonitor, settings: SettingsProtocol,
@@ -73,3 +82,71 @@ class DecisionEngine(QObject):
         # refuse all allow/deny actions — see _on_lock_availability_changed.
         self._lock_available: bool = screensaver.connected
         self._lock_state_confirmed: bool = False
+
+    def _register_unlock_cycle(self, device_ids: set[int]) -> int:
+        """Record one deferred-unlock cycle and return the request id its fetch
+        must carry.
+
+        Past MAX_PENDING_UNLOCK_CYCLES the oldest cycle is dropped, so a daemon
+        that stays down across many lock/unlock cycles cannot grow the map for
+        the life of the process.  A dropped cycle loses only its prompt — the
+        devices stay blocked by USBGuard's policy.
+        """
+        cycle_id = self._next_unlock_cycle_id
+        self._next_unlock_cycle_id += 1
+        self._pending_unlock_cycles[cycle_id] = set(device_ids)
+        while len(self._pending_unlock_cycles) > MAX_PENDING_UNLOCK_CYCLES:
+            oldest = next(iter(self._pending_unlock_cycles))
+            dropped = self._pending_unlock_cycles.pop(oldest)
+            log.warning(
+                "Unlock-cycle queue full (%d) — dropping the oldest pending set (%d id(s)); "
+                "those devices stay blocked",
+                MAX_PENDING_UNLOCK_CYCLES,
+                len(dropped),
+            )
+        return cycle_id
+
+    def _retry_pending_unlock_cycles(self) -> None:
+        """Re-fetch every cycle still outstanding once the daemon is back.
+
+        A cycle keeps its id across retries, so a late answer to the failed
+        attempt resolves it just as well, while an answer for a cycle that has
+        already been resolved is ignored.
+        """
+        if not self._pending_unlock_cycles:
+            return
+        log.info("Reconnected — retrying %d outstanding unlock cycle(s)", len(self._pending_unlock_cycles))
+        for cycle_id in list(self._pending_unlock_cycles):
+            self._client.fetch_devices(cycle_id)
+
+    def _on_correlated_devices(self, request_id: int, devices: list[Device]) -> None:
+        """Resolve one unlock cycle against the snapshot fetched for it.
+
+        Anything that is not a cycle still waiting — another caller's fetch, or a
+        late answer for a cycle already resolved — is ignored.  That is the whole
+        point of the correlation: the device-list window's refreshes can no
+        longer consume an unlock cycle, and answers may arrive in any order.
+        """
+        pending_ids = self._pending_unlock_cycles.pop(request_id, None)
+        if pending_ids is None:
+            return
+
+        if not devices:
+            # An empty snapshot means the fetch fast-failed (daemon
+            # disconnected) or hit a DBusError.  Put the cycle back: the
+            # devices may still be present, and dropping the entry here is how a
+            # transient disconnect silently lost the prompt.  It gets retried
+            # when the daemon returns — see _retry_pending_unlock_cycles().
+            self._pending_unlock_cycles[request_id] = pending_ids
+            return
+
+        pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
+        if not pending_devices:
+            return
+
+        count = len(pending_devices)
+        names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
+        self.notify.emit(f"{count} USB device(s) connected during absence", names, NOTIFY_INFO, 10000)
+
+        for device in pending_devices:
+            self.show_dialog.emit(device)

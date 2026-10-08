@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.decision import MAX_PENDING_DECISIONS, MAX_PENDING_UNLOCK_CYCLES, DecisionEngine
+from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
@@ -271,6 +271,8 @@ class USBGuardTrayApp:
         self._screensaver.active_changed.connect(self._on_screensaver_unlocked)
         self._screensaver.active_changed.connect(self._on_screensaver_locked)
         self._screensaver.connection_changed.connect(self._on_lock_availability_changed)
+        self._engine.show_dialog.connect(self._show_device_dialog)
+        self._engine.notify.connect(self._on_engine_notify)
 
     def _on_lock_availability_changed(self, available: bool) -> None:
         # The monitor reports its state repeatedly (initial report plus
@@ -298,7 +300,7 @@ class USBGuardTrayApp:
 
     def _connect_client_signals(self) -> None:
         self._client.list_devices_result.connect(self._on_list_devices_result)
-        self._client.list_devices_correlated.connect(self._on_correlated_devices)
+        self._client.list_devices_correlated.connect(self._engine._on_correlated_devices)
         self._client.list_rules_result.connect(self._on_list_rules_result)
         self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
         self._client.permanent_clear_failed.connect(self._on_permanent_clear_failed)
@@ -421,7 +423,7 @@ class USBGuardTrayApp:
             self._reconnect_timer.stop()
             self._reconnect_attempts = 0  # Reset on successful connection
             self._client.list_rules()
-            self._retry_pending_unlock_cycles()
+            self._engine._retry_pending_unlock_cycles()
             return
 
         self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
@@ -624,78 +626,18 @@ class USBGuardTrayApp:
         if active or not self._screensaver_pending_devices:
             return
 
-        cycle_id = self._register_unlock_cycle(self._screensaver_pending_devices)
+        cycle_id = self._engine._register_unlock_cycle(self._screensaver_pending_devices)
         self._screensaver_pending_devices.clear()
         self._client.fetch_devices(cycle_id)
 
-    def _register_unlock_cycle(self, device_ids: set[int]) -> int:
-        """Record one deferred-unlock cycle and return the request id its fetch
-        must carry.
-
-        Past MAX_PENDING_UNLOCK_CYCLES the oldest cycle is dropped, so a daemon
-        that stays down across many lock/unlock cycles cannot grow the map for
-        the life of the process.  A dropped cycle loses only its prompt — the
-        devices stay blocked by USBGuard's policy.
-        """
-        cycle_id = self._next_unlock_cycle_id
-        self._next_unlock_cycle_id += 1
-        self._pending_unlock_cycles[cycle_id] = set(device_ids)
-        while len(self._pending_unlock_cycles) > MAX_PENDING_UNLOCK_CYCLES:
-            oldest = next(iter(self._pending_unlock_cycles))
-            dropped = self._pending_unlock_cycles.pop(oldest)
-            log.warning(
-                "Unlock-cycle queue full (%d) — dropping the oldest pending set (%d id(s)); "
-                "those devices stay blocked",
-                MAX_PENDING_UNLOCK_CYCLES,
-                len(dropped),
-            )
-        return cycle_id
-
-    def _retry_pending_unlock_cycles(self) -> None:
-        """Re-fetch every cycle still outstanding once the daemon is back.
-
-        A cycle keeps its id across retries, so a late answer to the failed
-        attempt resolves it just as well, while an answer for a cycle that has
-        already been resolved is ignored.
-        """
-        if not self._pending_unlock_cycles:
-            return
-        log.info("Reconnected — retrying %d outstanding unlock cycle(s)", len(self._pending_unlock_cycles))
-        for cycle_id in list(self._pending_unlock_cycles):
-            self._client.fetch_devices(cycle_id)
-
-    def _on_correlated_devices(self, request_id: int, devices: list[Device]) -> None:
-        """Resolve one unlock cycle against the snapshot fetched for it.
-
-        Anything that is not a cycle still waiting — another caller's fetch, or a
-        late answer for a cycle already resolved — is ignored.  That is the whole
-        point of the correlation: the device-list window's refreshes can no
-        longer consume an unlock cycle, and answers may arrive in any order.
-        """
-        pending_ids = self._pending_unlock_cycles.pop(request_id, None)
-        if pending_ids is None:
-            return
-
-        if not devices:
-            # An empty snapshot means the fetch fast-failed (daemon
-            # disconnected) or hit a DBusError.  Put the cycle back: the
-            # devices may still be present, and dropping the entry here is how a
-            # transient disconnect silently lost the prompt.  It gets retried
-            # when the daemon returns — see _retry_pending_unlock_cycles().
-            self._pending_unlock_cycles[request_id] = pending_ids
-            return
-
-        pending_devices = [d for d in devices if d.number in pending_ids and not d.is_allowed()]
-        if not pending_devices:
-            return
-
-        count = len(pending_devices)
-        names = "\n".join(f"  - {d.name or d.id} ({d.class_description_string()})" for d in pending_devices)
-        info = QSystemTrayIcon.MessageIcon.Information
-        self._tray.showMessage(f"{count} USB device(s) connected during absence", names, info, 10000)
-
-        for device in pending_devices:
-            self._show_device_dialog(device)
+    def _on_engine_notify(self, title: str, body: str, icon: str, timeout: int) -> None:
+        """Show an engine-originated tray notification, mapping its semantic
+        icon name onto the tray's MessageIcon enum."""
+        if icon == NOTIFY_WARNING:
+            message_icon = QSystemTrayIcon.MessageIcon.Warning
+        else:
+            message_icon = QSystemTrayIcon.MessageIcon.Information
+        self._tray.showMessage(title, body, message_icon, timeout)
 
     def _on_screensaver_locked(self, active: bool) -> None:
         """Screen locked: auto-allow pending HID devices so the newly-attached
