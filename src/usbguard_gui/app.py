@@ -466,18 +466,18 @@ class USBGuardTrayApp:
             )
             if target_new == int(DeviceTarget.ALLOW):
                 d = Device.from_dbus(device_id, device_rule)
-                self._last_prompted_at.pop(dialog_identity(d), None)
                 # Device was allowed by a permanent rule after the initial block —
                 # dismiss any dialog that opened on the INSERT event.
                 dialog = self._open_dialogs.pop(device_id, None)
                 if dialog:
                     log.debug("DevicePolicyChanged: id=%d closing dialog (device now allowed)", device_id)
                     dialog.close()
+                # The wrapper clears the engine's pending sets and stops the
+                # deferred lock; the engine drops the cooldown and seeds its
+                # permanent-allow cache.  The two touch disjoint state, so
+                # running the cancellation first loses nothing.
                 self._cancel_pending_device(device_id)
-                # Seed the permanent-allow cache so future re-insertions skip
-                # HID treatment.
-                if rule_id > 0 and d.hash:
-                    self._permanent_allow_hashes.add(d.hash)
+                self._engine._on_device_allowed(d, rule_id)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
 

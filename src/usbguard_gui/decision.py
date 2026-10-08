@@ -289,6 +289,21 @@ class DecisionEngine(QObject):
                                          device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         return True
 
+    def _on_device_allowed(self, device: Device, rule_id: int) -> None:
+        """React to a device becoming allowed by policy.
+
+        Clears the prompt cooldown — an allow lets a later blocked insertion
+        prompt again — and seeds the permanent-allow cache so future
+        re-insertions skip HID treatment.  Cancelling pending work stays in
+        the app's `_cancel_pending_device` wrapper: only it knows when the
+        deferred-lock timer may stop.
+        """
+        self._last_prompted_at.pop(dialog_identity(device), None)
+        # Seed the permanent-allow cache so future re-insertions skip
+        # HID treatment.
+        if rule_id > 0 and device.hash:
+            self._permanent_allow_hashes.add(device.hash)
+
     def _on_device_inserted(self, device: Device, target: int) -> None:
         """React to a new insertion: replay held decisions, run the HID
         lock-first flow, defer while locked, or emit the prompt.
