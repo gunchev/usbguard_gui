@@ -7,11 +7,11 @@ import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from usbguard_gui.dbus_client import USBGuardClient
-from usbguard_gui.device import Device, DeviceTarget, Persistence
+from usbguard_gui.device import Device, DeviceTarget, Persistence, enum_name
 from usbguard_gui.gate import lock_gate_open
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import SettingsProtocol
-from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE
+from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE, HID_ATTACHED_NOTICE_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class DecisionEngine(QObject):
     show_dialog = pyqtSignal(object)  # Device to prompt for
     dialog_retarget = pyqtSignal(object)  # Device whose open dialog must follow it
     notify = pyqtSignal(str, str, str, int)  # title, body, icon (NOTIFY_*), timeout
-    lock_now = pyqtSignal()  # deferred HID lock is due
+    schedule_lock = pyqtSignal()  # the deferred HID lock may be scheduled
 
     def __init__(self, client: USBGuardClient, screensaver: ScreensaverMonitor, settings: SettingsProtocol,
                  parent: QObject | None = None) -> None:
@@ -288,3 +288,101 @@ class DecisionEngine(QObject):
         self._client.apply_device_policy(device.number, target, persistence,
                                          device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         return True
+
+    def _on_device_inserted(self, device: Device, target: int) -> None:
+        """React to a new insertion: replay held decisions, run the HID
+        lock-first flow, defer while locked, or emit the prompt.
+
+        Removals never reach here — the app handles them alongside its dialog
+        bookkeeping and calls `_cancel_pending_device` directly.
+        """
+        # Synchronize retained dialogs even when this insertion will not
+        # prompt (already allowed, HID lock flow, or screensaver deferral).
+        self.dialog_retarget.emit(device)
+
+        # Before anything else: a decision the user already made about this
+        # device outranks every reaction below, including the ones that never
+        # reach a prompt.  A device that comes back already allowed, or a HID
+        # device heading for the lock-first flow, used to skip straight past
+        # the queue and do the default instead.
+        if self._apply_pending_decision(device):
+            return
+
+        # Use the target from the signal directly — more reliable than
+        # parsing the rule string, which may not reflect the applied target.
+        if target == int(DeviceTarget.ALLOW):
+            log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device.number)
+            return
+
+        log.info("INSERT device %d %s %r identity=%s target=%s", device.number, device.id,
+                 device.name or "", dialog_identity(device), enum_name(DeviceTarget, target))
+
+        # HID devices are handled before the screensaver check so that a
+        # newly-attached keyboard can be used to unlock the screen.
+        # has_hid_interface() catches composite devices (e.g. HID + MSC)
+        # too — any HID interface can send keystrokes.
+        #
+        # The special-treatment path (auto-allow then lock) is skipped
+        # entirely when the user has disabled it in settings OR when
+        # screen locking is currently inhibited by a logind idle/block
+        # inhibitor (dnf/rpm transaction, GNOME/KDE "Prevent screen
+        # lock", systemd-inhibit --what=idle, ...). Auto-allowing a HID
+        # device while lock is inhibited would hand an attached-keyboard
+        # attacker typed input with no password prompt to gate it.
+        has_hid = device.has_hid_interface()
+        hid_treatment_enabled = not self._settings.disable_hid_treatment()
+        lock_inhibited = self._screensaver.inhibited
+        # The auto-allow-then-lock flow additionally requires that
+        # locking is actually available: without it the deferred lock
+        # would no-op, the 'Locking screen…' notice would be a lie, and
+        # the pending device could never be auto-allowed.  Fall back to
+        # the normal prompt path (whose actions are disabled) instead.
+        # The automatic-flow conjunction lives in _hid_lock_flow_applies.
+        # A held HID Allow must obey the contract even when that flow cannot
+        # run; _apply_pending_decision then requires a fresh choice instead.
+        hid_special_treatment = self._hid_lock_flow_applies(device)
+        if hid_special_treatment:
+            if self._screensaver.active:
+                log.info(
+                    "HID device %d inserted while screen locked, allowing temporarily so it can unlock",
+                    device.number,
+                )
+                self._client.apply_device_policy(device.number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
+                return
+            # Skip HID treatment for devices that are already whitelisted
+            # (matching a permanent allow rule from the daemon's policy).
+            if device.hash and device.hash in self._permanent_allow_hashes:
+                log.debug("DevicePresenceChanged: id=%d skipped (permanent allow hash match)", device.number)
+                return
+            self._hid_pending_devices.add(device.number)
+            self.notify.emit(
+                HID_ATTACHED_NOTICE_TITLE,
+                "Locking screen. Enter your password to activate the device. "
+                "If you did not attach a keyboard, check for malicious devices.",
+                NOTIFY_WARNING,
+                5000,
+            )
+            # Never restart an already-running lock timer: a second HID insert
+            # would push the first device's lock back by another full delay.
+            # _hid_pending_devices already covers every waiting device, so the
+            # earliest scheduled lock serves them all.  The QTimer lives
+            # app-side; its schedule_lock slot owns the isActive guard.
+            self.schedule_lock.emit()
+            return
+        elif has_hid and hid_treatment_enabled:
+            # lock_inhibited or not lock_available — fall through to the
+            # normal prompt path
+            reason = "screen locking is inhibited" if lock_inhibited else "screen locking is unavailable"
+            log.info(
+                "HID device %d inserted while %s — falling back to prompt (will not auto-allow)",
+                device.number,
+                reason,
+            )
+
+        # Non-HID device: defer while screen is locked, otherwise prompt.
+        if self._screensaver.active:
+            self._screensaver_pending_devices.add(device.number)
+            log.info("Device %d inserted while screen locked, deferring", device.number)
+            return
+
+        self.show_dialog.emit(device)

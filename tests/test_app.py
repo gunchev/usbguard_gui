@@ -587,16 +587,15 @@ class TestHIDWhenLockInhibited:
     def test_hid_insert_triggers_prompt_when_inhibited(self, tray_app, fake_client, fake_screensaver, qtbot) -> None:
         fake_screensaver._inhibited = True
 
-        with patch.object(tray_app, "_show_device_dialog") as show_dialog:
-            fake_client.device_presence_changed.emit(
-                1, 1, int(DeviceTarget.BLOCK),
-                'block id 1234:abcd serial "" name "Test Keyboard" '
-                'hash "abc123" parent-hash "" via-port "1-1" '
-                'with-interface 03:00:00 with-connect-type hotplug',
-                {},
-            )
+        fake_client.device_presence_changed.emit(
+            1, 1, int(DeviceTarget.BLOCK),
+            'block id 1234:abcd serial "" name "Test Keyboard" '
+            'hash "abc123" parent-hash "" via-port "1-1" '
+            'with-interface 03:00:00 with-connect-type hotplug',
+            {},
+        )
 
-        show_dialog.assert_called_once()
+        assert set(tray_app._open_dialogs) == {1}
         assert fake_client.apply_policy_calls == []
         assert fake_screensaver.lock_calls == 0
         assert tray_app._hid_pending_devices == set()
@@ -883,10 +882,9 @@ class TestLockAvailability:
         (whose actions are disabled) instead of the deferred lock."""
         fake_screensaver.connection_changed.emit(False)
 
-        with patch.object(tray_app, "_show_device_dialog") as show_dialog:
-            fake_client.device_presence_changed.emit(1, 1, int(DeviceTarget.BLOCK), self._HID_RULE, {})
+        fake_client.device_presence_changed.emit(1, 1, int(DeviceTarget.BLOCK), self._HID_RULE, {})
 
-        show_dialog.assert_called_once()
+        assert set(tray_app._open_dialogs) == {1}
         assert fake_client.apply_policy_calls == []
         assert fake_screensaver.lock_calls == 0
         assert tray_app._hid_pending_devices == set()
@@ -2596,7 +2594,7 @@ class TestDecisionEngineStateSeam:
         assert engine._lock_state_confirmed is False
 
     def test_the_effect_signals_are_declared_for_phase_4(self, tray_app) -> None:
-        for name in ("show_dialog", "dialog_retarget", "notify", "lock_now"):
+        for name in ("show_dialog", "dialog_retarget", "notify", "schedule_lock"):
             assert hasattr(tray_app._engine, name), f"the engine must expose {name}"
 
     def test_assignment_through_the_tray_reaches_the_engine(self, tray_app) -> None:

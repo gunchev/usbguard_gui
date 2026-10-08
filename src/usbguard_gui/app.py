@@ -7,7 +7,6 @@ import os
 import signal
 import sys
 import time
-from enum import Enum
 from pathlib import Path
 
 from PyQt6.QtCore import QLockFile, QStandardPaths, QTimer
@@ -17,13 +16,13 @@ from PyQt6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 import usbguard_gui
 from usbguard_gui.dbus_client import USBGuardClient
 from usbguard_gui.decision import MAX_PENDING_DECISIONS, NOTIFY_WARNING, DecisionEngine, dialog_identity
-from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, parse_device_rule
+from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent, enum_name, parse_device_rule
 from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
 from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, \
-    HID_ATTACHED_NOTICE_TITLE, LOCK_AVAILABLE_NOTICE_TITLE, LOCK_UNAVAILABLE_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
+    LOCK_AVAILABLE_NOTICE_TITLE, LOCK_UNAVAILABLE_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
     PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE, TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE, \
     TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE
 
@@ -46,14 +45,6 @@ def _app_icon() -> QIcon:
     if _DEV_SVG.exists():
         return QIcon(str(_DEV_SVG))
     return QIcon.fromTheme("drive-removable-media")
-
-
-def _enum_name(enum: type[Enum], value: int, fallback: str = "?") -> str:
-    """Return the name of an enum member by value, or a fallback string."""
-    try:
-        return enum(value).name
-    except ValueError:
-        return fallback
 
 
 # Base seconds between reconnection attempts (will be exponentially increased)
@@ -252,6 +243,8 @@ class USBGuardTrayApp:
         self._screensaver.connection_changed.connect(self._on_lock_availability_changed)
         self._engine.show_dialog.connect(self._show_device_dialog)
         self._engine.notify.connect(self._on_engine_notify)
+        self._engine.dialog_retarget.connect(self._retarget_device_dialog)
+        self._engine.schedule_lock.connect(self._schedule_hid_lock)
 
     def _on_lock_availability_changed(self, available: bool) -> None:
         # The monitor reports its state repeatedly (initial report plus
@@ -421,9 +414,9 @@ class USBGuardTrayApp:
                 "DevicePresenceChanged: id=%d event=%d(%s) target=%d(%s) rule=%r attributes=%r",
                 device_id,
                 event,
-                _enum_name(PresenceEvent, event),
+                enum_name(PresenceEvent, event),
                 target,
-                _enum_name(DeviceTarget, target),
+                enum_name(DeviceTarget, target),
                 device_rule,
                 attributes,
             )
@@ -453,97 +446,12 @@ class USBGuardTrayApp:
                 log.debug("DevicePresenceChanged: id=%d skipped (not INSERT)", device_id)
                 return
 
+            # Parse here so a malformed rule still fails inside this handler's
+            # own log-and-continue guard; everything after is the engine's
+            # decision flow, whose effects (dialog retarget, tray notices, the
+            # deferred-lock schedule, the prompt) arrive as signals.
             device = Device.from_dbus(device_id, device_rule)
-            # Synchronize retained dialogs even when this insertion will not
-            # prompt (already allowed, HID lock flow, or screensaver deferral).
-            self._retarget_device_dialog(device)
-
-            # Before anything else: a decision the user already made about this
-            # device outranks every reaction below, including the ones that never
-            # reach a prompt.  A device that comes back already allowed, or a HID
-            # device heading for the lock-first flow, used to skip straight past
-            # the queue and do the default instead.
-            if self._engine._apply_pending_decision(device):
-                return
-
-            # Use the target from the signal directly — more reliable than
-            # parsing the rule string, which may not reflect the applied target.
-            if target == int(DeviceTarget.ALLOW):
-                log.debug("DevicePresenceChanged: id=%d skipped (target=ALLOW)", device_id)
-                return
-
-            log.info("INSERT device %d %s %r identity=%s target=%s", device_id, device.id,
-                     device.name or "", dialog_identity(device), _enum_name(DeviceTarget, target))
-
-            # HID devices are handled before the screensaver check so that a
-            # newly-attached keyboard can be used to unlock the screen.
-            # has_hid_interface() catches composite devices (e.g. HID + MSC)
-            # too — any HID interface can send keystrokes.
-            #
-            # The special-treatment path (auto-allow then lock) is skipped
-            # entirely when the user has disabled it in settings OR when
-            # screen locking is currently inhibited by a logind idle/block
-            # inhibitor (dnf/rpm transaction, GNOME/KDE "Prevent screen
-            # lock", systemd-inhibit --what=idle, ...). Auto-allowing a HID
-            # device while lock is inhibited would hand an attached-keyboard
-            # attacker typed input with no password prompt to gate it.
-            has_hid = device.has_hid_interface()
-            hid_treatment_enabled = not self._settings.disable_hid_treatment()
-            lock_inhibited = self._screensaver.inhibited
-            # The auto-allow-then-lock flow additionally requires that
-            # locking is actually available: without it the deferred lock
-            # would no-op, the 'Locking screen…' notice would be a lie, and
-            # the pending device could never be auto-allowed.  Fall back to
-            # the normal prompt path (whose actions are disabled) instead.
-            # The automatic-flow conjunction lives in _hid_lock_flow_applies.
-            # A held HID Allow must obey the contract even when that flow cannot
-            # run; _apply_pending_decision then requires a fresh choice instead.
-            hid_special_treatment = self._engine._hid_lock_flow_applies(device)
-            if hid_special_treatment:
-                if self._screensaver.active:
-                    log.info(
-                        "HID device %d inserted while screen locked, allowing temporarily so it can unlock",
-                        device_id,
-                    )
-                    self._client.apply_device_policy(device_id, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
-                    return
-                # Skip HID treatment for devices that are already whitelisted
-                # (matching a permanent allow rule from the daemon's policy).
-                if device.hash and device.hash in self._permanent_allow_hashes:
-                    log.debug("DevicePresenceChanged: id=%d skipped (permanent allow hash match)", device_id)
-                    return
-                self._hid_pending_devices.add(device_id)
-                self._tray.showMessage(
-                    HID_ATTACHED_NOTICE_TITLE,
-                    "Locking screen. Enter your password to activate the device. "
-                    "If you did not attach a keyboard, check for malicious devices.",
-                    QSystemTrayIcon.MessageIcon.Warning,
-                    5000,
-                )
-                # Never restart an already-running lock timer: a second HID insert
-                # would push the first device's lock back by another full delay.
-                # _hid_pending_devices already covers every waiting device, so the
-                # earliest scheduled lock serves them all.
-                if not self._hid_lock_timer.isActive():
-                    self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
-                return
-            elif has_hid and hid_treatment_enabled:
-                # lock_inhibited or not lock_available — fall through to the
-                # normal prompt path
-                reason = "screen locking is inhibited" if lock_inhibited else "screen locking is unavailable"
-                log.info(
-                    "HID device %d inserted while %s — falling back to prompt (will not auto-allow)",
-                    device_id,
-                    reason,
-                )
-
-            # Non-HID device: defer while screen is locked, otherwise prompt.
-            if self._screensaver.active:
-                self._screensaver_pending_devices.add(device_id)
-                log.info("Device %d inserted while screen locked, deferring", device_id)
-                return
-
-            self._show_device_dialog(device)
+            self._engine._on_device_inserted(device, target)
         except Exception as e:
             log.exception("Error in _on_device_presence_changed for device %d: %s", device_id, e)
 
@@ -553,8 +461,8 @@ class USBGuardTrayApp:
             log.debug(
                 "DevicePolicyChanged: id=%d %s->%s",
                 device_id,
-                _enum_name(DeviceTarget, target_old, fallback=str(target_old)),
-                _enum_name(DeviceTarget, target_new, fallback=str(target_new)),
+                enum_name(DeviceTarget, target_old, fallback=str(target_old)),
+                enum_name(DeviceTarget, target_new, fallback=str(target_new)),
             )
             if target_new == int(DeviceTarget.ALLOW):
                 d = Device.from_dbus(device_id, device_rule)
@@ -572,6 +480,17 @@ class USBGuardTrayApp:
                     self._permanent_allow_hashes.add(d.hash)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
+
+    def _schedule_hid_lock(self) -> None:
+        """Start the deferred HID lock delay on the engine's request.
+
+        Never restart an already-running lock timer: a second HID insert
+        would push the first device's lock back by another full delay.
+        The engine's _hid_pending_devices already covers every waiting
+        device, so the earliest scheduled lock serves them all.
+        """
+        if not self._hid_lock_timer.isActive():
+            self._hid_lock_timer.start(HID_LOCK_NOTIFY_DELAY_MS)
 
     def _cancel_pending_device(self, device_id: int) -> None:
         """Invalidate deferred work for one incarnation and stop the deferred

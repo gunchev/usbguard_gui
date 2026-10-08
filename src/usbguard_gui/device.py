@@ -42,6 +42,14 @@ class PresenceEvent(IntEnum):
     REMOVE = 3
 
 
+def enum_name(enum: type[Enum], value: int, fallback: str = "?") -> str:
+    """Return the name of an enum member by value, or a fallback string."""
+    try:
+        return enum(value).name
+    except ValueError:
+        return fallback
+
+
 # USB device class codes → human-readable descriptions.
 # See https://www.usb.org/defined-class-codes
 USB_CLASS_DESCRIPTIONS: dict[int, str] = {
