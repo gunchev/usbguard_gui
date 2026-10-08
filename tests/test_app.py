@@ -1385,6 +1385,73 @@ class TestAutomaticAllowsNeverClearPersistence:
         assert fake_client.remove_rule_calls == []
 
 
+class TestAntiLockoutBranch:
+    """The locked-screen allow must stand alone — REVIEW-2026-09-28 finding #1.
+
+    A HID device inserted while the screen is already locked is allowed at
+    once so it can type the password; that allow is the invariant this app
+    exists to enforce.  What this class pins is everything the branch must
+    NOT do around it: no dialog, no deferred state, no lock timer, no notice
+    a locked user cannot read — and, crucially, that the allow runs before
+    the permanent-hash cache skip, so a whitelisted keyboard is still let
+    through while locked.
+    """
+
+    _RULE = ('block id 1234:abcd serial "" name "Keyboard" hash "aaa111" '
+             'parent-hash "" via-port "1-1" with-interface 03:00:00 '
+             'with-connect-type hotplug')
+
+    def test_the_allow_fires_alone(self, tray_app, fake_client, fake_screensaver, mocker) -> None:
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+        assert tray_app._open_dialogs == {}
+        assert tray_app._hid_pending_devices == set()
+        assert tray_app._screensaver_pending_devices == set()
+        assert not tray_app._hid_lock_timer.isActive()
+        assert not show.called
+
+    def test_the_allow_precedes_the_permanent_cache_skip(self, tray_app, fake_client,
+                                                         fake_screensaver) -> None:
+        """Ordering pin: the hash-cache skip must not eat the locked-screen allow.
+
+        The cache check sits after the anti-lockout branch in
+        _on_device_presence_changed.  A refactor that moved it first would
+        let a whitelisted keyboard be skipped while the screen is locked,
+        leaving it unable to type the password that unlocks the session.
+        """
+        tray_app._permanent_allow_hashes.add("aaa111")
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
+
+    def test_disabled_treatment_defers_while_locked_instead_of_allowing(
+            self, qapp, fake_client, fake_screensaver) -> None:
+        """Settings off: a locked screen defers the insert — it never auto-allows."""
+        with (
+            patch("usbguard_gui.app.USBGuardClient", return_value=fake_client),
+            patch("usbguard_gui.app.ScreensaverMonitor", return_value=fake_screensaver),
+        ):
+            app = USBGuardTrayApp(qapp, settings=_FakeSettings(disable_hid_treatment=True))
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
+
+        assert fake_client.apply_policy_calls == []
+        assert app._screensaver_pending_devices == {1}
+        assert app._hid_pending_devices == set()
+        assert app._open_dialogs == {}
+        app._quit()
+
+
 class TestBroaderRuleWarning:
     """A `Once` that leaves a wildcard rule in force must be announced.
 
