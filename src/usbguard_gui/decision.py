@@ -21,9 +21,9 @@ log = logging.getLogger(__name__)
 NOTIFY_INFO = "info"
 NOTIFY_WARNING = "warning"
 
-# Cap on queued screensaver-unlock cycles.  Entries are only consumed by a
-# non-empty list_devices() result (a failed/empty snapshot deliberately does not
-# consume one, so a transient daemon disconnect cannot drop a prompt), which means
+# Cap on queued screensaver-unlock cycles.  Entries are only consumed by a real
+# fetch_devices() answer (a failed snapshot, emitted as None, deliberately does
+# not consume one, so a transient daemon disconnect cannot drop a prompt), which means
 # a daemon that stays down while the user keeps locking/unlocking would otherwise
 # grow the queue for the life of the process.  Dropping the oldest cycle loses only
 # a prompt; the devices stay blocked.

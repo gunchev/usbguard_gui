@@ -123,12 +123,13 @@ src/usbguard_gui/introspection/
 | `device_presence_changed` | `int, int, int, str, dict`              | D-Bus DevicePresenceChanged  |
 | `device_policy_changed`   | `int, int, int, str, int, dict`         | D-Bus DevicePolicyChanged    |
 | `list_devices_result`     | `list[Device] | None`                    | result of `list_devices()`; `None` = transient failure |
-| `list_devices_correlated` | `int, list[Device]`                     | result of `fetch_devices(request_id)` |
+| `list_devices_correlated` | `int, list[Device] | None`              | result of `fetch_devices(request_id)`; `None` = transient failure |
 | `list_rules_result`       | `list[tuple[int, str]]`                 | result of `list_rules()`     |
 | `remove_rule_result`      | `bool`                                  | result of `remove_rule()`    |
 | `permanent_write_failed`  | `int, str, str` (device_id, action, reason) | a permanent rule that did **not** reach `rules.conf` |
 | `permanent_clear_failed`  | `int, str, str, bool` (device_id, action, reason, partial) | a failed `Once` clear, with whether any rules were removed |
 | `temporary_apply_failed`  | `int, str, str, bool` (device_id, action, reason, policy_changed) | a failed live `Once` action after the clear succeeded |
+| `device_bring_up_failed`  | `int, str, str` (device_id, action, explanation) | the device itself would not come up on a path `temporary_apply_failed` does not cover (`Always`, the lock-flow allow) |
 | `permanent_rule_remains`  | `int, str, str` (device_id, action, rule) | a broader rule a `Once` choice deliberately leaves intact |
 
 `list_devices()` and `fetch_devices()` hit the same D-Bus call; they differ in
@@ -138,15 +139,16 @@ window).  `fetch_devices(request_id)` answers on `list_devices_correlated` with
 the caller's id, which is what the screensaver-unlock path needs: each deferred
 cycle resolves only against the snapshot it asked for, so another consumer's
 refresh can never consume it and answers may arrive in any order.  Both always
-terminate — on the untagged path a fast-fail or a `DBusError` emits `None`, a
-failed query rather than an empty-bus answer, so consumers keep their previous
-state instead of blanking; the correlated path still emits an empty list and the
-unlock cycle re-queues it for retry.
+terminate — a fast-fail or a `DBusError` emits `None` (with the request id on
+the correlated path), a failed query rather than an empty-bus answer.  Consumers
+keep their previous state instead of blanking, and an unlock cycle answered with
+`None` is put back and retried on reconnect; an empty list is the daemon's real
+answer and resolves the cycle.
 
 Correlation identifies the request but does not make its snapshot current.
 Removal, explicit decisions and Allow policy changes remove that incarnation's
 ID from every outstanding unlock cycle; empty cycles are retired. Late replies
-for retired cycles are ignored, including empty failure replies, while other
+for retired cycles are ignored, including `None` failure replies, while other
 devices in a partially invalidated cycle still get their prompts.
 
 `apply_device_policy()` has no **success** signal — callers follow up with `list_rules()` to
