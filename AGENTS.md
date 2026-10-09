@@ -201,7 +201,8 @@ tests/
 | `README.md` → *How It Works* | user-facing behaviour, **the HID lock-first security contract**, polkit, install |
 | `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, dasbus→dbus-fast mapping |
 | `docs/AUDIT-*.md`, `docs/REVIEW-*.md` | past audit/review findings and how each was resolved |
-| `TODO.md` | versioned roadmap, including deferred race fixes for 1.0 |
+| `TODO.md` | **open work only**, versioned roadmap — completed items move to `DONE.md` at every release |
+| `DONE.md` | finished roadmap items with their reasoning intact; the record of why each decision was made |
 | `graft/` | generated repo context graph — **local-only, gitignored**; build with `graft build --deep` (see the Graft section) |
 
 ## Testing Conventions
@@ -258,6 +259,17 @@ Before submitting changes:
 CHANGELOG section from the git log, commits, and tags `vX.Y.Z`. The tag triggers
 the GitHub → COPR webhook (verified on v0.7.4, build 10928231). Release through
 that target rather than hand-editing `__version__` or the CHANGELOG.
+
+**Move every completed item out of `TODO.md` before tagging.** Each `- [x]` item
+goes to `DONE.md` under the same `## <version>` heading it had in the roadmap,
+with its **full text intact** — the reasoning recorded there is why the entry is
+kept, not the checkbox. `TODO.md` is then open work only. A checked item left
+among the open ones hides what is actually pending and makes the next agent
+re-derive work this repo already decided, which is the failure this rule exists to
+prevent. Fix any cross-reference the move breaks — "the 1.0 item above" has to
+name `TODO.md` once the two files are separate. `release.py` does **not** do
+this: it is part of the release ritual, not the tag, so do it in the same commit
+as the version bump.
 
 <!-- graft:start -->
 ## Graft — repo context graph
