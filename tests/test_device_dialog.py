@@ -13,6 +13,7 @@ from usbguard_gui.device_dialog import DeviceActionDialog
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+
 def _dialog(*args, settings=None, **kwargs) -> DeviceActionDialog:
     """Build a dialog with a default fake settings store unless a test passes its own."""
     return DeviceActionDialog(*args, settings=settings if settings is not None else _FakeSettings(), **kwargs)
@@ -57,7 +58,7 @@ class TestDialogLockUnavailable:
     def dialog_with_screensaver(self, qapp, qtbot):
         screensaver = _FakeScreensaver(connected=False)
         dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver,
-                                    settings=_FakeSettings())
+                         settings=_FakeSettings())
         qtbot.addWidget(dialog)
         return dialog, screensaver
 
@@ -129,7 +130,7 @@ class TestDialogLockUnavailable:
         """A non-HID device never relied on the lock, so Allow works."""
         screensaver = _FakeScreensaver(connected=False)
         dialog = _dialog(Device.from_dbus(1, self._HUB_RULE), _FakeClient(),
-                                    screensaver=screensaver, settings=_FakeSettings())
+                         screensaver=screensaver, settings=_FakeSettings())
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
 
@@ -142,7 +143,7 @@ class TestDialogLockUnavailable:
         """Special HID treatment off ⇒ the gate is disarmed entirely."""
         screensaver = _FakeScreensaver(connected=False)
         dialog = _dialog(_make_device(), _FakeClient(), screensaver=screensaver,
-                                    settings=_FakeSettings(disable_hid_treatment=True))
+                         settings=_FakeSettings(disable_hid_treatment=True))
         qtbot.addWidget(dialog)
         warn = mocker.patch.object(QMessageBox, "warning")
 
