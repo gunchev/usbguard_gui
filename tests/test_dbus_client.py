@@ -948,6 +948,35 @@ class TestConnectionDropNarrowing:
         assert events == [False]
         assert emitted == [None]
 
+    def test_list_devices_unexpected_error_still_answers(self):
+        import asyncio
+
+        thread = self._thread()
+        events = self._events(thread)
+        emitted: list = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
+
+        async def raise_error(*args, **kwargs):
+            raise ValueError("a rule Device.from_dbus cannot read")
+
+        thread._devices_iface.call_list_devices = raise_error
+
+        asyncio.run(thread._do_list_devices("match"))
+
+        assert emitted == [None], "a refresh must end even on an error that is not a DBusError"
+        assert thread._connected is True
+        assert events == []
+
+    def test_list_devices_answers_when_not_wired_up_yet(self):
+        thread = self._thread()
+        thread._devices_iface = None
+        emitted: list = []
+        thread.list_devices_result.connect(lambda v: emitted.append(v))
+
+        thread.list_devices()
+
+        assert emitted == [None]
+
 
 class TestCorrelatedFetchDevices:
     """fetch_devices() returns the snapshot tagged with the caller's request id on
@@ -1016,6 +1045,30 @@ class TestCorrelatedFetchDevices:
 
         assert emitted == [(5, None)]
         assert thread._connected is False
+
+    def test_unexpected_error_still_answers_for_that_id(self):
+        import asyncio
+
+        thread = self._thread()
+        emitted = self._emitted(thread)
+
+        async def raise_error(*args, **kwargs):
+            raise ValueError("a rule Device.from_dbus cannot read")
+
+        thread._devices_iface.call_list_devices = raise_error
+        asyncio.run(thread._do_fetch_devices(5, "match"))
+
+        assert emitted == [(5, None)], "an unanswered unlock cycle would never be retried"
+        assert thread._connected is True
+
+    def test_thread_answers_when_not_wired_up_yet(self):
+        thread = self._thread()
+        thread._devices_iface = None
+        emitted = self._emitted(thread)
+
+        thread.fetch_devices(9)
+
+        assert emitted == [(9, None)]
 
     def test_thread_fast_fails_when_disconnected_but_still_answers(self):
         thread = self._thread()

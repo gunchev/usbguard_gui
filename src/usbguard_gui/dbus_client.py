@@ -360,6 +360,12 @@ class _DBusThread(AsyncWorkerThread):
             if _is_connection_error(e):
                 self._set_connected(False)
             self.list_devices_result.emit(None)
+        except Exception:
+            # Anything else -- a rule Device.from_dbus cannot read, a bus torn
+            # down mid-call -- still owes the caller an answer.  Without it the
+            # task dies in the event loop and the refresh never completes.
+            log.exception("Failed to list devices (query=%s)", query)
+            self.list_devices_result.emit(None)
 
     async def _do_fetch_devices(self, request_id: int, query: str) -> None:
         """List devices for one specific caller and hand the snapshot back tagged
@@ -372,6 +378,13 @@ class _DBusThread(AsyncWorkerThread):
             log.error("Failed to fetch devices (request=%d, query=%s): %s", request_id, query, e)
             if _is_connection_error(e):
                 self._set_connected(False)
+            self.list_devices_correlated.emit(request_id, None)
+            return
+        except Exception:
+            # Same promise as fetch_devices() makes: every request is answered.
+            # An unanswered unlock cycle would sit in the queue, never retried,
+            # until the cap pushed it out and its prompt with it.
+            log.exception("Failed to fetch devices (request=%d, query=%s)", request_id, query)
             self.list_devices_correlated.emit(request_id, None)
             return
         self.list_devices_correlated.emit(request_id, devices)
@@ -823,6 +836,9 @@ class _DBusThread(AsyncWorkerThread):
             return
         if self._devices_iface and self._loop:
             self._schedule(self._do_list_devices(query))
+        else:
+            # Connected but not wired up yet: a failed query, not silence.
+            self.list_devices_result.emit(None)
 
     def fetch_devices(self, request_id: int, query: str = "match") -> None:
         """Request a device snapshot tagged with ``request_id``.
@@ -838,6 +854,8 @@ class _DBusThread(AsyncWorkerThread):
             return
         if self._devices_iface and self._loop:
             self._schedule(self._do_fetch_devices(request_id, query))
+        else:
+            self.list_devices_correlated.emit(request_id, None)
 
     def apply_device_policy(self, device_id: int, target: DeviceTarget,
                             persistence: Persistence = Persistence.UNCHANGED,
