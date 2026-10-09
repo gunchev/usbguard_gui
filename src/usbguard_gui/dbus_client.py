@@ -14,6 +14,7 @@ from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, T
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_identity, rule_is_broader_than_device, \
     rule_matches_device, rule_persistence_problem
+from usbguard_gui.ui_strings import DEVICE_BRING_UP_WARNING
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,60 @@ _CONNECTION_ERRORS = frozenset(
 
 def _is_connection_error(e: DBusError) -> bool:
     return (getattr(e, "type", "") or "") in _CONNECTION_ERRORS
+
+
+# The daemon reports a failed sysfs write with its own exception, whose text is
+# the C++ syscall expression rather than anything a user can act on:
+#
+#   SysFSDevice: (rc = write(fd, &value[0], value.size())) != (ssize_t)value.size(): Protocol error
+#
+# That is the *device* refusing to come up, not USBGuard refusing the decision,
+# and the two need different sentences.  On the ALLOW path the write is
+# `authorized=1`, and the kernel sets that flag *before* it tries to configure
+# the device -- usb_authorize_device() does `authorized = 1; usb_set_configuration();
+# return rc;` -- so a failure here leaves the device switched on at the kernel
+# level but unconfigured.  See `DEVICE_BRING_UP_WARNING` for what the user has
+# to be told about that half-state.
+_SYSFS_WRITE_ERROR = "SysFSDevice:"
+
+# The sysfs write each target performs, phrased for the user.
+_BRING_UP_ACTION: dict[DeviceTarget, str] = {
+    DeviceTarget.ALLOW: "switch the device on",
+    DeviceTarget.BLOCK: "switch the device off",
+    DeviceTarget.REJECT: "remove the device",
+}
+
+# errno tail as the daemon reports it -> what it means for the device.
+_BRING_UP_ERRNO_MEANING: dict[str, str] = {
+    "protocol error": "it did not answer the kernel's configuration request",
+    "input/output error": "it stopped responding while being switched",
+    "remote i/o error": "it stopped responding while being switched",
+    "device or resource busy": "it is being held busy",
+    "no such device": "it left the bus mid-change",
+    "connection timed out": "it never answered",
+}
+
+
+def device_bring_up_failure(e: BaseException, target: DeviceTarget) -> str | None:
+    """Explain a daemon error that is the device itself failing to come up.
+
+    Returns a sentence naming what the kernel could not do, or ``None`` when the
+    error is not a sysfs bring-up failure -- a polkit denial, a broken transport
+    and a bad device id each keep their own reporting path.
+    """
+    action = _BRING_UP_ACTION.get(target)
+    if action is None:
+        return None
+    text = str(e)
+    if _SYSFS_WRITE_ERROR not in text:
+        return None
+    # The daemon puts the errno description last, after the final colon.
+    errno_text = text.rsplit(":", 1)[-1].strip()
+    meaning = _BRING_UP_ERRNO_MEANING.get(errno_text.lower())
+    detail = f" ({errno_text})" if errno_text else ""
+    if meaning is None:
+        return f"The kernel could not {action}{detail}."
+    return f"The kernel could not {action}: {meaning}{detail}."
 
 
 # Pre-load introspection XML at import time so the async event loop never
@@ -407,7 +462,17 @@ class _DBusThread(AsyncWorkerThread):
                 try:
                     await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
                 except DBusError as e:
-                    reason = str(e)
+                    # A sysfs bring-up failure is the device itself refusing to
+                    # come up, not a refusal of the user's decision, and it needs
+                    # saying: the raw daemon text is a C++ syscall expression.
+                    bring_up = device_bring_up_failure(e, target)
+                    reason = str(e) if bring_up is None else bring_up
+                    if bring_up is not None and target is DeviceTarget.ALLOW:
+                        # Only Allow leaves the half-state worth warning about:
+                        # the kernel set authorized=1 before the step that
+                        # failed, so the next Allow short-circuits on the flag
+                        # and reports success without retrying what broke.
+                        reason += DEVICE_BRING_UP_WARNING
                     if removed:
                         listed = "; ".join(f"{text} (rule {rule_id})" for rule_id, text in removed)
                         reason = f"{reason}\nAlready removed from the stored policy: {listed}."
@@ -435,13 +500,19 @@ class _DBusThread(AsyncWorkerThread):
                     persistence.name,
                 )
             else:
-                log.error(
-                    "Failed to apply policy to device %d (target=%s, persistence=%s): %s",
-                    device_id,
-                    target.name,
-                    persistence.name,
-                    e,
-                )
+                bring_up = device_bring_up_failure(e, target)
+                if bring_up is not None:
+                    log.error("Policy %s on device %d failed at the device itself (persistence=%s): %s "
+                              "[daemon: %s]",
+                              target.name, device_id, persistence.name, bring_up, e)
+                else:
+                    log.error(
+                        "Failed to apply policy to device %d (target=%s, persistence=%s): %s",
+                        device_id,
+                        target.name,
+                        persistence.name,
+                        e,
+                    )
                 if _is_connection_error(e):
                     self._set_connected(False)
 

@@ -73,6 +73,17 @@ was not applied. When no rule was removed, the warning is simply *"Temporary dec
 not applied"*. If you see any of these, the decision needs to be made again (or the polkit
 rule fixed) — otherwise the state is not what you clicked.
 
+**A device that refuses to come up is the device's failure, not yours.** The kernel
+sets `authorized=1` *before* it tries to configure the device, so hardware that
+fails that step — a bad cable, a noisy port, a device whose `SET_CONFIGURATION`
+returns `EPROTO` — leaves the kernel holding the device as authorized while
+nothing is configured and nothing works. The daemon hands back the raw syscall
+expression (`SysFSDevice: (rc = write(fd, ...)) != value.size(): Protocol error`);
+the tray replaces it with what failed and what to do about it: unplug the device
+and plug it back in, or try a different port. **Do not click Allow again.** The
+kernel short-circuits on the flag it already set, so the next Allow reports success
+without ever retrying the step that failed, and the device still does nothing.
+
 **A device that disconnects while you are deciding keeps its dialog.** Hardware that
 re-enumerates on its own — IR blasters, modems, anything that resets when it is
 configured — can vanish before you finish reading the prompt. The dialog stays open

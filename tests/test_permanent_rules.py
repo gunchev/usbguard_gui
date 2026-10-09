@@ -1142,6 +1142,138 @@ class TestFailedLiveOnceAction:
         assert failures == []
 
 
+# The daemon's verbatim text for a device that will not come up, captured live on
+# a Smart IR Blaster (045c:0131) whose SET_CONFIGURATION fails with EPROTO.
+# usb_authorize_device() sets authorized=1, fails to configure the device, and
+# hands the errno back; the daemon rethrows it as this C++ syscall expression.
+BRING_UP_EPROTO = ('SysFSDevice: (rc = write(fd, &value[0], value.size())) '
+                   '!= (ssize_t)value.size(): Protocol error')
+
+
+class TestDeviceBringUpFailure:
+    """A device the kernel cannot switch on is the device's failure, not USBGuard's.
+
+    The daemon's text is a C++ syscall expression, which tells the user nothing
+    and reads like a fault in the app's decision.  Two facts have to reach the
+    notification: the kernel could not switch the device on, and clicking Allow
+    again cannot help.  The second one is the trap -- the kernel sets
+    `authorized=1` *before* the configuration step that fails, so a later Allow
+    short-circuits on the flag already being set and reports success without
+    ever retrying what broke.  Verified live on the IR blaster: attempt one
+    returned EPROTO, a second Allow three seconds later returned "OK" in 0.01s
+    with no kernel activity at all, and the device still did nothing.
+    """
+
+    def test_allow_bring_up_failure_is_classified(self):
+        from dbus_fast import DBusError, ErrorType
+
+        from usbguard_gui.dbus_client import device_bring_up_failure
+
+        explained = device_bring_up_failure(DBusError(ErrorType.FAILED, BRING_UP_EPROTO), DeviceTarget.ALLOW)
+
+        assert explained is not None
+        assert "switch the device on" in explained
+        assert "Protocol error" in explained
+
+    @pytest.mark.parametrize("target, action", [
+        (DeviceTarget.ALLOW, "switch the device on"),
+        (DeviceTarget.BLOCK, "switch the device off"),
+        (DeviceTarget.REJECT, "remove the device"),
+    ])
+    def test_the_action_matches_the_target(self, target, action):
+        from dbus_fast import DBusError, ErrorType
+
+        from usbguard_gui.dbus_client import device_bring_up_failure
+
+        assert action in device_bring_up_failure(DBusError(ErrorType.FAILED, BRING_UP_EPROTO), target)
+
+    @pytest.mark.parametrize("message", [
+        "Not authorized to apply policy",
+        "No such device",
+        "Live action failed",
+        "",
+    ])
+    def test_errors_that_are_not_sysfs_writes_keep_their_own_paths(self, message):
+        from dbus_fast import DBusError, ErrorType
+
+        from usbguard_gui.dbus_client import device_bring_up_failure
+
+        assert device_bring_up_failure(DBusError(ErrorType.FAILED, message), DeviceTarget.ALLOW) is None
+
+    def test_an_unmapped_errno_is_still_reported_verbatim(self):
+        from dbus_fast import DBusError, ErrorType
+
+        from usbguard_gui.dbus_client import device_bring_up_failure
+
+        explained = device_bring_up_failure(
+            DBusError(ErrorType.FAILED,
+                      'SysFSDevice: (rc = write(fd, &value[0], value.size())) '
+                      '!= (ssize_t)value.size(): Some brand new errno'),
+            DeviceTarget.ALLOW,
+        )
+
+        assert "Some brand new errno" in explained
+        assert "switch the device on" in explained
+
+    def test_once_allow_reports_the_failure_instead_of_the_raw_expression(self):
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy([])
+        thread = _stub_thread(policy)
+        failures = []
+        thread.temporary_apply_failed.connect(lambda *args: failures.append(args))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert len(failures) == 1
+        device_id, action, reason, policy_changed = failures[0]
+        assert (device_id, action, policy_changed) == (136, "allow", False)
+        assert "Protocol error" in reason
+        assert "not a USBGuard decision" in reason
+        assert "Do not click Allow again" in reason
+
+    def test_once_allow_still_reports_a_rule_it_had_already_removed(self):
+        from dbus_fast import DBusError, ErrorType
+
+        policy = _FakePolicy([(7, HUB_A)])
+        thread = _stub_thread(policy)
+        failures = []
+        thread.temporary_apply_failed.connect(lambda *args: failures.append(args))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert policy.rules == [], "the clear landed before the live action failed"
+        reason = failures[0][2]
+        assert "Already removed from the stored policy" in reason
+
+    def test_a_bring_up_failure_is_not_a_connection_failure(self):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(_FakePolicy([]))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert thread.is_connected is True, "the daemon answered; only the device failed"
+
+    def test_block_is_not_warned_about_the_allow_retry_trap(self):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(_FakePolicy([]))
+        failures = []
+        thread.temporary_apply_failed.connect(lambda *args: failures.append(args))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.BLOCK, Persistence.ONCE, BLOCKED_HUB))
+
+        reason = failures[0][2]
+        assert "switch the device off" in reason
+        assert "Do not click Allow again" not in reason, \
+            "a failed Block leaves no authorized flag, so a retry really does retry"
+
+
 class TestOnceNeverRemovesABroaderRule:
     """Option A: a `Once` decision clears the device's own rule and nothing else.
 

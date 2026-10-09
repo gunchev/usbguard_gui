@@ -31,6 +31,21 @@ PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE = "Permanent rule not saved"
 HID_ATTACHED_NOTICE_TITLE = "New keyboard/HID attached"
 DEVICE_INSERTED_NOTICE_TITLE = "New USB device inserted"
 
+# Appended when an ALLOW failed at the kernel's device bring-up (the sysfs write
+# of `authorized=1` came back with an errno).  Two things the user must not be
+# left to guess: this is not a USBGuard refusal, and clicking Allow again cannot
+# help.  The kernel sets `authorized=1` *before* the configuration step that
+# failed, so the next ALLOW short-circuits on the flag already being set and
+# reports success without ever retrying the step that broke -- verified live on
+# a Smart IR Blaster that failed with EPROTO on every real attempt and returned
+# "succeeded" 0.01s later having done nothing.
+DEVICE_BRING_UP_WARNING = (
+    "\nThis is the device refusing to come up, not a USBGuard decision. Unplug it "
+    "and plug it back in, or try a different port."
+    "\nDo not click Allow again: the kernel already marked the device authorized, so "
+    "the next attempt reports success without retrying the step that failed."
+)
+
 # Title for the notice raised when a queued `Allow` is handed back to the
 # lock-first flow.  Named so the tests can select the message by identity rather
 # than by matching prose: the wording is user-facing and will be reworded, and
