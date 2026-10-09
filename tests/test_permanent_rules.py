@@ -1317,7 +1317,8 @@ class TestBringUpFailureIsReportedOnEveryPath:
 
         assert len(reports) == 1
         assert "saved anyway" in reports[0][2]
-        assert thread._devices_iface.call_apply_device_policy.call_args.args == (136, int(DeviceTarget.ALLOW), True)
+        first = thread._devices_iface.call_apply_device_policy.call_args_list[0]
+        assert first.args == (136, int(DeviceTarget.ALLOW), True)
 
     def test_lock_flow_allow_is_reported(self):
         thread, reports = self._failing_thread()
@@ -1350,6 +1351,75 @@ class TestBringUpFailureIsReportedOnEveryPath:
         _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
 
         assert reports == []
+
+
+class TestFailedAllowIsSwitchedBackOff:
+    """A failed Allow is rolled back so the kernel is not left half-enabled.
+
+    The kernel sets authorized=1 before the configuration step that failed, so
+    left alone the device is switched on but dead while the daemon (which only
+    records a target after the sysfs write succeeds) still calls it blocked --
+    and the next Allow short-circuits on the flag.  A live BLOCK writes
+    authorized=0 unconditionally, which clears that, so a later Allow retries.
+    """
+
+    @staticmethod
+    def _thread(rollback_ok: bool):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(_FakePolicy([]))
+        bring_up = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+        second = 0 if rollback_ok else DBusError(ErrorType.FAILED, "No such device")
+        thread._devices_iface.call_apply_device_policy.side_effect = [bring_up, second]
+        return thread
+
+    @pytest.mark.parametrize("persistence, rule", [
+        (Persistence.UNCHANGED, None),
+        (Persistence.ONCE, BLOCKED_HUB),
+        (Persistence.ALWAYS, BLOCKED_HUB),
+        (Persistence.ALWAYS, None),
+    ])
+    def test_a_failed_allow_is_followed_by_a_live_block(self, persistence, rule):
+        thread = self._thread(rollback_ok=True)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, persistence, rule))
+
+        calls = [c.args for c in thread._devices_iface.call_apply_device_policy.call_args_list]
+        assert calls[-1] == (136, int(DeviceTarget.BLOCK), False), "live only: a stored rule is left alone"
+        assert len(calls) == 2
+
+    def test_after_a_rollback_the_user_is_told_a_retry_is_real(self):
+        thread = self._thread(rollback_ok=True)
+        reports = []
+        thread.device_bring_up_failed.connect(lambda *args: reports.append(args))
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.UNCHANGED))
+
+        reason = reports[0][2]
+        assert "switched back off" in reason
+        assert "Do not click Allow again" not in reason
+
+    def test_a_failed_rollback_keeps_the_do_not_retry_warning(self):
+        thread = self._thread(rollback_ok=False)
+        reports = []
+        thread.device_bring_up_failed.connect(lambda *args: reports.append(args))
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.UNCHANGED))
+
+        reason = reports[0][2]
+        assert "Do not click Allow again" in reason
+        assert "switched back off" not in reason
+        assert thread.is_connected is True
+
+    def test_a_failed_block_is_not_rolled_back(self):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(_FakePolicy([]))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.BLOCK, Persistence.UNCHANGED))
+
+        assert thread._devices_iface.call_apply_device_policy.call_count == 1
 
 
 class TestOnceNeverRemovesABroaderRule:

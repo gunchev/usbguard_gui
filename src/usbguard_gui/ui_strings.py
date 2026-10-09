@@ -32,13 +32,23 @@ HID_ATTACHED_NOTICE_TITLE = "New keyboard/HID attached"
 DEVICE_INSERTED_NOTICE_TITLE = "New USB device inserted"
 
 # Appended when an ALLOW failed at the kernel's device bring-up (the sysfs write
-# of `authorized=1` came back with an errno).  Two things the user must not be
-# left to guess: this is not a USBGuard refusal, and clicking Allow again cannot
-# help.  The kernel sets `authorized=1` *before* the configuration step that
-# failed, so the next ALLOW short-circuits on the flag already being set and
-# reports success without ever retrying the step that broke -- verified live on
-# a Smart IR Blaster that failed with EPROTO on every real attempt and returned
-# "succeeded" 0.01s later having done nothing.
+# of `authorized=1` came back with an errno) and the app switched the device back
+# off.  The kernel sets `authorized=1` *before* the configuration step that
+# failed, so left alone the next ALLOW short-circuits on the flag and reports
+# success without retrying the step that broke.  A BLOCK writes `authorized=0`
+# unconditionally (USBGuard's sysfsApplyTarget never skips it), which clears the
+# flag, so after the rollback another Allow genuinely retries.
+DEVICE_BRING_UP_ROLLED_BACK = (
+    "\nThis is the device refusing to come up, not a USBGuard decision. It was switched "
+    "back off rather than left half-enabled, so allowing it again really does retry. "
+    "If it keeps failing, unplug it and plug it back in, or try a different port."
+)
+
+# Appended instead when that rollback failed too.  Two things the user must not
+# be left to guess: this is not a USBGuard refusal, and clicking Allow again
+# cannot help while the kernel still holds the flag -- verified live on a Smart IR
+# Blaster that failed with EPROTO on every real attempt and returned "succeeded"
+# 0.01s later having done nothing.
 DEVICE_BRING_UP_WARNING = (
     "\nThis is the device refusing to come up, not a USBGuard decision. Unplug it "
     "and plug it back in, or try a different port."

@@ -79,10 +79,13 @@ fails that step — a bad cable, a noisy port, a device whose `SET_CONFIGURATION
 returns `EPROTO` — leaves the kernel holding the device as authorized while
 nothing is configured and nothing works. The daemon hands back the raw syscall
 expression (`SysFSDevice: (rc = write(fd, ...)) != value.size(): Protocol error`);
-the tray replaces it with what failed and what to do about it: unplug the device
-and plug it back in, or try a different port. **Do not click Allow again.** The
-kernel short-circuits on the flag it already set, so the next Allow reports success
-without ever retrying the step that failed, and the device still does nothing.
+the tray replaces it with what failed and what to do about it. Left in that
+half-state, the next Allow would report success without retrying anything — the
+kernel short-circuits on the flag it already set — so the app immediately switches
+the device back off (a live Block, which clears the flag). After that, allowing it
+again really does retry; if it keeps failing, unplug it and plug it back in, or try
+a different port. Only if that rollback fails too does the notice say **do not click
+Allow again**, because then the flag is still set.
 The notice appears whichever way the Allow was made — *Once*, *Always*, or the
 lock-first flow's automatic allow behind the lock screen — and for *Always* it says
 what became of the permanent rule: the app's own topology-specific write never ran

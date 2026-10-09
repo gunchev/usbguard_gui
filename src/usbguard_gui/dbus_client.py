@@ -14,7 +14,8 @@ from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, T
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_identity, rule_is_broader_than_device, \
     rule_matches_device, rule_persistence_problem
-from usbguard_gui.ui_strings import DEVICE_BRING_UP_RULE_NOT_SAVED, DEVICE_BRING_UP_RULE_SAVED, DEVICE_BRING_UP_WARNING
+from usbguard_gui.ui_strings import DEVICE_BRING_UP_ROLLED_BACK, DEVICE_BRING_UP_RULE_NOT_SAVED, \
+    DEVICE_BRING_UP_RULE_SAVED, DEVICE_BRING_UP_WARNING
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +82,9 @@ def _is_connection_error(e: DBusError) -> bool:
 # `authorized=1`, and the kernel sets that flag *before* it tries to configure
 # the device -- usb_authorize_device() does `authorized = 1; usb_set_configuration();
 # return rc;` -- so a failure here leaves the device switched on at the kernel
-# level but unconfigured.  See `DEVICE_BRING_UP_WARNING` for what the user has
-# to be told about that half-state.
+# level but unconfigured.  `_roll_back_failed_allow` switches it back off; see
+# `DEVICE_BRING_UP_ROLLED_BACK` / `DEVICE_BRING_UP_WARNING` for what the user is
+# told either way.
 _SYSFS_WRITE_ERROR = "SysFSDevice:"
 
 # The sysfs write each target performs, phrased for the user.
@@ -400,16 +402,34 @@ class _DBusThread(AsyncWorkerThread):
                 raise
             explanation = summary
             if target is DeviceTarget.ALLOW:
-                # Only Allow leaves the half-state worth warning about: the
-                # kernel set authorized=1 before the step that failed, so the
-                # next Allow short-circuits on the flag and reports success
-                # without retrying what broke.
-                explanation += DEVICE_BRING_UP_WARNING
+                # Only Allow leaves a half-state: the kernel set authorized=1
+                # before the step that failed, so the device is switched on yet
+                # unconfigured while the daemon still records it as blocked.
+                explanation += await self._roll_back_failed_allow(device_id)
             if permanent:
                 # The daemon upserts the rule before it touches sysfs, so the
                 # durable half landed even though the live half did not.
                 explanation += DEVICE_BRING_UP_RULE_SAVED
             raise _DeviceBringUpError(e, summary, explanation) from e
+
+    async def _roll_back_failed_allow(self, device_id: int) -> str:
+        """Switch a device whose Allow failed at bring-up back off; return the
+        sentence that tells the user where that leaves them.
+
+        Left alone, the kernel keeps authorized=1 on an unconfigured device, so
+        the next Allow short-circuits on the flag and "succeeds" without
+        retrying anything.  A live BLOCK writes authorized=0, which clears the
+        flag and puts the kernel back in step with the daemon (it never
+        recorded the failed Allow), so a later Allow really retries.  Live
+        only: a permanent rule the daemon already stored is left alone.
+        """
+        try:
+            await self._devices_iface.call_apply_device_policy(device_id, int(DeviceTarget.BLOCK), False)
+        except DBusError as e:
+            log.error("Could not switch device %d back off after its failed Allow: %s", device_id, e)
+            return DEVICE_BRING_UP_WARNING
+        log.info("Switched device %d back off after its failed Allow, so a retry starts clean", device_id)
+        return DEVICE_BRING_UP_ROLLED_BACK
 
     async def _do_apply_policy(self, device_id: int, target: DeviceTarget, persistence: Persistence,
                                device_rule: str | None = None) -> None:
