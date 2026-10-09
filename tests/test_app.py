@@ -566,7 +566,7 @@ class TestRetainedDialogsOnEarlyReturnPaths:
         assert tray_app._engine._hid_pending_devices == set()
         assert tray_app._engine._screensaver_pending_devices == set()
         assert not tray_app._hid_lock_timer.isActive()
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE)]
 
     def test_a_fresh_block_preserves_the_lock_flow_for_other_pending_hid_devices(self, tray_app, fake_client,
@@ -585,7 +585,7 @@ class TestRetainedDialogsOnEarlyReturnPaths:
         assert tray_app._engine._hid_pending_devices == {3}
         assert tray_app._hid_lock_timer.isActive()
         fake_screensaver._active = True
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(2, DeviceTarget.BLOCK, Persistence.ONCE),
                                                   (3, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 

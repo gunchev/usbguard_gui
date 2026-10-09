@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 # Phrasings that would promise the user a live authorization this code path does
 # not control.  Whether the lock screen ever arrives is decided after
-# `_apply_pending_decision` returns, so the notice may describe the policy and
+# `apply_pending_decision` returns, so the notice may describe the policy and
 # must not forecast the event.  Test-only: the app never shows these, the
 # handback tests forbid them.
 _LIVE_AUTHORIZE_PROMISES = (
@@ -126,7 +126,7 @@ class TestHIDRemovalCancelsScheduledLock:
         fake_client.device_presence_changed.emit(1, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self._RULE, {})
         fake_client.device_presence_changed.emit(1, int(PresenceEvent.REMOVE), int(DeviceTarget.BLOCK), self._RULE, {})
 
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == []
 
 
@@ -141,13 +141,13 @@ class TestHIDAllowOnScreenLock:
 
     def test_allows_pending_hid_devices_on_lock(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = {1}
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         assert tray_app._engine._hid_pending_devices == set()
 
     def test_allows_multiple_pending_devices(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = {1, 2, 3}
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 3
         for device_id in (1, 2, 3):
             assert (device_id, DeviceTarget.ALLOW, Persistence.UNCHANGED) in fake_client.apply_policy_calls
@@ -155,18 +155,18 @@ class TestHIDAllowOnScreenLock:
 
     def test_no_pending_no_action(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = set()
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == []
 
     def test_does_not_fire_on_unlock(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = {1}
-        tray_app._engine._on_screensaver_locked(False)
+        tray_app._engine.on_screensaver_locked(False)
         assert fake_client.apply_policy_calls == []
         assert tray_app._engine._hid_pending_devices == {1}  # preserved for next lock
 
     def test_allows_only_matching_device_id(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = {1, 2}
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert len(fake_client.apply_policy_calls) == 2
         assert all(call[1] == DeviceTarget.ALLOW for call in fake_client.apply_policy_calls)
         assert all(call[2] is Persistence.UNCHANGED for call in fake_client.apply_policy_calls)
@@ -182,7 +182,7 @@ class TestHIDAllowRequiresLockedScreen:
     result while the screen is actually locked — that is the moment a
     newly-attached keyboard is safe to activate (unlocking requires a
     password).  While the screen is still unlocked the device must stay
-    pending for the deferred lock (_on_screensaver_locked).
+    pending for the deferred lock (on_screensaver_locked).
 
     Regression: a list_devices_result arriving during the 5 s lock delay
     window (e.g. the unlock deferred-summary check) used to allow the
@@ -239,7 +239,7 @@ class TestHIDAllowRequiresLockedScreen:
 
         # 2. Screen unlocks -> unlock cycle registered, its fetch in flight.
         fake_screensaver._active = False
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         assert tray_app._engine._pending_unlock_cycles == {0: {10}}
 
         # 3. Attacker's keyboard B inserted while the result is in flight.
@@ -266,7 +266,7 @@ class TestHIDAllowRequiresLockedScreen:
 
         # 5. The deferred lock happens -> B is allowed (the safe path).
         fake_screensaver._active = True
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
 
         for dialog in list(tray_app._open_dialogs.values()):
@@ -313,7 +313,7 @@ class TestOverlappingUnlockCycles:
         tray_app._engine._screensaver_pending_devices = {10}
 
         # 2. Screen unlocks -> cycle 0 registered, its fetch in flight.
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         assert fake_client.fetch_devices_calls == [0]
 
         # 3. Screen locks again; device B inserted while locked -> deferred.
@@ -322,7 +322,7 @@ class TestOverlappingUnlockCycles:
 
         # 4. Screen unlocks again -> cycle 1 registered and fetched, before
         #    cycle 0 resolved.
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         assert fake_client.fetch_devices_calls == [0, 1]
 
         # 5. Cycle 0's answer arrives first, carrying the snapshot taken for
@@ -344,7 +344,7 @@ class TestOverlappingUnlockCycles:
         device_a = Device.from_dbus(10, self._RULE_A)
 
         tray_app._engine._screensaver_pending_devices = {10}
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         assert fake_client.fetch_devices_calls == [0]
 
         # The in-flight fetch fails (e.g. daemon briefly disconnected):
@@ -369,7 +369,7 @@ class TestOverlappingUnlockCycles:
         dropped without prompting."""
 
         tray_app._engine._screensaver_pending_devices = {10}
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
 
         fake_client.list_devices_correlated.emit(0, None)
         # Next real snapshot does not contain A (it was unplugged):
@@ -719,7 +719,7 @@ class TestLockAvailability:
         tray_app._engine._hid_pending_devices = {1}
         fake_screensaver.connection_changed.emit(False)
 
-        tray_app._engine._lock_for_pending_hid()
+        tray_app._engine.lock_for_pending_hid()
 
         assert fake_screensaver.lock_calls == 0
         assert tray_app._engine._hid_pending_devices == {1}
@@ -771,10 +771,10 @@ class TestHIDLockTimerNotExtendedByLaterInserts:
         self._insert(fake_client, 2, self._RULE_B)
         tray_app._hid_lock_timer.stop()
 
-        tray_app._engine._lock_for_pending_hid()
+        tray_app._engine.lock_for_pending_hid()
         assert fake_screensaver.lock_calls == 1
 
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
         assert sorted(fake_client.apply_policy_calls) == sorted(
             [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED), (2, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         )
@@ -790,7 +790,7 @@ class TestUnlockQueueCap:
 
         for i in range(1, 7):
             tray_app._engine._screensaver_pending_devices = {i}
-            tray_app._engine._on_screensaver_unlocked(False)
+            tray_app._engine.on_screensaver_unlocked(False)
 
         assert len(tray_app._engine._pending_unlock_cycles) == 3
         assert tray_app._engine._pending_unlock_cycles == {3: {4}, 4: {5}, 5: {6}}
@@ -800,7 +800,7 @@ class TestUnlockQueueCap:
 
         for i in range(1, 4):
             tray_app._engine._screensaver_pending_devices = {i}
-            tray_app._engine._on_screensaver_unlocked(False)
+            tray_app._engine.on_screensaver_unlocked(False)
 
         assert tray_app._engine._pending_unlock_cycles == {0: {1}, 1: {2}, 2: {3}}
 
@@ -832,9 +832,9 @@ class TestUnlockQueueRaceReproductions:
         """Cycle 1 defers device 10 and unlocks; then cycle 2 defers device 20
         and unlocks, before cycle 1's result has arrived."""
         tray_app._engine._screensaver_pending_devices = {10}
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         tray_app._engine._screensaver_pending_devices = {20}
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
 
     def test_foreign_refresh_must_not_consume_a_queued_cycle(self, tray_app, fake_client) -> None:
         """AUDIT follow-up #2: a foreign device-list refresh must not be taken
@@ -887,7 +887,7 @@ class TestUnlockQueueRaceReproductions:
         device_a = Device.from_dbus(10, self._RULE_A)
 
         tray_app._engine._screensaver_pending_devices = {10}
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         fake_client.list_devices_correlated.emit(0, None)  # daemon was down
         assert tray_app._engine._pending_unlock_cycles == {0: {10}}
 
@@ -914,7 +914,7 @@ class TestUnlockSnapshotFreshness:
         fake_screensaver._active = True
         tray_app._on_device_presence_changed(1, PresenceEvent.INSERT, DeviceTarget.BLOCK, IR_RULE, {})
         fake_screensaver._active = False
-        tray_app._engine._on_screensaver_unlocked(False)
+        tray_app._engine.on_screensaver_unlocked(False)
         cycle_id = fake_client.fetch_devices_calls[-1]
         tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
         current_rule = IR_RULE.replace('name "', 'name "Current ')
@@ -922,7 +922,7 @@ class TestUnlockSnapshotFreshness:
         dialog = tray_app._open_dialogs[2]
         notices = show.call_count
 
-        tray_app._engine._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+        tray_app._engine.on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
 
         assert dialog.device.number == 2
         assert dialog.device.raw_rule == current_rule
@@ -940,7 +940,7 @@ class TestUnlockSnapshotFreshness:
 
         assert tray_app._engine._pending_unlock_cycles == {first: {3}, second: {4}}
         other_rule = IR_RULE.replace('hash "irhash1"', 'hash "other"')
-        tray_app._engine._on_correlated_devices(first, [Device.from_dbus(1, IR_RULE), Device.from_dbus(3, other_rule)])
+        tray_app._engine.on_correlated_devices(first, [Device.from_dbus(1, IR_RULE), Device.from_dbus(3, other_rule)])
         assert set(tray_app._open_dialogs) == {3}
         assert tray_app._engine._pending_unlock_cycles == {second: {4}}
 
@@ -949,8 +949,8 @@ class TestUnlockSnapshotFreshness:
         failure: the cycle is resolved and not retried on reconnect."""
         cycle_id = tray_app._engine._register_unlock_cycle({1})
 
-        tray_app._engine._on_correlated_devices(cycle_id, [])
-        tray_app._engine._retry_pending_unlock_cycles()
+        tray_app._engine.on_correlated_devices(cycle_id, [])
+        tray_app._engine.retry_pending_unlock_cycles()
 
         assert tray_app._engine._pending_unlock_cycles == {}
         assert fake_client.fetch_devices_calls == []
@@ -959,8 +959,8 @@ class TestUnlockSnapshotFreshness:
         cycle_id = tray_app._engine._register_unlock_cycle({1})
         tray_app._on_device_presence_changed(1, PresenceEvent.REMOVE, DeviceTarget.BLOCK, IR_RULE, {})
 
-        tray_app._engine._on_correlated_devices(cycle_id, None)
-        tray_app._engine._retry_pending_unlock_cycles()
+        tray_app._engine.on_correlated_devices(cycle_id, None)
+        tray_app._engine.retry_pending_unlock_cycles()
 
         assert tray_app._engine._pending_unlock_cycles == {}
         assert fake_client.fetch_devices_calls == []
@@ -971,7 +971,7 @@ class TestUnlockSnapshotFreshness:
         allowed = IR_RULE.replace("block ", "allow ", 1)
         fake_client.device_policy_changed.emit(1, DeviceTarget.BLOCK, DeviceTarget.ALLOW, allowed, 7, {})
 
-        tray_app._engine._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+        tray_app._engine.on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
 
         assert tray_app._open_dialogs == {}
         assert tray_app._engine._pending_unlock_cycles == {}
@@ -982,7 +982,7 @@ class TestUnlockSnapshotFreshness:
         cycle_id = tray_app._engine._register_unlock_cycle({1})
 
         tray_app._apply_user_decision(Device.from_dbus(1, IR_RULE), target, Persistence.ONCE)
-        tray_app._engine._on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
+        tray_app._engine.on_correlated_devices(cycle_id, [Device.from_dbus(1, IR_RULE)])
 
         assert fake_client.apply_policy_calls == [(1, target, Persistence.ONCE)]
         assert tray_app._open_dialogs == {}
@@ -1018,7 +1018,7 @@ class TestAutomaticAllowsNeverClearPersistence:
     def test_pending_unlock_allow_does_not_clear(self, tray_app, fake_client) -> None:
         tray_app._engine._hid_pending_devices = {1}
 
-        tray_app._engine._on_screensaver_locked(True)
+        tray_app._engine.on_screensaver_locked(True)
 
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         assert fake_client.remove_rule_calls == []
@@ -1028,7 +1028,7 @@ class TestAutomaticAllowsNeverClearPersistence:
         fake_screensaver._active = True
         tray_app._engine._hid_pending_devices = {1}
 
-        tray_app._engine._on_list_devices_result([Device.from_dbus(1, self._RULE)])
+        tray_app._engine.on_list_devices_result([Device.from_dbus(1, self._RULE)])
 
         assert fake_client.apply_policy_calls == [(1, DeviceTarget.ALLOW, Persistence.UNCHANGED)]
         assert fake_client.remove_rule_calls == []
@@ -1530,7 +1530,7 @@ def _says_clear_did_not_happen(body: str) -> bool:
 def _asserts_a_rule_the_app_never_read(body: str) -> bool:
     """Does the wording state as fact that the device *has* a standing rule?
 
-    `_apply_pending_decision` never reads the ruleset -- the app tracks
+    `apply_pending_decision` never reads the ruleset -- the app tracks
     permanent *allow* hashes only -- so it cannot say one is there.  "cleared
     no permanent rule" and "any rule it has" are both fine; a definite
     possessive is not, because it asserts existence the code never checked.
@@ -1593,7 +1593,7 @@ class TestAHandbackQueuedAllowSaysWhatWasLost:
         """The title is the one part with no room to hedge, so it must not claim.
 
         Whether a lock screen ever arrives is decided after
-        `_apply_pending_decision` returns -- a device that comes back already
+        `apply_pending_decision` returns -- a device that comes back already
         allowed never enters the lock flow at all.  A title naming the lock is
         therefore a forecast, and forecasts are what this notice got wrong.
         """
@@ -1666,8 +1666,8 @@ class TestLockerRestartInvalidatesLockState:
 
         monitor = ScreensaverMonitor()
         tray_app._screensaver = monitor
-        monitor.connection_changed.connect(tray_app._engine._on_lock_availability_changed)
-        monitor.active_changed.connect(tray_app._engine._on_screensaver_locked)
+        monitor.connection_changed.connect(tray_app._engine.on_lock_availability_changed)
+        monitor.active_changed.connect(tray_app._engine.on_screensaver_locked)
         worker = _ScreensaverThread()
         worker.connected.connect(monitor._on_connected)
         worker.active_changed.connect(monitor._on_active_changed)
@@ -1693,7 +1693,7 @@ class TestLockerRestartInvalidatesLockState:
 class TestTheHandbackWarningPromisesNothingItCannotKeep:
     """F6 -- the warning fires *before* the already-allowed early return.
 
-    `_apply_pending_decision` runs ahead of every other reaction to an
+    `apply_pending_decision` runs ahead of every other reaction to an
     insertion; that ordering is the whole point of it.  But one of the
     reactions it runs ahead of is "the device came back already allowed, do
     nothing", and a HID device reaches that when a permanent allow rule put it
@@ -1839,7 +1839,7 @@ class TestInsertionEntryGuards:
     def test_the_lock_timer_with_no_pending_devices_claims_no_lock(self, tray_app, fake_screensaver) -> None:
         tray_app._engine._hid_pending_devices.clear()
 
-        tray_app._engine._lock_for_pending_hid()
+        tray_app._engine.lock_for_pending_hid()
 
         assert fake_screensaver.lock_calls == 0
 
@@ -1855,7 +1855,7 @@ class TestInsertionEntryGuards:
 class TestApplyPendingDecisionReturnContract:
     """The drain's return value decides whether an insertion is consumed.
 
-    `_apply_pending_decision` runs before every other reaction at two call
+    `apply_pending_decision` runs before every other reaction at two call
     sites (the INSERT handler and the prompt path): True means the user
     already decided and nothing else may react; False means fall through to
     the default flow.  The outcomes are reachable end-to-end through an
@@ -1865,14 +1865,14 @@ class TestApplyPendingDecisionReturnContract:
     """
 
     def test_nothing_queued_falls_through(self, tray_app) -> None:
-        assert tray_app._engine._apply_pending_decision(Device.from_dbus(1, IR_RULE)) is False
+        assert tray_app._engine.apply_pending_decision(Device.from_dbus(1, IR_RULE)) is False
 
     def test_a_queued_block_is_consumed(self, tray_app, fake_client) -> None:
         device = Device.from_dbus(301, IR_RULE)
         tray_app._engine._pending_decisions[dialog_identity(device)] = (DeviceTarget.BLOCK,
                                                                         Persistence.ONCE)
 
-        assert tray_app._engine._apply_pending_decision(device) is True
+        assert tray_app._engine.apply_pending_decision(device) is True
         assert fake_client.apply_policy_calls == [(301, DeviceTarget.BLOCK, Persistence.ONCE)]
         assert tray_app._engine._pending_decisions == {}
 
@@ -1882,7 +1882,7 @@ class TestApplyPendingDecisionReturnContract:
         tray_app._engine._pending_decisions[dialog_identity(device)] = (DeviceTarget.ALLOW,
                                                                         Persistence.ONCE)
 
-        assert tray_app._engine._apply_pending_decision(device) is False
+        assert tray_app._engine.apply_pending_decision(device) is False
         assert fake_client.apply_policy_calls == [], "a stale click may never authorize a HID device"
         assert tray_app._engine._pending_decisions == {}, "the handback is not a re-queue"
         assert any(c.args[0] == HANDBACK_NOTICE_TITLE for c in show.call_args_list)
@@ -1899,7 +1899,7 @@ class TestApplyPendingDecisionReturnContract:
         identity = dialog_identity(device)
         tray_app._engine._pending_decisions[identity] = (target, Persistence.ONCE)
 
-        assert tray_app._engine._apply_pending_decision(device) is True
+        assert tray_app._engine.apply_pending_decision(device) is True
         assert tray_app._engine._pending_decisions == {}
         assert fake_client.apply_policy_calls == [(301, target, Persistence.ONCE)]
 
@@ -1908,8 +1908,9 @@ class TestDecisionEngineStateOwnership:
     """The tray's decision state is storage owned by DecisionEngine.
 
     Phase 3 put it behind property shims on `USBGuardTrayApp`; Phase 5.4
-    deleted those, so the app must not re-grow them — tests and the app's own
-    cooldown bookkeeping target `tray._engine` directly.
+    deleted those, so the app must not re-grow them.  The app reaches the
+    engine only through its public methods and accessors; the tests alone
+    reach into its underscore state.
     """
 
     ENGINE_STATE = (
@@ -1941,6 +1942,26 @@ class TestDecisionEngineStateOwnership:
             assert not isinstance(getattr(USBGuardTrayApp, name, None), property), (
                 f"the app must not re-grow a {name} shim; readers must target tray._engine"
             )
+
+    def test_the_app_never_touches_the_engines_private_members(self) -> None:
+        import inspect
+
+        import usbguard_gui.app
+
+        source = inspect.getsource(usbguard_gui.app)
+
+        assert re.findall(r"_engine\._\w+", source) == [], "use the engine's public interface"
+
+    def test_the_accessors_read_and_stamp_the_engine_state(self, tray_app) -> None:
+        engine = tray_app._engine
+        assert engine.has_pending_hid is False
+        assert engine.last_prompted("x") is None
+
+        engine._hid_pending_devices.add(1)
+        engine.mark_prompted("x", 12.5)
+
+        assert engine.has_pending_hid is True
+        assert engine.last_prompted("x") == 12.5
 
     def test_a_prompt_stamps_the_engine_cooldown_not_the_app(self, tray_app) -> None:
         device = _make_hid_device(1)

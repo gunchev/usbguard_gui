@@ -53,8 +53,13 @@ class DecisionEngine(QObject):
     The effect signals below are the engine's only UI surface — dialogs,
     tray notices and the deferred lock are requests, never actions it
     performs itself.  The HID lock-first contract is specified in
-    `README.md`; this class and `gate.py` are where it is enforced, and the
-    app reads the fields it still needs directly through `_engine`.
+    `README.md`; this class and `gate.py` are where it is enforced.
+
+    The public methods are the app's whole interface to it: the signal slots
+    (`on_*`), the decision entry points, and three small accessors for what
+    the app's own presentation needs (`has_pending_hid`, `last_prompted`,
+    `mark_prompted`).  The underscore state is the engine's alone; only the
+    tests reach into it.
     """
 
     show_dialog = pyqtSignal(object)  # Device to prompt for
@@ -92,10 +97,23 @@ class DecisionEngine(QObject):
         self._permanent_allow_hashes: set[str] = set()
         # Whether screen locking is available (ScreenSaver service reachable).
         # While False, a lock-gated HID allow cannot proceed (gate.hid_allow_gated)
-        # and the user is noticed — see _on_lock_availability_changed.  Block,
+        # and the user is noticed — see on_lock_availability_changed.  Block,
         # Reject and non-HID allows are never gated on it.
         self._lock_available: bool = screensaver.connected
         self._lock_state_confirmed: bool = False
+
+    @property
+    def has_pending_hid(self) -> bool:
+        """Whether any HID device still awaits the deferred lock."""
+        return bool(self._hid_pending_devices)
+
+    def last_prompted(self, identity: str) -> float | None:
+        """The monotonic time this identity was last prompted for, if ever."""
+        return self._last_prompted_at.get(identity)
+
+    def mark_prompted(self, identity: str, at: float) -> None:
+        """Start the prompt cooldown for this identity."""
+        self._last_prompted_at[identity] = at
 
     def _register_unlock_cycle(self, device_ids: set[int]) -> int:
         """Record one deferred-unlock cycle and return the request id its fetch
@@ -120,7 +138,7 @@ class DecisionEngine(QObject):
             )
         return cycle_id
 
-    def _retry_pending_unlock_cycles(self) -> None:
+    def retry_pending_unlock_cycles(self) -> None:
         """Re-fetch every cycle still outstanding once the daemon is back.
 
         A cycle keeps its id across retries, so a late answer to the failed
@@ -133,7 +151,7 @@ class DecisionEngine(QObject):
         for cycle_id in list(self._pending_unlock_cycles):
             self._client.fetch_devices(cycle_id)
 
-    def _on_correlated_devices(self, request_id: int, devices: list[Device] | None) -> None:
+    def on_correlated_devices(self, request_id: int, devices: list[Device] | None) -> None:
         """Resolve one unlock cycle against the snapshot fetched for it.
 
         Anything that is not a cycle still waiting — another caller's fetch, or a
@@ -150,7 +168,7 @@ class DecisionEngine(QObject):
             # DBusError.  Put the cycle back: the devices may still be present,
             # and dropping the entry here is how a transient disconnect
             # silently lost the prompt.  It gets retried when the daemon
-            # returns — see _retry_pending_unlock_cycles().  An empty list is
+            # returns — see retry_pending_unlock_cycles().  An empty list is
             # the daemon's real answer (nothing on the bus) and resolves the
             # cycle.
             self._pending_unlock_cycles[request_id] = pending_ids
@@ -167,7 +185,7 @@ class DecisionEngine(QObject):
         for device in pending_devices:
             self.show_dialog.emit(device)
 
-    def _on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
+    def on_list_rules_result(self, rules: list[tuple[int, str]]) -> None:
         """Rebuild the permanent-allow cache from a fresh ruleset snapshot."""
         self._permanent_allow_hashes.clear()
         for _, rule_str in rules:
@@ -175,16 +193,16 @@ class DecisionEngine(QObject):
             if parsed["rule"] == "allow" and parsed["hash"]:
                 self._permanent_allow_hashes.add(str(parsed["hash"]))
 
-    def _on_list_devices_result(self, devices: list[Device] | None) -> None:
+    def on_list_devices_result(self, devices: list[Device] | None) -> None:
         # Opportunistic HID safety net: a fresh snapshot taken while the screen
         # is actually locked lets any pending HID device in — that is the moment
         # a newly-attached keyboard is safe to activate (unlocking requires a
-        # password).  The primary path is _on_screensaver_locked(); this only
+        # password).  The primary path is on_screensaver_locked(); this only
         # matters if that signal was missed.  Allowing them while the screen is
         # still unlocked would hand a just-plugged keyboard keystrokes on an
         # unlocked session, so the active check stays.  Deferred-unlock cycles
         # are NOT resolved here — they need the snapshot fetched specifically
-        # for them, see _on_correlated_devices.
+        # for them, see on_correlated_devices.
         if devices is None:
             # A failed query is not an empty bus: keep the pending set and let
             # the next snapshot take the safety net.
@@ -198,7 +216,7 @@ class DecisionEngine(QObject):
                     self._client.apply_device_policy(device_number, DeviceTarget.ALLOW,
                                                      persistence=Persistence.UNCHANGED)
 
-    def _cancel_pending_device(self, device_id: int) -> None:
+    def cancel_pending_device(self, device_id: int) -> None:
         """Invalidate deferred work and outstanding snapshots for one incarnation."""
         self._hid_pending_devices.discard(device_id)
         self._screensaver_pending_devices.discard(device_id)
@@ -207,7 +225,7 @@ class DecisionEngine(QObject):
             if not pending_ids:
                 del self._pending_unlock_cycles[cycle_id]
 
-    def _lock_for_pending_hid(self) -> None:
+    def lock_for_pending_hid(self) -> None:
         """Lock the screen for a deferred HID insert, unless every triggering
         device was unplugged during the notification delay."""
         if not self._hid_pending_devices:
@@ -221,7 +239,7 @@ class DecisionEngine(QObject):
             return
         self._screensaver.lock()
 
-    def _on_screensaver_unlocked(self, active: bool) -> None:
+    def on_screensaver_unlocked(self, active: bool) -> None:
         """Screen unlocked: collect the devices deferred while the screen was
         locked and show their summary prompts."""
         if active or not self._screensaver_pending_devices:
@@ -231,7 +249,7 @@ class DecisionEngine(QObject):
         self._screensaver_pending_devices.clear()
         self._client.fetch_devices(cycle_id)
 
-    def _on_screensaver_locked(self, active: bool) -> None:
+    def on_screensaver_locked(self, active: bool) -> None:
         """Screen locked: auto-allow pending HID devices so the newly-attached
         keyboard can be used to unlock."""
         if not active or not self._hid_pending_devices:
@@ -242,7 +260,7 @@ class DecisionEngine(QObject):
         for device_number in pending_ids:
             self._client.apply_device_policy(device_number, DeviceTarget.ALLOW, persistence=Persistence.UNCHANGED)
 
-    def _on_lock_availability_changed(self, available: bool) -> None:
+    def on_lock_availability_changed(self, available: bool) -> None:
         """Track lock availability; notice the user on the first confirmed
         report of a problem or on an actual transition.
 
@@ -281,7 +299,7 @@ class DecisionEngine(QObject):
             10000,
         )
 
-    def _on_hid_treatment_changed(self, enabled: bool) -> None:
+    def on_hid_treatment_changed(self, enabled: bool) -> None:
         """Re-arm the outage notice when the treatment comes back on.
 
         While the treatment is off, lock-availability changes are log-only, so
@@ -307,7 +325,7 @@ class DecisionEngine(QObject):
                 and not self._screensaver.inhibited
                 and lock_gate_open(self._lock_available))
 
-    def _apply_pending_decision(self, device: Device) -> bool:
+    def apply_pending_decision(self, device: Device) -> bool:
         """Replay a held decision; return True if it consumes this insertion.
 
         Called before every other reaction to an insertion, because none of them
@@ -374,8 +392,8 @@ class DecisionEngine(QObject):
                                          device.raw_rule if persistence is not Persistence.UNCHANGED else None)
         return True
 
-    def _apply_user_decision(self, device: Device, target: DeviceTarget, persistence: Persistence,
-                             device_present: bool = True) -> None:
+    def apply_user_decision(self, device: Device, target: DeviceTarget, persistence: Persistence,
+                            device_present: bool = True) -> None:
         """Supersede pending work and dispatch a fresh choice.
 
         The app calls this after its dialog bookkeeping and the
@@ -406,7 +424,7 @@ class DecisionEngine(QObject):
         self._client.apply_device_policy(device.number, target, persistence,
                                          device.raw_rule if persistence is not Persistence.UNCHANGED else None)
 
-    def _on_device_allowed(self, device: Device, rule_id: int) -> None:
+    def on_device_allowed(self, device: Device, rule_id: int) -> None:
         """React to a device becoming allowed by policy.
 
         Clears the prompt cooldown — an allow lets a later blocked insertion
@@ -421,7 +439,7 @@ class DecisionEngine(QObject):
         if rule_id > 0 and device.hash:
             self._permanent_allow_hashes.add(device.hash)
 
-    def _on_device_inserted(self, device: Device, target: int) -> None:
+    def on_device_inserted(self, device: Device, target: int) -> None:
         """React to a new insertion: replay held decisions, run the HID
         lock-first flow, defer while locked, or emit the prompt.
 
@@ -437,7 +455,7 @@ class DecisionEngine(QObject):
         # reach a prompt.  A device that comes back already allowed, or a HID
         # device heading for the lock-first flow, used to skip straight past
         # the queue and do the default instead.
-        if self._apply_pending_decision(device):
+        if self.apply_pending_decision(device):
             return
 
         # Use the target from the signal directly — more reliable than
@@ -472,7 +490,7 @@ class DecisionEngine(QObject):
         # while the lock stays down) instead.
         # The automatic-flow conjunction lives in _hid_lock_flow_applies.
         # A held HID Allow must obey the contract even when that flow cannot
-        # run; _apply_pending_decision then requires a fresh choice instead.
+        # run; apply_pending_decision then requires a fresh choice instead.
         hid_special_treatment = self._hid_lock_flow_applies(device)
         if hid_special_treatment:
             if self._screensaver.active:

@@ -52,7 +52,7 @@ RECONNECT_BASE_INTERVAL = 5
 RECONNECT_MAX_INTERVAL = 60
 # Milliseconds between the HID warning notification and the actual screen lock.
 # The device stays blocked by USBGuard's default policy during this window (it is
-# only allowed after the screen has locked, in DecisionEngine._on_screensaver_locked),
+# only allowed after the screen has locked, in DecisionEngine.on_screensaver_locked),
 # so this delay does not reopen the keystroke-injection window — it just gives
 # the tray notification time to appear before the screen blanks.
 HID_LOCK_NOTIFY_DELAY_MS = 5000
@@ -83,8 +83,8 @@ class USBGuardTrayApp:
         # singleton.  See SettingsProtocol for why this seam exists.
         self._settings: SettingsProtocol = settings if settings is not None else Settings()
         # Every piece of state a decision is made from lives in the engine
-        # (DecisionEngine); the app's few remaining reads go straight through
-        # _engine (deliberate private access — there are no shims on the app).
+        # (DecisionEngine); the app talks to it only through its public
+        # methods and accessors -- there are no state shims on the app.
         self._engine = DecisionEngine(self._client, self._screensaver, self._settings)
         self._device_list_window: DeviceListWindow | None = None
         self._open_dialogs: dict[int, DeviceActionDialog] = {}
@@ -104,7 +104,7 @@ class USBGuardTrayApp:
         # (see _on_device_presence_changed REMOVE handling).
         self._hid_lock_timer = QTimer()
         self._hid_lock_timer.setSingleShot(True)
-        self._hid_lock_timer.timeout.connect(self._engine._lock_for_pending_hid)
+        self._hid_lock_timer.timeout.connect(self._engine.lock_for_pending_hid)
 
         self._setup_tray()
         self._connect_signals()
@@ -145,7 +145,7 @@ class USBGuardTrayApp:
 
     def _on_disable_hid_toggled(self, checked: bool) -> None:
         self._settings.set_disable_hid_treatment(checked)
-        self._engine._on_hid_treatment_changed(not checked)
+        self._engine.on_hid_treatment_changed(not checked)
         # The gate arms and disarms with this toggle, so any dialog already
         # open must follow it — the Allow buttons are stale otherwise.
         for dialog in self._open_dialogs.values():
@@ -165,18 +165,18 @@ class USBGuardTrayApp:
         self._client.device_presence_changed.connect(self._on_device_presence_changed)
         self._client.device_policy_changed.connect(self._on_device_policy_changed)
         self._client.connection_changed.connect(self._on_connection_changed)
-        self._screensaver.active_changed.connect(self._engine._on_screensaver_unlocked)
-        self._screensaver.active_changed.connect(self._engine._on_screensaver_locked)
-        self._screensaver.connection_changed.connect(self._engine._on_lock_availability_changed)
+        self._screensaver.active_changed.connect(self._engine.on_screensaver_unlocked)
+        self._screensaver.active_changed.connect(self._engine.on_screensaver_locked)
+        self._screensaver.connection_changed.connect(self._engine.on_lock_availability_changed)
         self._engine.show_dialog.connect(self._show_device_dialog)
         self._engine.notify.connect(self._on_engine_notify)
         self._engine.dialog_retarget.connect(self._retarget_device_dialog)
         self._engine.schedule_lock.connect(self._schedule_hid_lock)
 
     def _connect_client_signals(self) -> None:
-        self._client.list_devices_result.connect(self._engine._on_list_devices_result)
-        self._client.list_devices_correlated.connect(self._engine._on_correlated_devices)
-        self._client.list_rules_result.connect(self._engine._on_list_rules_result)
+        self._client.list_devices_result.connect(self._engine.on_list_devices_result)
+        self._client.list_devices_correlated.connect(self._engine.on_correlated_devices)
+        self._client.list_rules_result.connect(self._engine.on_list_rules_result)
         self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
         self._client.permanent_clear_failed.connect(self._on_permanent_clear_failed)
         self._client.temporary_apply_failed.connect(self._on_temporary_apply_failed)
@@ -286,7 +286,7 @@ class USBGuardTrayApp:
             self._reconnect_timer.stop()
             self._reconnect_attempts = 0  # Reset on successful connection
             self._client.list_rules()
-            self._engine._retry_pending_unlock_cycles()
+            self._engine.retry_pending_unlock_cycles()
             return
 
         self._tray.setToolTip("USBGuard GUI — disconnected (retrying...)")
@@ -342,7 +342,7 @@ class USBGuardTrayApp:
             # decision flow, whose effects (dialog retarget, tray notices, the
             # deferred-lock schedule, the prompt) arrive as signals.
             device = Device.from_dbus(device_id, device_rule)
-            self._engine._on_device_inserted(device, target)
+            self._engine.on_device_inserted(device, target)
         except Exception as e:
             log.exception("Error in _on_device_presence_changed for device %d: %s", device_id, e)
 
@@ -368,7 +368,7 @@ class USBGuardTrayApp:
                 # permanent-allow cache.  The two touch disjoint state, so
                 # running the cancellation first loses nothing.
                 self._cancel_pending_device(device_id)
-                self._engine._on_device_allowed(d, rule_id)
+                self._engine.on_device_allowed(d, rule_id)
         except Exception as e:
             log.exception("Error in _on_device_policy_changed for device %d: %s", device_id, e)
 
@@ -377,7 +377,7 @@ class USBGuardTrayApp:
 
         Never restart an already-running lock timer: a second HID insert
         would push the first device's lock back by another full delay.
-        The engine's _hid_pending_devices already covers every waiting
+        The engine's pending HID set already covers every waiting
         device, so the earliest scheduled lock serves them all.
         """
         if not self._hid_lock_timer.isActive():
@@ -386,8 +386,8 @@ class USBGuardTrayApp:
     def _cancel_pending_device(self, device_id: int) -> None:
         """Invalidate deferred work for one incarnation and stop the deferred
         lock once nothing awaits it (the QTimer lives app-side)."""
-        self._engine._cancel_pending_device(device_id)
-        if not self._engine._hid_pending_devices and self._hid_lock_timer.isActive():
+        self._engine.cancel_pending_device(device_id)
+        if not self._engine.has_pending_hid and self._hid_lock_timer.isActive():
             log.info("Device %d no longer awaits HID handling -- cancelling scheduled lock", device_id)
             self._hid_lock_timer.stop()
 
@@ -428,7 +428,7 @@ class USBGuardTrayApp:
         # it comes back, before any dedup or cooldown: the user already chose, so
         # there is nothing left to prompt for.  The INSERT handler drains the
         # queue too, for the returns that never reach a dialog at all.
-        if self._engine._apply_pending_decision(device):
+        if self._engine.apply_pending_decision(device):
             return
 
         if self._retarget_device_dialog(device):
@@ -437,13 +437,13 @@ class USBGuardTrayApp:
         # Dismissal and Block keep the cooldown; Allow clears it so a subsequent
         # blocked insertion can prompt again. Never silently replay an Allow.
         now = time.monotonic()
-        last = self._engine._last_prompted_at.get(identity)
+        last = self._engine.last_prompted(identity)
         if last is not None and now - last < PROMPT_COOLDOWN_SEC:
             log.info("Device %s re-appeared as id %d %.1fs after the last prompt (cooldown %ds) -- "
                      "staying quiet; it remains blocked by policy",
                      identity, device.number, now - last, PROMPT_COOLDOWN_SEC)
             return
-        self._engine._last_prompted_at[identity] = now
+        self._engine.mark_prompted(identity, now)
         log.info("Prompting for device %d (identity %s)", device.number, identity)
 
         # Tray notification
@@ -487,7 +487,7 @@ class USBGuardTrayApp:
         # Clear the pending sets and stop the deferred lock first; the engine
         # then drops the queued choice and dispatches to the daemon.
         self._cancel_pending_device(device.number)
-        self._engine._apply_user_decision(device, target, persistence, device_present)
+        self._engine.apply_user_decision(device, target, persistence, device_present)
 
     def _show_device_list(self) -> None:
         if self._device_list_window is None:

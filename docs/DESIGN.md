@@ -236,7 +236,13 @@ to the GUI only through signals — it never touches QtWidgets:
 The app-side handlers own presentation (tray notices, dialog lifecycle, the
 `QTimer`); the engine owns every piece of decision state behind
 `tray_app._engine` — there are deliberately no property shims on
-`USBGuardTrayApp`.
+`USBGuardTrayApp`.  The app reaches the engine only through its public
+methods: the `on_*` slots wired to the client and the screensaver monitor,
+the decision entry points (`on_device_inserted`, `on_device_allowed`,
+`apply_pending_decision`, `apply_user_decision`, `cancel_pending_device`,
+`lock_for_pending_hid`, `retry_pending_unlock_cycles`,
+`on_hid_treatment_changed`) and three accessors (`has_pending_hid`,
+`last_prompted`, `mark_prompted`).  The underscore state is the engine's own.
 
 ## dasbus → dbus-fast API mapping
 
