@@ -98,4 +98,18 @@
 - [ ] Catch-all policy detection: bare `allow`/`reject` rule in the ruleset → persistent tray-tooltip warning +
       one notification per session + "dead" tray icon variant (second SVG in RPM/theme + dev-mode fallback).
 - [ ] Test on LXQT (and XFCE if that machine is reachable).
+- [ ] **TUI front end over the same core (proof, not a product).** A
+      [textual](https://textual.textualize.io/) app sharing `decision.py`, `gate.py`, `device.py`
+      and `dbus_client.py` with the tray GUI. **The point is to demonstrate the core/UI split is
+      real** — the security contract must be provable from one implementation, not two that drift.
+      What is Qt-free today and reusable as-is: `device.py`, `gate.py`, `ui_strings.py`, and the
+      pure functions inside `decision.py`. What is not, and is the actual work:
+      `DecisionEngine` is a `QObject` that publishes via `pyqtSignal`, `AsyncWorkerThread` is a
+      `QThread`, and `ScreensaverMonitor` is a `QObject` — so the threading model has to be
+      abstracted (asyncio + a plain callback/signal seam) before a non-Qt host can drive it. Keep the
+      tray GUI as the shipped product; the TUI is a second consumer, not a rewrite.
+      **Constraints:** the HID lock-first flow (`README.md` → *How It Works → HID Devices*) must be
+      identical in both hosts — same `gate.py` calls, same ordering — and the shared test suite has to
+      run against both, or the "proof" only proves the copy. Terminal-only hosts also lose the
+      polkit-agent path and any notification surface, so scope it to the device list + action dialog.
 - [ ] Release v1.0 (`release.py`).
