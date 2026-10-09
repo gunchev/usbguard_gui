@@ -1,3 +1,43 @@
+## 0.10.0 — 2026-10-09
+
+### Changes since v0.9.0
+
+- 1a3c41a docs: record the live verification of the failed-Allow rollback
+- f52fdbb refactor: give the decision engine a public interface
+- aeca9d6 test: keep the forbidden live-authorize phrasings with the tests
+- 3c3914e feat: announce a lock outage when HID treatment is turned back on
+- 784735a feat: switch a device back off when its Allow fails at bring-up
+- ac16df2 fix: answer every device-list request, even on non-D-Bus errors
+- 73bfa3a docs: describe the correlated None contract and the bring-up signal
+- d0e9b44 fix: report a device bring-up failure on Always and the lock-flow allow
+- bf2875f fix: explain a device that will not come up instead of the raw syscall text
+- 81bcadf style: fix autopep8 alignment in test_device_dialog
+- 50faf98 docs: move completed roadmap items to DONE.md at release
+- 27797c8 Git ignore .pi
+- 9a3a12d refactor: require settings on the dialog and device list
+- 43c869c fix: emit None from list_devices_correlated on failure
+- 77530d4 docs: sweep stale shim-era comments and tick the Phase-6 TODO items
+- 00bd0c7 docs: cover the engine, gate and narrowed lock rule
+- 41f6324 fix: emit None from list_devices_result on transient failure
+- 3d218e9 feat: narrow the lock gate to HID allows with special treatment on
+- 1ce3b10 refactor: rewire tests onto engine state and drop the property shims
+- 1acff6a test: split the decision-engine suite out of test_app
+- ad620a2 refactor: refresh the Phase-3 seam comments after the Phase-4 moves
+- 0eeec30 refactor: move user decisions and lock-availability tracking into DecisionEngine
+- 74f14c7 refactor: move the snapshot safety net and rules cache rebuild into DecisionEngine
+- 6cdb913 refactor: move the allowed-device cache seeding into DecisionEngine
+- 62a0e7b refactor: move the INSERT decision flow into DecisionEngine
+- 5bc09c7 refactor: move the pending-decision replay into DecisionEngine
+- bb991df refactor: move the screensaver lock/unlock flow into DecisionEngine
+- 75d2eed refactor: move the unlock-cycle correlation into DecisionEngine
+- 94ec5aa refactor: move the decision state into DecisionEngine behind app shims
+- 557ce91 refactor: read the cached lock state through gate.py
+- 40ad20d refactor: decide action gating in gate.py, not in the views
+- 8feb726 refactor: share the action-warning strings and tray titles in ui_strings
+- 6bfb301 test: share one fake client, screensaver and settings across the suite
+- cb33ea8 test: pin the decision-state feeds and the queued-drain contract
+- 747afae test: pin the anti-lockout branch to fire alone before the cache skip
+
 ## 0.9.0 — 2026-10-02
 
 ### Changes since v0.8.0
