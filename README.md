@@ -159,7 +159,8 @@ assumption and the app refuses the one click that needs the lock rather than pre
   special HID treatment is enabled: allowing a keyboard without being able to lock first
   would hand an attacker an unlocked session. Everything else stays available: Block and
   Reject always work, non-HID devices can still be allowed, and with special HID
-  treatment turned off nothing is gated at all (the lock-outage notices become log-only).
+  treatment turned off nothing is gated at all (the lock-outage notices become log-only;
+turning the treatment back on during an outage announces it then).
   Devices stay blocked by USBGuard's own policy. The tray announces it again when
   locking becomes available. A locker restart invalidates the old lock state; HID
   allows are re-enabled only after the replacement service's current state has been

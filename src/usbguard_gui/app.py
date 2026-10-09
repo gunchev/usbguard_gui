@@ -145,6 +145,7 @@ class USBGuardTrayApp:
 
     def _on_disable_hid_toggled(self, checked: bool) -> None:
         self._settings.set_disable_hid_treatment(checked)
+        self._engine._on_hid_treatment_changed(not checked)
         # The gate arms and disarms with this toggle, so any dialog already
         # open must follow it — the Allow buttons are stale otherwise.
         for dialog in self._open_dialogs.values():

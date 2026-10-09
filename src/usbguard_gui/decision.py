@@ -263,13 +263,7 @@ class DecisionEngine(QObject):
                          "available" if available else "unavailable")
             return
         if not available and (changed or first):
-            self.notify.emit(
-                LOCK_UNAVAILABLE_NOTICE_TITLE,
-                "Screen locking is unavailable, so HID devices cannot be allowed. "
-                "Block and Reject still work. Devices remain blocked by USBGuard's policy.",
-                NOTIFY_WARNING,
-                10000,
-            )
+            self._notify_lock_unavailable()
         elif available and changed and not first:
             self.notify.emit(
                 LOCK_AVAILABLE_NOTICE_TITLE,
@@ -277,6 +271,27 @@ class DecisionEngine(QObject):
                 NOTIFY_INFO,
                 5000,
             )
+
+    def _notify_lock_unavailable(self) -> None:
+        self.notify.emit(
+            LOCK_UNAVAILABLE_NOTICE_TITLE,
+            "Screen locking is unavailable, so HID devices cannot be allowed. "
+            "Block and Reject still work. Devices remain blocked by USBGuard's policy.",
+            NOTIFY_WARNING,
+            10000,
+        )
+
+    def _on_hid_treatment_changed(self, enabled: bool) -> None:
+        """Re-arm the outage notice when the treatment comes back on.
+
+        While the treatment is off, lock-availability changes are log-only, so
+        an outage that began then was never announced.  Turning the treatment
+        on arms the gate at once; without saying so the user meets a greyed-out
+        Allow with no explanation.  Only a confirmed outage is announced: an
+        unconfirmed state gets its notice from the first report anyway.
+        """
+        if enabled and self._lock_state_confirmed and not lock_gate_open(self._lock_available):
+            self._notify_lock_unavailable()
 
     def _hid_lock_flow_applies(self, device: Device) -> bool:
         """Would this device take the auto-allow-then-lock path?

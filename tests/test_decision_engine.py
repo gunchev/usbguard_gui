@@ -639,6 +639,48 @@ class TestLockAvailability:
         assert log_info.called
         assert tray_app._engine._lock_available is False
 
+    def test_reenabling_treatment_during_an_outage_announces_it(self, tray_app, fake_screensaver, mocker) -> None:
+        """The outage began while the treatment was off, so it was log-only.
+        Turning the treatment back on arms the gate at once and must say why
+        Allow just went grey on HID devices."""
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._on_disable_hid_toggled(True)
+        fake_screensaver._connected = False
+        fake_screensaver.connection_changed.emit(False)
+        assert not notify.called
+
+        tray_app._on_disable_hid_toggled(False)
+
+        notify.assert_called_once()
+        assert notify.call_args.args[0] == "Screen locking unavailable"
+
+    def test_reenabling_treatment_with_the_lock_up_is_silent(self, tray_app, fake_screensaver, mocker) -> None:
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        fake_screensaver.connection_changed.emit(True)
+        tray_app._on_disable_hid_toggled(True)
+
+        tray_app._on_disable_hid_toggled(False)
+
+        assert not notify.called
+
+    def test_disabling_treatment_during_an_outage_is_silent(self, tray_app, fake_screensaver, mocker) -> None:
+        fake_screensaver.connection_changed.emit(False)
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+
+        tray_app._on_disable_hid_toggled(True)
+
+        assert not notify.called
+
+    def test_reenabling_before_any_lock_report_waits_for_the_report(self, tray_app, mocker) -> None:
+        """Unconfirmed state: the first report carries the notice, not the toggle."""
+        notify = mocker.patch.object(tray_app._tray, "showMessage")
+        tray_app._engine._lock_available = False
+        tray_app._on_disable_hid_toggled(True)
+
+        tray_app._on_disable_hid_toggled(False)
+
+        assert not notify.called
+
     def test_repeated_same_state_does_not_notify(self, tray_app, fake_screensaver, mocker) -> None:
         notify = mocker.patch.object(tray_app._tray, "showMessage")
         fake_screensaver.connection_changed.emit(False)
