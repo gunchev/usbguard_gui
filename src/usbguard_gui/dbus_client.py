@@ -14,7 +14,7 @@ from usbguard_gui.dbus_common import DBUS_BUS_NAME, DBUS_BUS_PATH, DBUS_IFACE, T
     AsyncWorkerThread, get_introspection, recycle_worker_thread, stop_worker_thread
 from usbguard_gui.device import Device, DeviceTarget, Persistence, rule_identity, rule_is_broader_than_device, \
     rule_matches_device, rule_persistence_problem
-from usbguard_gui.ui_strings import DEVICE_BRING_UP_WARNING
+from usbguard_gui.ui_strings import DEVICE_BRING_UP_RULE_NOT_SAVED, DEVICE_BRING_UP_RULE_SAVED, DEVICE_BRING_UP_WARNING
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +125,24 @@ def device_bring_up_failure(e: BaseException, target: DeviceTarget) -> str | Non
     return f"The kernel could not {action}: {meaning}{detail}."
 
 
+class _DeviceBringUpError(DBusError):
+    """A live apply that the device itself failed, explained for the user.
+
+    Still a DBusError, so every existing handler (and `_is_connection_error`,
+    which reads `type`) sees it exactly as it saw the daemon's own error.
+    `summary` is the one-sentence `device_bring_up_failure()` text for the log;
+    `explanation` is what the user is told, grown by each caller that knows
+    more (what happened to the permanent rule).  `reported` is set once a
+    notice has carried it, so the outer handler does not report it twice.
+    """
+
+    def __init__(self, cause: DBusError, summary: str, explanation: str) -> None:
+        super().__init__(cause.type, cause.text, cause.reply)
+        self.summary = summary
+        self.explanation = explanation
+        self.reported = False
+
+
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
 def _retarget_device_rule(rule: str, target: DeviceTarget) -> str:
@@ -194,6 +212,9 @@ class _DBusThread(AsyncWorkerThread):
     # The clear succeeded, but the live Once action failed. The flag says
     # whether any permanent rules were actually removed before that failure.
     temporary_apply_failed = pyqtSignal(int, str, str, bool)
+    # device_id, action, explanation: the device itself failed to come up on a
+    # path no other failure signal reports (Always, the lock-flow allow).
+    device_bring_up_failed = pyqtSignal(int, str, str)
     # The `Once` half that succeeded but did not finish: the device's own rule is
     # gone, yet a broader rule that merely *covers* it is still in force.  Those
     # are deliberately not removed -- `allow id 1d6b:0002` is usually hand-written
@@ -355,6 +376,28 @@ class _DBusThread(AsyncWorkerThread):
             return
         self.list_devices_correlated.emit(request_id, devices)
 
+    async def _apply_live(self, device_id: int, target: DeviceTarget, permanent: bool) -> int:
+        """applyDevicePolicy, with a device that will not come up re-raised as
+        `_DeviceBringUpError` carrying what the user needs to be told."""
+        try:
+            return await self._devices_iface.call_apply_device_policy(device_id, int(target), permanent)
+        except DBusError as e:
+            summary = device_bring_up_failure(e, target)
+            if summary is None:
+                raise
+            explanation = summary
+            if target is DeviceTarget.ALLOW:
+                # Only Allow leaves the half-state worth warning about: the
+                # kernel set authorized=1 before the step that failed, so the
+                # next Allow short-circuits on the flag and reports success
+                # without retrying what broke.
+                explanation += DEVICE_BRING_UP_WARNING
+            if permanent:
+                # The daemon upserts the rule before it touches sysfs, so the
+                # durable half landed even though the live half did not.
+                explanation += DEVICE_BRING_UP_RULE_SAVED
+            raise _DeviceBringUpError(e, summary, explanation) from e
+
     async def _do_apply_policy(self, device_id: int, target: DeviceTarget, persistence: Persistence,
                                device_rule: str | None = None) -> None:
         if persistence is Persistence.UNCHANGED:
@@ -401,10 +444,15 @@ class _DBusThread(AsyncWorkerThread):
                     # for -- just not one assembled from a suspect rule.
                     log.warning("Refusing to persist the device-reported rule for device %d: %s; "
                                 "falling back to the daemon's upsert", device_id, problem)
-                    await self._devices_iface.call_apply_device_policy(device_id, int(target), True)
+                    await self._apply_live(device_id, target, True)
                     return
 
-                await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                try:
+                    await self._apply_live(device_id, target, False)
+                except _DeviceBringUpError as e:
+                    # The live half failed first, so the durable half never ran.
+                    e.explanation += DEVICE_BRING_UP_RULE_NOT_SAVED
+                    raise
                 try:
                     await self._persist_device_rule(device_id, rule)
                 except DBusError as e:
@@ -460,19 +508,16 @@ class _DBusThread(AsyncWorkerThread):
                     self.permanent_clear_failed.emit(device_id, target.name.lower(), str(e), False)
                     raise
                 try:
-                    await self._devices_iface.call_apply_device_policy(device_id, int(target), False)
+                    await self._apply_live(device_id, target, False)
                 except DBusError as e:
                     # A sysfs bring-up failure is the device itself refusing to
                     # come up, not a refusal of the user's decision, and it needs
                     # saying: the raw daemon text is a C++ syscall expression.
-                    bring_up = device_bring_up_failure(e, target)
-                    reason = str(e) if bring_up is None else bring_up
-                    if bring_up is not None and target is DeviceTarget.ALLOW:
-                        # Only Allow leaves the half-state worth warning about:
-                        # the kernel set authorized=1 before the step that
-                        # failed, so the next Allow short-circuits on the flag
-                        # and reports success without retrying what broke.
-                        reason += DEVICE_BRING_UP_WARNING
+                    if isinstance(e, _DeviceBringUpError):
+                        reason = e.explanation
+                        e.reported = True
+                    else:
+                        reason = str(e)
                     if removed:
                         listed = "; ".join(f"{text} (rule {rule_id})" for rule_id, text in removed)
                         reason = f"{reason}\nAlready removed from the stored policy: {listed}."
@@ -487,8 +532,7 @@ class _DBusThread(AsyncWorkerThread):
                 # to False here would silently turn a permanent decision into a
                 # temporary one.  UNCHANGED/ONCE are live-only.
                 daemon_permanent = persistence is Persistence.ALWAYS
-                rule_id = await self._devices_iface.call_apply_device_policy(device_id, int(target),
-                                                                             daemon_permanent)
+                rule_id = await self._apply_live(device_id, target, daemon_permanent)
                 log.info("Applied %s to device %d (%s) → rule %d",
                          target.name, device_id, persistence.name, rule_id)
         except DBusError as e:
@@ -500,11 +544,15 @@ class _DBusThread(AsyncWorkerThread):
                     persistence.name,
                 )
             else:
-                bring_up = device_bring_up_failure(e, target)
-                if bring_up is not None:
+                if isinstance(e, _DeviceBringUpError):
                     log.error("Policy %s on device %d failed at the device itself (persistence=%s): %s "
                               "[daemon: %s]",
-                              target.name, device_id, persistence.name, bring_up, e)
+                              target.name, device_id, persistence.name, e.summary, e.text)
+                    # Once reports through temporary_apply_failed; every other
+                    # path (Always, the lock-flow allow) used to stop at this
+                    # log line, leaving the user with a dead device and no word.
+                    if not e.reported:
+                        self.device_bring_up_failed.emit(device_id, target.name.lower(), e.explanation)
                 else:
                     log.error(
                         "Failed to apply policy to device %d (target=%s, persistence=%s): %s",
@@ -840,6 +888,9 @@ class USBGuardClient(QObject):
     permanent_write_failed = pyqtSignal(int, str, str)
     permanent_clear_failed = pyqtSignal(int, str, str, bool)
     temporary_apply_failed = pyqtSignal(int, str, str, bool)
+    # device_id, action, explanation: the device itself failed to come up on a
+    # path no other failure signal reports (Always, the lock-flow allow).
+    device_bring_up_failed = pyqtSignal(int, str, str)
     permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -872,6 +923,7 @@ class USBGuardClient(QObject):
         self._thread.permanent_write_failed.connect(self.permanent_write_failed)
         self._thread.permanent_clear_failed.connect(self.permanent_clear_failed)
         self._thread.temporary_apply_failed.connect(self.temporary_apply_failed)
+        self._thread.device_bring_up_failed.connect(self.device_bring_up_failed)
         self._thread.permanent_rule_remains.connect(self.permanent_rule_remains)
         self._thread.start()
         return True

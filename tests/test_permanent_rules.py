@@ -1274,6 +1274,84 @@ class TestDeviceBringUpFailure:
             "a failed Block leaves no authorized flag, so a retry really does retry"
 
 
+class TestBringUpFailureIsReportedOnEveryPath:
+    """Once is not the only decision a device can fail to come up under.
+
+    `Always`, the daemon's own upsert and the lock-first flow's automatic allow
+    used to stop at a log line: the user typed their password for a keyboard
+    that stays dead, or clicked Allow Always and believed it stored, and the
+    tray said nothing.  Each of those paths now raises `device_bring_up_failed`
+    -- and says what became of the permanent rule, because the two Always
+    paths leave it in opposite states.
+    """
+
+    @staticmethod
+    def _failing_thread(policy=None):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(policy if policy is not None else _FakePolicy([]))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, BRING_UP_EPROTO)
+        reports = []
+        thread.device_bring_up_failed.connect(lambda *args: reports.append(args))
+        return thread, reports
+
+    def test_always_allow_is_reported_and_says_no_rule_was_saved(self):
+        policy = _FakePolicy([])
+        thread, reports = self._failing_thread(policy)
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert len(reports) == 1
+        device_id, action, reason = reports[0]
+        assert (device_id, action) == (136, "allow")
+        assert "switch the device on" in reason
+        assert "Do not click Allow again" in reason
+        assert "No permanent rule was saved" in reason
+        assert policy.rules == [], "the live half failed first, so the rule was never written"
+
+    def test_daemon_upsert_always_says_the_rule_was_saved(self):
+        """No verbatim rule -> the daemon's upsert, which stores before it switches."""
+        thread, reports = self._failing_thread()
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ALWAYS, None))
+
+        assert len(reports) == 1
+        assert "saved anyway" in reports[0][2]
+        assert thread._devices_iface.call_apply_device_policy.call_args.args == (136, int(DeviceTarget.ALLOW), True)
+
+    def test_lock_flow_allow_is_reported(self):
+        thread, reports = self._failing_thread()
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.UNCHANGED))
+
+        assert len(reports) == 1
+        reason = reports[0][2]
+        assert "switch the device on" in reason
+        assert "permanent rule" not in reason, "a live-only allow has no rule to talk about"
+
+    def test_once_is_reported_exactly_once(self):
+        thread, reports = self._failing_thread()
+        once = []
+        thread.temporary_apply_failed.connect(lambda *args: once.append(args))
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ONCE, BLOCKED_HUB))
+
+        assert len(once) == 1
+        assert reports == [], "temporary_apply_failed already carried it"
+
+    def test_an_ordinary_failure_is_not_called_a_bring_up_failure(self):
+        from dbus_fast import DBusError, ErrorType
+
+        thread = _stub_thread(_FakePolicy([]))
+        thread._devices_iface.call_apply_device_policy.side_effect = DBusError(ErrorType.FAILED, "No such device")
+        reports = []
+        thread.device_bring_up_failed.connect(lambda *args: reports.append(args))
+
+        _run(thread._do_apply_policy(136, DeviceTarget.ALLOW, Persistence.ALWAYS, BLOCKED_HUB))
+
+        assert reports == []
+
+
 class TestOnceNeverRemovesABroaderRule:
     """Option A: a `Once` decision clears the device's own rule and nothing else.
 

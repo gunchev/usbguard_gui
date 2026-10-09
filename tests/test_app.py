@@ -10,10 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from conftest import IR_RULE, KEYBOARD_RULE
 from fakes import _FakeSettings
+from PyQt6.QtWidgets import QSystemTrayIcon
 
 from usbguard_gui.app import PROMPT_COOLDOWN_SEC, USBGuardTrayApp
 from usbguard_gui.decision import dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
+from usbguard_gui.ui_strings import DEVICE_BRING_UP_NOTICE_TITLE
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -699,6 +701,24 @@ class TestFailedTemporaryActionWarning:
         else:
             assert "removed" not in title
             assert "stored policy has changed" not in body
+
+
+class TestDeviceBringUpFailureNotice:
+    """A device that would not come up on Always or the lock flow gets a notice."""
+
+    def test_signal_shows_a_warning_with_the_explanation(self, tray_app, fake_client, mocker):
+        show = mocker.patch.object(tray_app._tray, "showMessage")
+
+        fake_client.device_bring_up_failed.emit(136, "allow", "The kernel could not switch the device on.")
+
+        show.assert_called_once()
+        title, body, icon = show.call_args.args[:3]
+        assert title == DEVICE_BRING_UP_NOTICE_TITLE
+        assert "136" in body
+        assert "allow" in body
+        assert "did not take effect" in body
+        assert "The kernel could not switch the device on." in body
+        assert icon == QSystemTrayIcon.MessageIcon.Warning
 
 
 class TestPartialClearIsAnnouncedDifferently:

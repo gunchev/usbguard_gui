@@ -30,6 +30,7 @@ class _FakeClient(QObject):
     permanent_write_failed = pyqtSignal(int, str, str)
     permanent_clear_failed = pyqtSignal(int, str, str, bool)
     temporary_apply_failed = pyqtSignal(int, str, str, bool)
+    device_bring_up_failed = pyqtSignal(int, str, str)
     permanent_rule_remains = pyqtSignal(int, str, str)
 
     def __init__(self, connected: bool = True) -> None:

@@ -21,9 +21,9 @@ from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.device_list import DeviceListWindow
 from usbguard_gui.screensaver import ScreensaverMonitor
 from usbguard_gui.settings import Settings, SettingsProtocol
-from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_INSERTED_NOTICE_TITLE, MESSAGE_BOX_TITLE, \
-    PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE, TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE, \
-    TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE
+from usbguard_gui.ui_strings import BROADER_RULE_NOTICE_TITLE, DEVICE_BRING_UP_NOTICE_TITLE, \
+    DEVICE_INSERTED_NOTICE_TITLE, MESSAGE_BOX_TITLE, PERMANENT_RULE_NOT_SAVED_NOTICE_TITLE, \
+    TEMP_DECISION_NOT_APPLIED_NOTICE_TITLE, TEMP_DECISION_PARTLY_CHANGED_NOTICE_TITLE
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ class USBGuardTrayApp:
         self._client.permanent_write_failed.connect(self._on_permanent_write_failed)
         self._client.permanent_clear_failed.connect(self._on_permanent_clear_failed)
         self._client.temporary_apply_failed.connect(self._on_temporary_apply_failed)
+        self._client.device_bring_up_failed.connect(self._on_device_bring_up_failed)
         self._client.permanent_rule_remains.connect(self._on_permanent_rule_remains)
 
     def _on_permanent_rule_remains(self, device_id: int, action: str, rule: str) -> None:
@@ -233,6 +234,18 @@ class USBGuardTrayApp:
         self._tray.showMessage(
             title,
             f"The temporary {action} for device {device_id} did not take effect.\n{reason}{detail}",
+            QSystemTrayIcon.MessageIcon.Warning,
+            15000,
+        )
+
+    def _on_device_bring_up_failed(self, device_id: int, action: str, reason: str) -> None:
+        # The device itself would not come up on a path no other notice covers
+        # -- an Always decision, or the lock-first flow's automatic allow.  The
+        # user just typed their password for a keyboard that stays dead; a log
+        # line nobody tails is not an answer.
+        self._tray.showMessage(
+            DEVICE_BRING_UP_NOTICE_TITLE,
+            f"The {action} for device {device_id} did not take effect.\n{reason}",
             QSystemTrayIcon.MessageIcon.Warning,
             15000,
         )

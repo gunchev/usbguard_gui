@@ -33,6 +33,7 @@ def mock_thread():
             permanent_write_failed = pyqtSignal(int, str, str)
             permanent_clear_failed = pyqtSignal(int, str, str, bool)
             temporary_apply_failed = pyqtSignal(int, str, str, bool)
+            device_bring_up_failed = pyqtSignal(int, str, str)
             permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self):
@@ -226,6 +227,15 @@ class TestUSBGuardClient:
 
         assert received == [(54, "block", "Not authorized", True)]
 
+    def test_device_bring_up_failure_signal_propagates(self, client, mock_thread):
+        received = []
+        client.device_bring_up_failed.connect(lambda *args: received.append(args))
+        client.connect()
+
+        mock_thread.device_bring_up_failed.emit(136, "allow", "The kernel could not switch the device on.")
+
+        assert received == [(136, "allow", "The kernel could not switch the device on.")]
+
     def test_list_devices_with_custom_query(self, client, mock_thread):
         client.connect()
         client.list_devices(query="match blocked")
@@ -357,6 +367,7 @@ class TestConnectRecyclesPreviousThread:
             permanent_write_failed = pyqtSignal(int, str, str)
             permanent_clear_failed = pyqtSignal(int, str, str, bool)
             temporary_apply_failed = pyqtSignal(int, str, str, bool)
+            device_bring_up_failed = pyqtSignal(int, str, str)
             permanent_rule_remains = pyqtSignal(int, str, str)
 
             def __init__(self, parent=None):

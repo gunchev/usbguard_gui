@@ -46,6 +46,21 @@ DEVICE_BRING_UP_WARNING = (
     "the next attempt reports success without retrying the step that failed."
 )
 
+# What became of the permanent half of an `Always` whose live half failed at
+# bring-up.  The daemon's own upsert (`applyDevicePolicy(permanent=True)`) stores
+# the rule *before* it writes sysfs, so that rule stands; the app's own path
+# applies live first and writes the rule only after, so nothing was stored.
+DEVICE_BRING_UP_RULE_SAVED = (
+    "\nThe permanent rule was saved anyway: it applies the next time the device is plugged in."
+)
+DEVICE_BRING_UP_RULE_NOT_SAVED = (
+    "\nNo permanent rule was saved."
+)
+
+# Tray title for a bring-up failure on a path with no other failure notice
+# (`Always`, or the lock-first flow's automatic allow).
+DEVICE_BRING_UP_NOTICE_TITLE = "Device did not come up"
+
 # Title for the notice raised when a queued `Allow` is handed back to the
 # lock-first flow.  Named so the tests can select the message by identity rather
 # than by matching prose: the wording is user-facing and will be reworded, and

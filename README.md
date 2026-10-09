@@ -83,6 +83,11 @@ the tray replaces it with what failed and what to do about it: unplug the device
 and plug it back in, or try a different port. **Do not click Allow again.** The
 kernel short-circuits on the flag it already set, so the next Allow reports success
 without ever retrying the step that failed, and the device still does nothing.
+The notice appears whichever way the Allow was made — *Once*, *Always*, or the
+lock-first flow's automatic allow behind the lock screen — and for *Always* it says
+what became of the permanent rule: the app's own topology-specific write never ran
+(it comes after the live change), while the daemon's fallback upsert stores the rule
+before it touches the device, so that rule stands.
 
 **A device that disconnects while you are deciding keeps its dialog.** Hardware that
 re-enumerates on its own — IR blasters, modems, anything that resets when it is
