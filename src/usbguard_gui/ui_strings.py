@@ -37,7 +37,11 @@ DEVICE_INSERTED_NOTICE_TITLE = "New USB device inserted"
 # failed, so left alone the next ALLOW short-circuits on the flag and reports
 # success without retrying the step that broke.  A BLOCK writes `authorized=0`
 # unconditionally (USBGuard's sysfsApplyTarget never skips it), which clears the
-# flag, so after the rollback another Allow genuinely retries.
+# flag, so after the rollback another Allow genuinely retries.  Verified live on
+# 2026-10-09 with the Smart IR Blaster on a faulty xHCI port: without the
+# rollback the second Allow "succeeded" with no kernel activity; with it, every
+# Allow (Once and Always) produced a fresh `can't set config #1, error -71` and
+# an honest failure, and an Always stored no rule.
 DEVICE_BRING_UP_ROLLED_BACK = (
     "\nThis is the device refusing to come up, not a USBGuard decision. It was switched "
     "back off rather than left half-enabled, so allowing it again really does retry. "
