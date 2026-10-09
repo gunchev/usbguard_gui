@@ -29,7 +29,7 @@ dependencies = [
 | `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | ScreenSaver + logind session-bus monitor   |
 | `device.py`        | `Device`, `DeviceTarget`, `parse_device_rule` | Device model and rule-string parsing    |
 | `decision.py`      | `DecisionEngine`                           | Lock-first decision flow: HID pending set, unlock cycles, queued decisions, effect signals |
-| `ui_strings.py`    | notice titles, warnings, live-authorization promises | Single home for user-visible strings |
+| `ui_strings.py`    | notice titles, warnings                     | Single home for user-visible strings       |
 | `app.py`           | `USBGuardTrayApp`                           | Qt event loop, tray, dialogs, signal wiring |
 | `device_dialog.py` | `DeviceActionDialog`                        | Per-device Allow/Block × Always/Once prompt |
 | `device_list.py`   | `DeviceListWindow` (+ table models)         | Device list window                         |

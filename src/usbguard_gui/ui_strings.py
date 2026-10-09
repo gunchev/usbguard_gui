@@ -78,15 +78,3 @@ DEVICE_BRING_UP_NOTICE_TITLE = "Device did not come up"
 # every time somebody improves a sentence.  What it must never claim is a lock
 # screen -- see `TestTheHandbackWarningPromisesNothingItCannotKeep`.
 HANDBACK_NOTICE_TITLE = "Held Allow cleared no permanent rule"
-
-# Phrasings that would promise the user a live authorization this code path does
-# not control.  Whether the lock screen ever arrives is decided after
-# `_apply_pending_decision` returns, so the notice may describe the policy and
-# must not forecast the event.
-_LIVE_AUTHORIZE_PROMISES = (
-    "will be authorized",
-    "will authorize",
-    "will be allowed",
-    "goes through the lock",
-    "is authorized behind the lock screen for you",
-)

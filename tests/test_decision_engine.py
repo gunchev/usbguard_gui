@@ -14,9 +14,22 @@ from fakes import _FakeSettings
 from usbguard_gui.app import USBGuardTrayApp
 from usbguard_gui.decision import MAX_PENDING_DECISIONS, dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
-from usbguard_gui.ui_strings import _LIVE_AUTHORIZE_PROMISES, HANDBACK_NOTICE_TITLE
+from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# Phrasings that would promise the user a live authorization this code path does
+# not control.  Whether the lock screen ever arrives is decided after
+# `_apply_pending_decision` returns, so the notice may describe the policy and
+# must not forecast the event.  Test-only: the app never shows these, the
+# handback tests forbid them.
+_LIVE_AUTHORIZE_PROMISES = (
+    "will be authorized",
+    "will authorize",
+    "will be allowed",
+    "goes through the lock",
+    "is authorized behind the lock screen for you",
+)
 
 # ---------------------------------------------------------------------------
 # Helpers for HID tests
