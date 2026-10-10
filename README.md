@@ -153,8 +153,8 @@ the treatment enabled unless you specifically want prompt-driven HID handling.
 The lock-first design assumes the screen *can* be locked. Two situations break that
 assumption and the app refuses the one click that needs the lock rather than pretending:
 
-- **No screen-lock service** (the `org.freedesktop.ScreenSaver` service is unreachable —
-  a locker-less or unusual session). The tray shows *"Screen locking unavailable"* and
+- **No screen-lock service** (neither `org.freedesktop.ScreenSaver` nor GNOME Shell's
+  `org.gnome.ScreenSaver` is reachable — a locker-less or unusual session). The tray shows *"Screen locking unavailable"* and
   **Allow is disabled for HID devices** — in the dialog and in the device list — while
   special HID treatment is enabled: allowing a keyboard without being able to lock first
   would hand an attacker an unlocked session. Everything else stays available: Block and
