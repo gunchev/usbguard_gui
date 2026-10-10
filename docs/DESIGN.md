@@ -57,9 +57,11 @@ ScreensaverMonitor (QObject)
  └─ Re-emits signals to GUI             ├─ asyncio event loop (run_until_complete)
                                          ├─ dbus-fast MessageBus (session bus)
                                          ├─ ProxyInterface for ScreenSaver
+                                            (org.freedesktop.ScreenSaver, else
+                                            GNOME's org.gnome.ScreenSaver)
                                          ├─ Subscribes to ActiveChanged signal
-                                         ├─ Watches org.freedesktop.ScreenSaver via
-                                            NameOwnerChanged
+                                         ├─ Watches the ScreenSaver name in use
+                                            via NameOwnerChanged
                                          ├─ MessageBus (system bus) for logind
                                          └─ Polls logind ListInhibitors for
                                             idle-block inhibitors
@@ -112,6 +114,7 @@ src/usbguard_gui/introspection/
 ├── org.usbguard.Devices1.xml
 ├── org.usbguard.Policy1.xml
 ├── org.freedesktop.ScreenSaver.xml
+├── org.gnome.ScreenSaver.xml   (GNOME Shell fallback)
 └── org.freedesktop.DBus.xml   (NameOwnerChanged watches)
 ```
 

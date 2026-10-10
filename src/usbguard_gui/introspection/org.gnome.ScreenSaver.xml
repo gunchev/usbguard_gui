@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<node name="/org/gnome/ScreenSaver">
+  <interface name="org.gnome.ScreenSaver">
+    <method name="Lock"/>
+    <method name="GetActive">
+      <arg name="active" type="b" direction="out"/>
+    </method>
+    <signal name="ActiveChanged">
+      <arg name="new_value" type="b"/>
+    </signal>
+  </interface>
+</node>

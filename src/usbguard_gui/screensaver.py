@@ -1,4 +1,4 @@
-"""Freedesktop screensaver D-Bus integration for screen lock awareness."""
+"""Freedesktop / GNOME screensaver D-Bus integration for screen lock awareness."""
 
 from __future__ import annotations
 
@@ -23,6 +23,12 @@ SCREENSAVER_BUS_NAME = "org.freedesktop.ScreenSaver"
 SCREENSAVER_PATH = "/org/freedesktop/ScreenSaver"
 SCREENSAVER_IFACE = "org.freedesktop.ScreenSaver"
 
+# GNOME Shell does not own org.freedesktop.ScreenSaver; it exports the same
+# Lock/GetActive/ActiveChanged API under its own name and path instead.
+GNOME_SCREENSAVER_BUS_NAME = "org.gnome.ScreenSaver"
+GNOME_SCREENSAVER_PATH = "/org/gnome/ScreenSaver"
+GNOME_SCREENSAVER_IFACE = "org.gnome.ScreenSaver"
+
 LOGIN1_BUS_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER_IFACE = "org.freedesktop.login1.Manager"
@@ -41,7 +47,17 @@ _CONNECT_RETRY_INTERVAL = 5.0
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
 _SCREENSAVER_INTROSPECTION = get_introspection("org.freedesktop.ScreenSaver.xml")
+_GNOME_SCREENSAVER_INTROSPECTION = get_introspection("org.gnome.ScreenSaver.xml")
 _DBUS_INTROSPECTION = get_introspection("org.freedesktop.DBus.xml")
+
+# Screen-lock services to probe, in order: (bus name, object path,
+# interface, introspection XML).  The freedesktop one comes first so that
+# desktops providing it (KDE, Xfce, ...) keep using it even when GNOME Shell
+# happens to be installed; GNOME is the fallback.
+_SCREENSAVER_SERVICES = (
+    (SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, SCREENSAVER_IFACE, _SCREENSAVER_INTROSPECTION),
+    (GNOME_SCREENSAVER_BUS_NAME, GNOME_SCREENSAVER_PATH, GNOME_SCREENSAVER_IFACE, _GNOME_SCREENSAVER_INTROSPECTION),
+)
 
 
 class _ScreensaverThread(AsyncWorkerThread):
@@ -58,6 +74,9 @@ class _ScreensaverThread(AsyncWorkerThread):
         self._bus_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._proxy: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._logind: Any = None  # ProxyInterface — dbus-fast dynamic API
+        # Bus name of the screen-lock service in use; NameOwnerChanged is
+        # only tracked for this name.
+        self._service_name = SCREENSAVER_BUS_NAME
         self._active = False
         self._inhibited = False
         self._connected = False
@@ -105,12 +124,7 @@ class _ScreensaverThread(AsyncWorkerThread):
                 )
                 self._bus_iface = dbus_obj.get_interface(DBUS_IFACE)
                 self._bus_iface.on_name_owner_changed(self._on_name_owner_changed)
-                proxy_obj = bus.get_proxy_object(
-                    SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, _SCREENSAVER_INTROSPECTION  # pyright: ignore
-                )
-                proxy = proxy_obj.get_interface(SCREENSAVER_IFACE)
-                proxy.on_active_changed(self._on_active_changed)
-                await proxy.call_get_active()  # probe: fails while the service is absent
+                proxy = await self._find_service(bus)
                 self._bus = bus
                 self._proxy = proxy
                 connected = True
@@ -132,7 +146,7 @@ class _ScreensaverThread(AsyncWorkerThread):
         if not self._running:
             return
 
-        log.info("Connected to freedesktop ScreenSaver D-Bus")
+        log.info("Connected to %s D-Bus", self._service_name)
         await self._sync_active()  # seed the cache from current state
 
         # Connect to logind on the system bus so we can poll screen-lock
@@ -154,6 +168,30 @@ class _ScreensaverThread(AsyncWorkerThread):
             self._bus.disconnect()
         if self._system_bus:
             self._system_bus.disconnect()
+
+    async def _find_service(self, bus: MessageBus) -> Any:
+        """Return a proxy for the first reachable screen-lock service.
+
+        Each candidate in _SCREENSAVER_SERVICES is probed with a real
+        GetActive call: creating the proxy succeeds even while the service
+        is absent.  Raises if none of them answers.
+        """
+        errors = []
+        for name, path, iface, introspection in _SCREENSAVER_SERVICES:
+            proxy_obj = bus.get_proxy_object(name, path, introspection)  # pyright: ignore
+            proxy: Any = proxy_obj.get_interface(iface)  # ProxyInterface — dbus-fast dynamic API
+            proxy.on_active_changed(self._on_active_changed)
+            try:
+                await proxy.call_get_active()  # probe: fails while the service is absent
+            except Exception as e:
+                # Drop the subscription so a service we are not using cannot
+                # feed ActiveChanged into the cached lock state.
+                proxy.off_active_changed(self._on_active_changed)
+                errors.append(f"{name}: {e}")
+                continue
+            self._service_name = name
+            return proxy
+        raise RuntimeError("; ".join(errors))
 
     async def _setup_logind(self) -> None:
         """Connect to logind for screen-lock inhibitor detection. Non-fatal."""
@@ -216,12 +254,12 @@ class _ScreensaverThread(AsyncWorkerThread):
         self.active_changed.emit(active)
 
     def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
-        """React to the freedesktop ScreenSaver service taking or releasing
-        its bus name, so a screen-locker crash/restart is detected
-        immediately instead of only on the next lock()/GetActive call that
-        happens to fail.
+        """React to the ScreenSaver service in use taking or releasing its
+        bus name, so a screen-locker crash/restart is detected immediately
+        instead of only on the next lock()/GetActive call that happens to
+        fail.
         """
-        if name != SCREENSAVER_BUS_NAME:
+        if name != self._service_name:
             return
         self._owner_generation += 1
         self._active = False
@@ -288,7 +326,7 @@ class _ScreensaverThread(AsyncWorkerThread):
 
 
 class ScreensaverMonitor(QObject):
-    """Monitor the freedesktop screensaver (works on KDE, GNOME, etc.)."""
+    """Monitor the freedesktop or GNOME screensaver (works on KDE, GNOME, etc.)."""
 
     active_changed = pyqtSignal(bool)
     inhibit_changed = pyqtSignal(bool)
