@@ -582,6 +582,106 @@ class TestScreensaverThreadRetry:
         assert thread.wait(2000)
 
 
+class TestScreensaverServiceFallback:
+    """GNOME Shell does not own org.freedesktop.ScreenSaver; it exports the
+    same API as org.gnome.ScreenSaver at /org/gnome/ScreenSaver.  The thread
+    must fall back to it, while still preferring the freedesktop service
+    wherever that one exists."""
+
+    def _probe(self, available: set[str]):
+        """Run _find_service against fake services; only names in
+        `available` answer GetActive.  Returns (thread, result, state)."""
+        import asyncio
+
+        from usbguard_gui.screensaver import _ScreensaverThread
+
+        state: dict = {"subscribed": {}, "probed": []}
+
+        class FakeProxy:
+            def __init__(self, bus_name: str) -> None:
+                self._bus_name = bus_name
+
+            def on_active_changed(self, handler):
+                state["subscribed"][self._bus_name] = handler
+
+            def off_active_changed(self, handler):
+                del state["subscribed"][self._bus_name]
+
+            async def call_get_active(self):
+                state["probed"].append(self._bus_name)
+                if self._bus_name not in available:
+                    raise OSError(f"{self._bus_name} not provided")
+                return False
+
+        class FakeProxyObject:
+            def __init__(self, bus_name: str, path: str) -> None:
+                self._bus_name = bus_name
+                state.setdefault("paths", {})[bus_name] = path
+
+            def get_interface(self, name: str):
+                state.setdefault("ifaces", {})[self._bus_name] = name
+                return FakeProxy(self._bus_name)
+
+        class FakeBus:
+            def get_proxy_object(self, bus_name, path, introspection):
+                return FakeProxyObject(bus_name, path)
+
+        thread = _ScreensaverThread()
+
+        async def scenario():
+            try:
+                return await thread._find_service(FakeBus())
+            except Exception as e:
+                return e
+
+        return thread, asyncio.run(scenario()), state
+
+    def test_falls_back_to_gnome_screensaver(self):
+        import usbguard_gui.screensaver as sa
+
+        thread, result, state = self._probe({sa.GNOME_SCREENSAVER_BUS_NAME})
+
+        assert not isinstance(result, Exception)
+        assert thread._service_name == sa.GNOME_SCREENSAVER_BUS_NAME
+        assert state["paths"][sa.GNOME_SCREENSAVER_BUS_NAME] == "/org/gnome/ScreenSaver"
+        assert state["ifaces"][sa.GNOME_SCREENSAVER_BUS_NAME] == "org.gnome.ScreenSaver"
+        # The failed freedesktop candidate must not keep feeding ActiveChanged.
+        assert list(state["subscribed"]) == [sa.GNOME_SCREENSAVER_BUS_NAME]
+
+    def test_prefers_freedesktop_screensaver(self):
+        import usbguard_gui.screensaver as sa
+
+        thread, result, state = self._probe({sa.SCREENSAVER_BUS_NAME, sa.GNOME_SCREENSAVER_BUS_NAME})
+
+        assert not isinstance(result, Exception)
+        assert thread._service_name == sa.SCREENSAVER_BUS_NAME
+        assert state["probed"] == [sa.SCREENSAVER_BUS_NAME]
+        assert list(state["subscribed"]) == [sa.SCREENSAVER_BUS_NAME]
+
+    def test_no_service_raises_with_every_candidate(self):
+        import usbguard_gui.screensaver as sa
+
+        _, result, state = self._probe(set())
+
+        assert isinstance(result, Exception)
+        assert sa.SCREENSAVER_BUS_NAME in str(result)
+        assert sa.GNOME_SCREENSAVER_BUS_NAME in str(result)
+        assert state["subscribed"] == {}
+
+    def test_name_owner_changes_track_the_service_in_use(self):
+        import usbguard_gui.screensaver as sa
+
+        thread, _, _ = self._probe({sa.GNOME_SCREENSAVER_BUS_NAME})
+        emitted: list[bool] = []
+        thread.connected.connect(lambda v: emitted.append(v))
+
+        thread._on_name_owner_changed(sa.SCREENSAVER_BUS_NAME, "", ":1.42")
+        assert emitted == []
+
+        thread._on_name_owner_changed(sa.GNOME_SCREENSAVER_BUS_NAME, ":1.42", "")
+        assert emitted == [False]
+
+
 class TestHasIdleBlockInhibitor:
     """Unit tests for the logind inhibitor filter."""
 
