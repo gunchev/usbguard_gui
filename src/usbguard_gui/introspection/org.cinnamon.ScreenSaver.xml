@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<node name="/org/cinnamon/ScreenSaver">
+  <interface name="org.cinnamon.ScreenSaver">
+    <method name="Lock">
+      <arg name="message" type="s" direction="in"/>
+    </method>
+    <method name="GetActive">
+      <arg name="active" type="b" direction="out"/>
+    </method>
+    <signal name="ActiveChanged">
+      <arg name="active" type="b"/>
+    </signal>
+  </interface>
+</node>

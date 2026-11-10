@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
+
 from usbguard_gui.device import DeviceTarget
 
 
@@ -582,19 +584,49 @@ class TestScreensaverThreadRetry:
         assert thread.wait(2000)
 
 
-class TestScreensaverServiceFallback:
-    """GNOME Shell does not own org.freedesktop.ScreenSaver; it exports the
-    same API as org.gnome.ScreenSaver at /org/gnome/ScreenSaver.  The thread
-    must fall back to it, while still preferring the freedesktop service
-    wherever that one exists."""
+class TestScreenSaverRegistry:
+    """Every known locker is described once, with the right D-Bus
+    coordinates and Lock() signature."""
 
-    def _probe(self, available: set[str]):
+    @pytest.mark.parametrize("bus_name, path, iface, lock_takes_message", [
+        ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver", False),
+        ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver", False),
+        ("org.cinnamon.ScreenSaver", "/org/cinnamon/ScreenSaver", "org.cinnamon.ScreenSaver", True),
+        ("org.mate.ScreenSaver", "/org/mate/ScreenSaver", "org.mate.ScreenSaver", False),
+        ("org.xfce.ScreenSaver", "/org/xfce/ScreenSaver", "org.xfce.ScreenSaver", False),
+    ])
+    def test_entry(self, bus_name, path, iface, lock_takes_message):
+        import usbguard_gui.screensaver as sa
+
+        service = next(s for s in sa._SCREENSAVER_SERVICES if s.bus_name == bus_name)
+        assert service.path == path
+        assert service.interface == iface
+        assert service.lock_takes_message is lock_takes_message
+        assert f'interface name="{iface}"' in service.introspection
+
+    def test_freedesktop_is_preferred(self):
+        import usbguard_gui.screensaver as sa
+
+        assert sa._SCREENSAVER_SERVICES[0].bus_name == sa.SCREENSAVER_BUS_NAME
+
+
+class TestScreensaverServiceFallback:
+    """Desktop lockers expose the same API under different bus names.
+    The thread must fall back to them, while still preferring the
+    freedesktop service wherever that one really answers."""
+
+    def _probe(self, available: set[str], not_supported: set[str] | None = None,
+               hanging: set[str] | None = None):
         """Run _find_service against fake services; only names in
         `available` answer GetActive.  Returns (thread, result, state)."""
         import asyncio
 
+        from dbus_fast import DBusError
+
         from usbguard_gui.screensaver import _ScreensaverThread
 
+        not_supported = not_supported or set()
+        hanging = hanging or set()
         state: dict = {"subscribed": {}, "probed": []}
 
         class FakeProxy:
@@ -609,6 +641,10 @@ class TestScreensaverServiceFallback:
 
             async def call_get_active(self):
                 state["probed"].append(self._bus_name)
+                if self._bus_name in hanging:
+                    await asyncio.Event().wait()
+                if self._bus_name in not_supported:
+                    raise DBusError("org.freedesktop.DBus.Error.NotSupported", "not implemented")
                 if self._bus_name not in available:
                     raise OSError(f"{self._bus_name} not provided")
                 return False
@@ -636,16 +672,47 @@ class TestScreensaverServiceFallback:
 
         return thread, asyncio.run(scenario()), state
 
-    def test_falls_back_to_gnome_screensaver(self):
+    @pytest.mark.parametrize("bus_name, path, iface", [
+        ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver"),
+        ("org.cinnamon.ScreenSaver", "/org/cinnamon/ScreenSaver", "org.cinnamon.ScreenSaver"),
+        ("org.mate.ScreenSaver", "/org/mate/ScreenSaver", "org.mate.ScreenSaver"),
+        ("org.xfce.ScreenSaver", "/org/xfce/ScreenSaver", "org.xfce.ScreenSaver"),
+    ])
+    def test_falls_back_to_desktop_locker(self, bus_name, path, iface):
+        thread, result, state = self._probe({bus_name})
+
+        assert not isinstance(result, Exception)
+        assert thread._service_name == bus_name
+        assert state["paths"][bus_name] == path
+        assert state["ifaces"][bus_name] == iface
+        # Only the service in use may feed ActiveChanged.
+        assert list(state["subscribed"]) == [bus_name]
+
+    def test_skips_not_supported_freedesktop_proxy(self):
         import usbguard_gui.screensaver as sa
 
-        thread, result, state = self._probe({sa.GNOME_SCREENSAVER_BUS_NAME})
+        thread, result, state = self._probe(
+            {sa.GNOME_SCREENSAVER_BUS_NAME},
+            not_supported={sa.SCREENSAVER_BUS_NAME},
+        )
 
         assert not isinstance(result, Exception)
         assert thread._service_name == sa.GNOME_SCREENSAVER_BUS_NAME
-        assert state["paths"][sa.GNOME_SCREENSAVER_BUS_NAME] == "/org/gnome/ScreenSaver"
-        assert state["ifaces"][sa.GNOME_SCREENSAVER_BUS_NAME] == "org.gnome.ScreenSaver"
-        # The failed freedesktop candidate must not keep feeding ActiveChanged.
+        assert state["probed"] == [sa.SCREENSAVER_BUS_NAME, sa.GNOME_SCREENSAVER_BUS_NAME]
+        assert list(state["subscribed"]) == [sa.GNOME_SCREENSAVER_BUS_NAME]
+
+    def test_skips_a_hanging_service(self, mocker):
+        import usbguard_gui.screensaver as sa
+
+        mocker.patch.object(sa, "_PROBE_TIMEOUT", 0.01)
+        thread, result, state = self._probe(
+            {sa.GNOME_SCREENSAVER_BUS_NAME},
+            hanging={sa.SCREENSAVER_BUS_NAME},
+        )
+
+        assert not isinstance(result, Exception)
+        assert thread._service_name == sa.GNOME_SCREENSAVER_BUS_NAME
+        assert state["probed"] == [sa.SCREENSAVER_BUS_NAME, sa.GNOME_SCREENSAVER_BUS_NAME]
         assert list(state["subscribed"]) == [sa.GNOME_SCREENSAVER_BUS_NAME]
 
     def test_prefers_freedesktop_screensaver(self):
@@ -664,8 +731,8 @@ class TestScreensaverServiceFallback:
         _, result, state = self._probe(set())
 
         assert isinstance(result, Exception)
-        assert sa.SCREENSAVER_BUS_NAME in str(result)
-        assert sa.GNOME_SCREENSAVER_BUS_NAME in str(result)
+        for service in sa._SCREENSAVER_SERVICES:
+            assert service.bus_name in str(result)
         assert state["subscribed"] == {}
 
     def test_name_owner_changes_track_the_service_in_use(self):
@@ -680,6 +747,57 @@ class TestScreensaverServiceFallback:
 
         thread._on_name_owner_changed(sa.GNOME_SCREENSAVER_BUS_NAME, ":1.42", "")
         assert emitted == [False]
+
+
+class TestScreenSaverLockSignature:
+    """Cinnamon's Lock() takes the away message; every other locker's does
+    not.  Calling the wrong signature would raise and leave HID Allow gated
+    even though the screen is lockable."""
+
+    @pytest.mark.parametrize("bus_name, expected", [
+        ("org.cinnamon.ScreenSaver", ("",)),
+        ("org.gnome.ScreenSaver", ()),
+        ("org.freedesktop.ScreenSaver", ()),
+    ])
+    def test_lock_arguments(self, bus_name, expected):
+        import asyncio
+
+        import usbguard_gui.screensaver as sa
+
+        calls: list[tuple] = []
+
+        class FakeProxy:
+            async def call_lock(self, *args):
+                calls.append(args)
+
+        service = next(s for s in sa._SCREENSAVER_SERVICES if s.bus_name == bus_name)
+        thread = sa._ScreensaverThread()
+        thread._proxy = FakeProxy()
+        thread._service = service
+
+        asyncio.run(thread._do_lock())
+
+        assert calls == [expected]
+
+    def test_lock_timeout_reports_disconnected(self, mocker):
+        import asyncio
+
+        import usbguard_gui.screensaver as sa
+
+        class HangingProxy:
+            async def call_lock(self):
+                await asyncio.Event().wait()
+
+        mocker.patch.object(sa, "_CALL_TIMEOUT", 0.01)
+        thread = sa._ScreensaverThread()
+        thread._proxy = HangingProxy()
+        thread._service = sa._SCREENSAVER_SERVICES[0]
+        events: list[bool] = []
+        thread.connected.connect(events.append)
+
+        asyncio.run(thread._do_lock())
+
+        assert events == [False]
 
 
 class TestHasIdleBlockInhibitor:

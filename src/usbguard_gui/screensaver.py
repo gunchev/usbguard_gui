@@ -1,10 +1,11 @@
-"""Freedesktop / GNOME screensaver D-Bus integration for screen lock awareness."""
+"""Desktop screen-locker D-Bus integration for screen lock awareness."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from dbus_fast import BusType, DBusError
@@ -29,6 +30,25 @@ GNOME_SCREENSAVER_BUS_NAME = "org.gnome.ScreenSaver"
 GNOME_SCREENSAVER_PATH = "/org/gnome/ScreenSaver"
 GNOME_SCREENSAVER_IFACE = "org.gnome.ScreenSaver"
 
+# Cinnamon's native locker.  The csd-screensaver-proxy that owns the
+# freedesktop name answers NotSupported, so the GetActive probe skips it and
+# reaches this service.  Cinnamon's Lock() takes the away message as its one
+# argument.
+CINNAMON_SCREENSAVER_BUS_NAME = "org.cinnamon.ScreenSaver"
+CINNAMON_SCREENSAVER_PATH = "/org/cinnamon/ScreenSaver"
+CINNAMON_SCREENSAVER_IFACE = "org.cinnamon.ScreenSaver"
+
+# Older MATE releases only expose org.mate.ScreenSaver; MATE >= 1.28.1 also
+# owns the freedesktop name, which the registry therefore tries first.
+MATE_SCREENSAVER_BUS_NAME = "org.mate.ScreenSaver"
+MATE_SCREENSAVER_PATH = "/org/mate/ScreenSaver"
+MATE_SCREENSAVER_IFACE = "org.mate.ScreenSaver"
+
+# xfce4-screensaver exposes its own name and does not own the freedesktop one.
+XFCE_SCREENSAVER_BUS_NAME = "org.xfce.ScreenSaver"
+XFCE_SCREENSAVER_PATH = "/org/xfce/ScreenSaver"
+XFCE_SCREENSAVER_IFACE = "org.xfce.ScreenSaver"
+
 LOGIN1_BUS_NAME = "org.freedesktop.login1"
 LOGIN1_PATH = "/org/freedesktop/login1"
 LOGIN1_MANAGER_IFACE = "org.freedesktop.login1.Manager"
@@ -44,19 +64,50 @@ _INHIBIT_POLL_INTERVAL = 2.0
 # app's lifetime (in which case lock() would silently no-op forever).
 _CONNECT_RETRY_INTERVAL = 5.0
 
+# dbus-fast has no per-call timeout: a service that owns the name but never
+# answers would otherwise hang the connect loop or the lock path forever.
+_PROBE_TIMEOUT = 2.0
+_CALL_TIMEOUT = 5.0
+
 # Pre-load introspection XML at import time so the async event loop never
 # blocks on file I/O.
 _SCREENSAVER_INTROSPECTION = get_introspection("org.freedesktop.ScreenSaver.xml")
 _GNOME_SCREENSAVER_INTROSPECTION = get_introspection("org.gnome.ScreenSaver.xml")
+_CINNAMON_SCREENSAVER_INTROSPECTION = get_introspection("org.cinnamon.ScreenSaver.xml")
+_MATE_SCREENSAVER_INTROSPECTION = get_introspection("org.mate.ScreenSaver.xml")
+_XFCE_SCREENSAVER_INTROSPECTION = get_introspection("org.xfce.ScreenSaver.xml")
 _DBUS_INTROSPECTION = get_introspection("org.freedesktop.DBus.xml")
 
-# Screen-lock services to probe, in order: (bus name, object path,
-# interface, introspection XML).  The freedesktop one comes first so that
-# desktops providing it (KDE, Xfce, ...) keep using it even when GNOME Shell
-# happens to be installed; GNOME is the fallback.
+
+@dataclass(frozen=True)
+class _ScreensaverService:
+    """A known screen-locker D-Bus service exposing the lock API."""
+
+    bus_name: str
+    path: str
+    interface: str
+    introspection: str
+    # Cinnamon's Lock() takes the away message as its one argument; every
+    # other known locker takes no arguments.
+    lock_takes_message: bool = False
+
+
+# Screen-lock services to probe, in order.  The freedesktop one comes first so
+# that desktops providing it (KDE, light-locker, xscreensaver, newer MATE, ...)
+# keep using it even when another desktop's locker happens to be installed.
+# Desktop-specific names are the fallback for sessions where the freedesktop
+# proxy only answers NotSupported (GNOME/Cinnamon) or does not exist at all
+# (older MATE, xfce4-screensaver).
 _SCREENSAVER_SERVICES = (
-    (SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, SCREENSAVER_IFACE, _SCREENSAVER_INTROSPECTION),
-    (GNOME_SCREENSAVER_BUS_NAME, GNOME_SCREENSAVER_PATH, GNOME_SCREENSAVER_IFACE, _GNOME_SCREENSAVER_INTROSPECTION),
+    _ScreensaverService(SCREENSAVER_BUS_NAME, SCREENSAVER_PATH, SCREENSAVER_IFACE, _SCREENSAVER_INTROSPECTION),
+    _ScreensaverService(GNOME_SCREENSAVER_BUS_NAME, GNOME_SCREENSAVER_PATH, GNOME_SCREENSAVER_IFACE,
+                        _GNOME_SCREENSAVER_INTROSPECTION),
+    _ScreensaverService(CINNAMON_SCREENSAVER_BUS_NAME, CINNAMON_SCREENSAVER_PATH, CINNAMON_SCREENSAVER_IFACE,
+                        _CINNAMON_SCREENSAVER_INTROSPECTION, lock_takes_message=True),
+    _ScreensaverService(MATE_SCREENSAVER_BUS_NAME, MATE_SCREENSAVER_PATH, MATE_SCREENSAVER_IFACE,
+                        _MATE_SCREENSAVER_INTROSPECTION),
+    _ScreensaverService(XFCE_SCREENSAVER_BUS_NAME, XFCE_SCREENSAVER_PATH, XFCE_SCREENSAVER_IFACE,
+                        _XFCE_SCREENSAVER_INTROSPECTION),
 )
 
 
@@ -74,8 +125,9 @@ class _ScreensaverThread(AsyncWorkerThread):
         self._bus_iface: Any = None  # ProxyInterface — dbus-fast dynamic API
         self._proxy: Any = None   # ProxyInterface — dbus-fast dynamic API
         self._logind: Any = None  # ProxyInterface — dbus-fast dynamic API
-        # Bus name of the screen-lock service in use; NameOwnerChanged is
-        # only tracked for this name.
+        # Registry entry of the screen-lock service in use; NameOwnerChanged
+        # is only tracked for this service's bus name.
+        self._service: _ScreensaverService | None = None
         self._service_name = SCREENSAVER_BUS_NAME
         self._active = False
         self._inhibited = False
@@ -134,6 +186,8 @@ class _ScreensaverThread(AsyncWorkerThread):
                 self._bus = None
                 self._bus_iface = None
                 self._proxy = None
+                self._service = None
+                self._service_name = SCREENSAVER_BUS_NAME
                 if first_failure:
                     log.warning("Screensaver D-Bus unavailable: %s — retrying", e)
                     first_failure = False
@@ -174,22 +228,34 @@ class _ScreensaverThread(AsyncWorkerThread):
 
         Each candidate in _SCREENSAVER_SERVICES is probed with a real
         GetActive call: creating the proxy succeeds even while the service
-        is absent.  Raises if none of them answers.
+        is absent, and desktop proxy services (gsd/csd-screensaver-proxy)
+        own the freedesktop name but answer NotSupported.  Raises if none
+        of them answers.
         """
         errors = []
-        for name, path, iface, introspection in _SCREENSAVER_SERVICES:
-            proxy_obj = bus.get_proxy_object(name, path, introspection)  # pyright: ignore
-            proxy: Any = proxy_obj.get_interface(iface)  # ProxyInterface — dbus-fast dynamic API
-            proxy.on_active_changed(self._on_active_changed)
+        for service in _SCREENSAVER_SERVICES:
+            proxy: Any = None
+            subscribed = False
             try:
-                await proxy.call_get_active()  # probe: fails while the service is absent
+                proxy_obj = bus.get_proxy_object(
+                    service.bus_name, service.path, service.introspection  # pyright: ignore
+                )
+                proxy = proxy_obj.get_interface(service.interface)  # ProxyInterface — dbus-fast dynamic API
+                proxy.on_active_changed(self._on_active_changed)
+                subscribed = True
+                # A service that owns the name but never answers must not
+                # stall the connect loop forever.
+                await asyncio.wait_for(proxy.call_get_active(), timeout=_PROBE_TIMEOUT)
             except Exception as e:
                 # Drop the subscription so a service we are not using cannot
                 # feed ActiveChanged into the cached lock state.
-                proxy.off_active_changed(self._on_active_changed)
-                errors.append(f"{name}: {e}")
+                if subscribed:
+                    proxy.off_active_changed(self._on_active_changed)
+                reason = "timed out" if isinstance(e, asyncio.TimeoutError) else str(e)
+                errors.append(f"{service.bus_name}: {reason}")
                 continue
-            self._service_name = name
+            self._service = service
+            self._service_name = service.bus_name
             return proxy
         raise RuntimeError("; ".join(errors))
 
@@ -285,13 +351,17 @@ class _ScreensaverThread(AsyncWorkerThread):
             return
         revision = self._active_revision
         try:
-            active = await self._proxy.call_get_active()
+            active = await asyncio.wait_for(self._proxy.call_get_active(), timeout=_CALL_TIMEOUT)
             if generation != self._owner_generation:
                 return
             # A newer ActiveChanged signal outranks this query's snapshot.
             if revision == self._active_revision:
                 self._on_active_changed(bool(active))
             self.connected.emit(True)
+        except asyncio.TimeoutError:
+            log.debug("GetActive timed out")
+            if generation == self._owner_generation:
+                self.connected.emit(False)
         except DBusError as e:
             log.debug("GetActive failed: %s", e)
             if generation == self._owner_generation:
@@ -314,8 +384,14 @@ class _ScreensaverThread(AsyncWorkerThread):
             self.connected.emit(False)
             return
         try:
-            await self._proxy.call_lock()
+            if self._service is not None and self._service.lock_takes_message:
+                await asyncio.wait_for(self._proxy.call_lock(""), timeout=_CALL_TIMEOUT)
+            else:
+                await asyncio.wait_for(self._proxy.call_lock(), timeout=_CALL_TIMEOUT)
             self.connected.emit(True)
+        except asyncio.TimeoutError:
+            log.warning("Failed to lock screen: timed out")
+            self.connected.emit(False)
         except DBusError as e:
             log.warning("Failed to lock screen: %s", e)
             self.connected.emit(False)
@@ -326,7 +402,7 @@ class _ScreensaverThread(AsyncWorkerThread):
 
 
 class ScreensaverMonitor(QObject):
-    """Monitor the freedesktop or GNOME screensaver (works on KDE, GNOME, etc.)."""
+    """Monitor the desktop screen locker (freedesktop, GNOME, Cinnamon, MATE, Xfce)."""
 
     active_changed = pyqtSignal(bool)
     inhibit_changed = pyqtSignal(bool)
