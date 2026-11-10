@@ -1,3 +1,11 @@
+## 0.12.0 — 2026-11-10
+
+### Changes since v0.11.0
+
+- 2131e9a ci: add Python 3.15 to the tox envlist and classifiers
+- 4ad6e35 ci: test Fedora 44/45 instead of 43/44
+- 60c8743 feat: support Cinnamon, MATE and Xfce screen lockers
+
 ## 0.11.0 — 2026-11-10
 
 ### Changes since v0.10.0
