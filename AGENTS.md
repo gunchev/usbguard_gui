@@ -55,7 +55,7 @@ Ad-hoc work goes through uv directly:
 ```bash
 uv run pytest tests/test_app.py      # one test file
 uv run pytest -k test_name           # one test by name
-uv run tox                          # every supported Python (CI runs this on Fedora 43/44)
+uv run tox                          # every supported Python (CI runs this on Fedora 44/45)
 ```
 
 ## Code Style Guidelines
