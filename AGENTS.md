@@ -173,7 +173,7 @@ src/usbguard_gui/
     device_dialog.py  # Device action dialog window
     device_list.py    # Device list window
     gate.py           # Action-gate authority: block_reason/lock_gate_open/hid_allow_gated
-    screensaver.py    # Screensaver / lock-state monitoring
+    screensaver.py    # Screen-locker registry / lock-state monitoring
     settings.py       # SettingsProtocol + the QSettings-backed Settings singleton
     ui_strings.py     # User-visible strings (notice titles, warnings)
     introspection/    # Bundled D-Bus introspection XML (must ship in the wheel)
@@ -188,7 +188,8 @@ tests/
     test_device_list.py     # Device list window
     test_dbus_client.py     # D-Bus client
     test_gate.py            # action-gate decision table
-    test_async_api.py       # Async signal-based API
+    test_async_api.py       # Async signal-based API, locker registry
+    test_screensaver_integration.py  # real D-Bus lockers on a private session bus
     test_settings.py        # SettingsProtocol conformance
     test_permanent_rules.py # rules.conf write paths
     test_release.py         # Release scripts

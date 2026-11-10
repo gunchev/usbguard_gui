@@ -26,7 +26,7 @@ dependencies = [
 |--------------------|---------------------------------------------|--------------------------------------------|
 | `dbus_common.py`   | `AsyncWorkerThread`, `stop_worker_thread()`, `recycle_worker_thread()` | Shared QThread + asyncio worker base, introspection loading |
 | `dbus_client.py`   | `_DBusThread`, `USBGuardClient`             | USBGuard system-bus D-Bus client           |
-| `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | ScreenSaver + logind session-bus monitor   |
+| `screensaver.py`   | `_ScreensaverThread`, `ScreensaverMonitor`  | Desktop screen-locker + logind session-bus monitor |
 | `device.py`        | `Device`, `DeviceTarget`, `parse_device_rule` | Device model and rule-string parsing    |
 | `decision.py`      | `DecisionEngine`                           | Lock-first decision flow: HID pending set, unlock cycles, queued decisions, effect signals |
 | `ui_strings.py`    | notice titles, warnings                     | Single home for user-visible strings       |
@@ -56,11 +56,11 @@ ScreensaverMonitor (QObject)
  ├─ Forwards calls via _schedule()      _ScreensaverThread (AsyncWorkerThread)
  └─ Re-emits signals to GUI             ├─ asyncio event loop (run_until_complete)
                                          ├─ dbus-fast MessageBus (session bus)
-                                         ├─ ProxyInterface for ScreenSaver
-                                            (org.freedesktop.ScreenSaver, else
-                                            GNOME's org.gnome.ScreenSaver)
+                                         ├─ ProxyInterface for the first answering
+                                            locker in the registry (freedesktop,
+                                            GNOME, Cinnamon, MATE, Xfce)
                                          ├─ Subscribes to ActiveChanged signal
-                                         ├─ Watches the ScreenSaver name in use
+                                         ├─ Watches the chosen locker's bus name
                                             via NameOwnerChanged
                                          ├─ MessageBus (system bus) for logind
                                          └─ Polls logind ListInhibitors for
@@ -70,6 +70,27 @@ ScreensaverMonitor (QObject)
 The `NameOwnerChanged` watches give proactive service-loss detection: a
 daemon or screen-locker crash/restart flips the connection state immediately
 instead of on the next call that happens to fail.
+
+### Screen-locker registry
+
+`_SCREENSAVER_SERVICES` is a fixed, ordered tuple of `_ScreensaverService`
+entries: bus name, object path, interface, introspection XML, and whether
+`Lock()` takes the away-message argument.  It covers the freedesktop service,
+GNOME Shell, Cinnamon, older MATE and xfce4-screensaver.  The freedesktop entry
+comes first, so desktops that provide it keep using it even when another
+desktop's locker happens to be installed.
+
+A candidate is not trusted just because it owns a well-known name.  Each one is
+probed with a real `GetActive` call bounded by `_PROBE_TIMEOUT` (2 s): proxy
+services such as `gsd-screensaver-proxy` and `csd-screensaver-proxy` own
+`org.freedesktop.ScreenSaver` but answer `NotSupported`, so the probe skips
+them and reaches the native locker.  The first service that answers keeps its
+`ActiveChanged` subscription — failed candidates are unsubscribed — and its bus
+name is the one watched through `NameOwnerChanged`.  `Lock()` is bounded by
+`_CALL_TIMEOUT` (5 s) because dbus-fast has no per-call timeout: a service that
+stops answering must not wedge the worker.  Cinnamon is the one known locker
+whose `Lock()` takes an argument (the away message), recorded on its registry
+entry so the call site never has to know desktop names.
 
 ## Thread Communication
 
@@ -114,7 +135,10 @@ src/usbguard_gui/introspection/
 ├── org.usbguard.Devices1.xml
 ├── org.usbguard.Policy1.xml
 ├── org.freedesktop.ScreenSaver.xml
-├── org.gnome.ScreenSaver.xml   (GNOME Shell fallback)
+├── org.gnome.ScreenSaver.xml      (GNOME Shell)
+├── org.cinnamon.ScreenSaver.xml   (Cinnamon; Lock takes the away message)
+├── org.mate.ScreenSaver.xml       (older MATE)
+├── org.xfce.ScreenSaver.xml       (xfce4-screensaver)
 └── org.freedesktop.DBus.xml   (NameOwnerChanged watches)
 ```
 
@@ -207,8 +231,8 @@ without a handler retain the client-only API used by their isolated tests.
 
 | Signal              | Parameters | Emitted by                                        |
 |---------------------|------------|---------------------------------------------------|
-| `connection_changed`| `bool`     | ScreenSaver service reachability (connect / loss / re-appearance via NameOwnerChanged) |
-| `active_changed`    | `bool`     | ScreenSaver ActiveChanged D-Bus signal            |
+| `connection_changed`| `bool`     | screen-locker service reachability (connect / loss / re-appearance via NameOwnerChanged) |
+| `active_changed`    | `bool`     | the chosen locker's ActiveChanged D-Bus signal    |
 | `inhibit_changed`   | `bool`     | logind ListInhibitors poll (idle-block mode)      |
 
 While `connection_changed` is `False` (screen locking unavailable), the app
@@ -219,7 +243,7 @@ with the treatment disabled nothing is gated (availability changes become
 log-only).  See `gate.py` for the rule and `README.md` for the user-facing
 contract.
 
-ScreenSaver owner changes invalidate the cached lock state without emitting a
+Screen-locker owner changes invalidate the cached lock state without emitting a
 synthetic unlock event. Availability is restored only after `GetActive` succeeds
 for the current owner. Owner generations reject replies from departed services,
 and newer `ActiveChanged` signals outrank an in-flight query's snapshot.

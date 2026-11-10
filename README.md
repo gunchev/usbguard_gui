@@ -150,11 +150,28 @@ the treatment enabled unless you specifically want prompt-driven HID handling.
 
 ### When Screen Locking Is Not Possible
 
-The lock-first design assumes the screen *can* be locked. Two situations break that
-assumption and the app refuses the one click that needs the lock rather than pretending:
+The lock-first design assumes the screen *can* be locked. The app knows these lockers and
+probes them in order, using the first one that answers a real `GetActive` call:
 
-- **No screen-lock service** (neither `org.freedesktop.ScreenSaver` nor GNOME Shell's
-  `org.gnome.ScreenSaver` is reachable — a locker-less or unusual session). The tray shows *"Screen locking unavailable"* and
+| Locker | D-Bus service | Notes |
+|---|---|---|
+| freedesktop (KDE, light-locker, xscreensaver, MATE ≥ 1.28.1, …) | `org.freedesktop.ScreenSaver` | Preferred; tried first |
+| GNOME Shell | `org.gnome.ScreenSaver` | |
+| Cinnamon | `org.cinnamon.ScreenSaver` | `Lock()` takes the away message |
+| MATE < 1.28.1 | `org.mate.ScreenSaver` | |
+| Xfce (`xfce4-screensaver`) | `org.xfce.ScreenSaver` | |
+
+This is a fixed registry of known lockers, not dynamic discovery: only the services above
+can satisfy the lock-first flow. GNOME's and Cinnamon's session proxies
+(`gsd-screensaver-proxy`, `csd-screensaver-proxy`) do own `org.freedesktop.ScreenSaver`
+but answer `NotSupported`, so the `GetActive` probe skips them and the desktop's native
+locker is used instead.
+
+Two situations break the lock assumption and the app refuses the one click that needs the
+lock rather than pretending:
+
+- **No screen-lock service** (none of the services above is reachable — a locker-less or
+  unusual session). The tray shows *"Screen locking unavailable"* and
   **Allow is disabled for HID devices** — in the dialog and in the device list — while
   special HID treatment is enabled: allowing a keyboard without being able to lock first
   would hand an attacker an unlocked session. Everything else stays available: Block and
@@ -378,7 +395,7 @@ usbguard_gui
   - `app.py` — Main tray application and signal handlers.
   - `dbus_client.py` — USBGuard daemon communication.
   - `dbus_common.py` — Shared QThread + asyncio worker base for both D-Bus subsystems.
-  - `screensaver.py` — Screensaver / logind lock-state and inhibitor monitoring.
+  - `screensaver.py` — Desktop screen-locker registry, lock-state and logind inhibitor monitoring.
   - `device.py` — Device model and USBGuard rule-string parsing.
   - `device_list.py` — Device management window.
   - `device_dialog.py` — Device action dialog.
