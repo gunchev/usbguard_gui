@@ -1,3 +1,10 @@
+## 0.11.0 — 2026-11-10
+
+### Changes since v0.10.0
+
+- 26db1dc fix: fall back to org.gnome.ScreenSaver on GNOME
+- 3cc4147 docs: add a textual TUI front end to the 1.0 roadmap
+
 ## 0.10.0 — 2026-10-09
 
 ### Changes since v0.9.0
