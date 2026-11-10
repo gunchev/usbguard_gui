@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        fedora: [ 43, 44 ]
+        fedora: [ 44, 45 ]
     container:
       image: quay.io/fedora/fedora:${{ matrix.fedora }}
 
@@ -30,11 +30,11 @@ jobs:
           # time.  Installing it here keeps the typecheck env offline-deterministic.
           # Install every altver Python in the declared range (tox envlist / pyproject classifiers).
           # The release's DEFAULT python3 is not an altver package: it arrives via python3/python3-devel
-          # above and already provides /usr/bin/python3.XX. So the iteration for the current default
-          # fails harmlessly here (python3.14 on F43/F44, where python3 *is* 3.14) and starts
-          # installing for real once a newer Fedora makes 3.14 an altver; same for any version as
-          # the default shifts forward. Do not "clean up" the || true: altver availability differs per
-          # release, and a version missing from one image is covered by the other in the matrix.
+          # above. On F44 that default is 3.14, so its `python3.14` iteration fails harmlessly; on
+          # F45 the default is 3.15 (outside the envlist, but tox's lint/typecheck envs run under
+          # it) and 3.14 is a regular altver this loop installs. Do not "clean up" the || true:
+          # altver availability differs per release, and a version missing from one image is covered
+          # by the other in the matrix (skip_missing_interpreters = true in tox.ini).
           for ver in 3.10 3.11 3.12 3.13 3.14; do
             dnf -y install "python${ver}" "python${ver}-devel" || true
           done
