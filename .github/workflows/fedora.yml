@@ -28,14 +28,13 @@ jobs:
           # nodejs is for pyright (the typecheck env in tox.ini): it is a Node tool
           # shipped through pip and would otherwise download its own runtime at run
           # time.  Installing it here keeps the typecheck env offline-deterministic.
-          # Install every altver Python in the declared range (tox envlist / pyproject classifiers).
-          # The release's DEFAULT python3 is not an altver package: it arrives via python3/python3-devel
-          # above. On F44 that default is 3.14, so its `python3.14` iteration fails harmlessly; on
-          # F45 the default is 3.15 (outside the envlist, but tox's lint/typecheck envs run under
-          # it) and 3.14 is a regular altver this loop installs. Do not "clean up" the || true:
-          # altver availability differs per release, and a version missing from one image is covered
-          # by the other in the matrix (skip_missing_interpreters = true in tox.ini).
-          for ver in 3.10 3.11 3.12 3.13 3.14; do
+          # Install every altver Python in the declared range (tox envlist / pyproject classifiers,
+          # 3.10 - 3.15). The release's DEFAULT python3 is not an altver package: it arrives via
+          # python3/python3-devel above, so that version's iteration is redundant (3.14 on F44,
+          # 3.15 on F45). On F45, 3.14 is a regular altver installed by this loop. Do not "clean up"
+          # the || true: altver availability differs per release, and a version missing from one
+          # image is covered by the other in the matrix (skip_missing_interpreters = true in tox.ini).
+          for ver in 3.10 3.11 3.12 3.13 3.14 3.15; do
             dnf -y install "python${ver}" "python${ver}-devel" || true
           done
           UV_PYTHON_DOWNLOADS=never QT_QPA_PLATFORM=offscreen uv run tox

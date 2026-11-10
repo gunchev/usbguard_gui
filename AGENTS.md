@@ -14,7 +14,7 @@ Instructions for agentic coding agents working in this repository.
    functional one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
    not done. CI enforces it: the workflow runs plain `tox`, and `tox.ini` leads
-   its envlist with `lint` and `typecheck` ahead of the `py310`–`py314` test
+   its envlist with `lint` and `typecheck` ahead of the `py310`–`py315` test
    matrix. (Before that split CI ran pytest alone, so lint and typing
    regressions could land on master with the checks still green.)
 3. **Graft before grep** — but build it first. The `graft/` context graph (see
