@@ -93,6 +93,14 @@
 
 ## 1.0
 
+- [ ] **Startup race on the permanent-allow cache** (`docs/REVIEW-2026-11-15.md` finding 5).
+      The cache is empty until the first `list_rules` answer lands, so a device that arrives
+      first is treated as unknown; it also ignores rule order, is wiped when a rules read fails,
+      and keys on the device hash alone — a permanently allowed keyboard moved to another port
+      gets no reaction at all. It fails safe, but it is the KVM/dock case the app cares about.
+      Carried out of the 2026-10 refactor plan's out-of-scope list.
+      Fix: keep the ruleset and ask `rule_matches_device()` in rule order, treating an
+      undecidable rule as "not known".
 - [ ] Polkit policy subpackages: `usbguard_gui-policy-open` (recommended default, all local console sessions) +
       `usbguard_gui-policy-strict` (wheel-only), mutual Conflicts, README trade-off section, both rules kept in `rpm/`
       for non-RPM installs. No-policy mode = admin password per action (fail-closed, documented).
