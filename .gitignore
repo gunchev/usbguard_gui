@@ -33,17 +33,11 @@ __pypackages__/
 
 /.pi/
 
-# graft's local graph cache - regenerable, not committed (run `graft build`).
-/graft/
-
 # Claude Code personal permission log - per-machine, per-session grants.
 .claude/settings.local.json
 
-# graft's local repository settings - not committed.
-/.graft/
-
-# graft config template - may hold an API key, never commit.
+# local environment/secrets - never commit.
 .env
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/.context/
+# Trail's generated code map - regenerable, not committed (run `trail build`);
+# `.trail/.gitignore` also excludes the per-machine statusline helper.
