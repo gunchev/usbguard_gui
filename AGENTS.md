@@ -201,7 +201,7 @@ tests/
 |---|---|
 | `README.md` → *How It Works* | user-facing behaviour, **the HID lock-first security contract**, polkit, install |
 | `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, dasbus→dbus-fast mapping |
-| `docs/AUDIT-*.md`, `docs/REVIEW-*.md` | past audit/review findings and how each was resolved |
+| `docs/REVIEW-*.md` | the current review: findings, stated assumptions, and what was carried forward. Superseded reports are removed and live in git history (`git log --diff-filter=D -- docs/`) |
 | `TODO.md` | **open work only**, versioned roadmap — completed items move to `DONE.md` at every release |
 | `DONE.md` | finished roadmap items with their reasoning intact; the record of why each decision was made |
 | `graft/` | generated repo context graph — **local-only, gitignored**; build with `graft build --deep` (see the Graft section) |

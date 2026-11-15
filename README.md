@@ -402,8 +402,9 @@ usbguard_gui
   - `settings.py` — Settings seam (`SettingsProtocol`) and the QSettings-backed store.
   - `introspection/` — Bundled D-Bus introspection XML (ships in the wheel).
 
-Architecture details: [docs/DESIGN.md](docs/DESIGN.md). Past audit and review
-reports live in `docs/`.
+Architecture details: [docs/DESIGN.md](docs/DESIGN.md). The current review, with
+its open findings, is [docs/REVIEW-2026-11-15.md](docs/REVIEW-2026-11-15.md);
+earlier reports are in git history.
 
 ## Development
 

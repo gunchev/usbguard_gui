@@ -13,7 +13,7 @@
       Escalate the confirmation when `with_connect_type == "hardwired"`: *"This device cannot be
       reconnected without a reboot."* That sentence is the reason the word changed — it reads as
       nonsense next to "Reject".
-- [ ] **Persistent-rules editor** (read + delete). **Promote — see finding 12.** `remove_rule()`
+- [ ] **Persistent-rules editor** (read + delete). **Promote.** `remove_rule()`
       is implemented on the client and has **no UI caller**, so there is no way to revoke a
       permanent allow, no way to inspect a permanent block, and no way to reach a hand-written
       rule from inside the app. Scope it read + delete: rule id, target, predicate, and **whether
@@ -87,7 +87,8 @@
       see: target is HID; `with_connect_type == "hardwired"` (cannot be unplugged); no other
       allowed HID would remain. Always name the recovery path. `Device.with_connect_type` is
       already parsed and displayed but read by no decision.
-      See `docs/REVIEW-2026-09-28.md` findings 2, 3 and 12.
+      Carried forward in `docs/REVIEW-2026-11-15.md`; the original analysis is findings 2, 3 and
+      12 of `REVIEW-2026-09-28.md`, now in git history.
 
 
 ## 1.0

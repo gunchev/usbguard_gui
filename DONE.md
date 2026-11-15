@@ -5,6 +5,11 @@ carries only open work. Entries keep their version section and their full text -
 the reasoning behind a decision is why these are kept, not the checkbox. See
 *Releasing* in `AGENTS.md`.
 
+Entries below cite `docs/REVIEW-2026-08-28.md` through `docs/REVIEW-2026-09-28.md`,
+`docs/AUDIT-2026-06-15.md` and their finding numbers. Those reports were superseded
+by `docs/REVIEW-2026-11-15.md` and removed; they are in git history
+(`git log --diff-filter=D -- docs/`).
+
 
 ## 1.0
 
