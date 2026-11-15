@@ -2006,6 +2006,21 @@ class TestForgedInterfaceList:
         'block id 1234:5678 serial "" name "SanDisk Ultra with-interface { 08:06:50 }" hash "kbdhash" '
         'parent-hash "" via-port "1-2" with-interface { 03:01:01 08:06:50 } with-connect-type "hotplug"'
     )
+    UNMATCHED_QUOTE = (
+        'block id 0525:a4a2 serial "" name "USB Ethernet with-interface { 03:01:01 } junk '
+        'with-interface { 02:06:00 0a:00:00 } x'
+    )
+
+    def test_an_unmatched_quote_cannot_forge_a_hid_interface(self, tray_app, fake_client,
+                                                             fake_screensaver) -> None:
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            12, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self.UNMATCHED_QUOTE, {})
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._engine._hid_pending_devices == set()
+        assert tray_app._engine._screensaver_pending_devices == {12}
 
     def test_a_non_hid_device_is_not_authorised_behind_the_lock(self, tray_app, fake_client,
                                                                 fake_screensaver) -> None:

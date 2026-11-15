@@ -179,7 +179,8 @@ SET_OPERATORS: frozenset[str] = frozenset(
 )
 _DEFAULT_SET_OPERATOR = "equals"
 
-# A rule token is a quoted string, a brace, or a bare word.
+# A rule token is a quoted string, a brace, or a bare word.  A bare word
+# must not carry a quote; `_token_quotes_are_balanced` rejects the mix.
 _RULE_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\])*"|\{|\}|[^\s{}]+')
 
 # Rule attribute -> the Device field holding the device's value for it.
@@ -207,16 +208,43 @@ def _unquote(token: str) -> str:
     return token
 
 
+def _token_quotes_are_balanced(token: str) -> bool:
+    """True when a token's quotes are one complete quoted value, or none.
+
+    ``_RULE_TOKEN_RE`` matches an unterminated quote as a bare word, which
+    would let the text after it be tokenised as attributes.  A token that
+    carries a quote is therefore valid only when it starts and ends with an
+    unescaped one; a stray or trailing escaped quote makes the rule unreadable.
+    """
+    if '"' not in token:
+        return True
+    if len(token) < 2 or token[0] != '"' or token[-1] != '"':
+        return False
+    escaped = False
+    for char in token[1:-1]:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return False
+    return not escaped
+
+
 def parse_rule_predicates(rule: str) -> list[tuple[str, str, list[str]]] | None:
     """Split a rule into ``(attribute, set_operator, values)`` triples.
 
     ``None`` means the rule could not be tokenised, which keeps "carries no
     predicates at all" -- a bare ``allow``, matching every device -- apart
     from "unreadable".  The two must not be confused: the first is a real
-    and very broad match, the second is no verdict at all.
+    and very broad match, the second is no verdict at all.  A stray or
+    unterminated quote makes the rule unreadable rather than letting the
+    text after it be tokenised as attributes.
     """
     tokens = _RULE_TOKEN_RE.findall(rule.strip())
     if not tokens:
+        return None
+    if any(not _token_quotes_are_balanced(token) for token in tokens):
         return None
 
     predicates: list[tuple[str, str, list[str]]] = []

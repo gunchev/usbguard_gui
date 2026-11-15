@@ -146,6 +146,32 @@ class TestParseDeviceRuleReadsTokensNotText:
         assert result["with_interface"] == []
         assert not Device.from_dbus(1, rule).has_hid_interface()
 
+    @pytest.mark.parametrize("rule", [
+        # An unterminated quote used to let the text after it be read as
+        # attributes: this name forged a HID interface over the real storage one.
+        'block id 1234:5678 name "unmatched with-interface { 03:01:01 } junk '
+        'with-interface 08:06:50 x',
+        # A quote inside a bare value is not a quoted token either.
+        'block id 1234:5678 name foo"bar with-interface 03:01:01',
+        # A backslash before the closing quote escapes it, leaving the value open.
+        'block id 1234:5678 name "foo\\" with-interface 03:01:01',
+    ])
+    def test_a_stray_quote_makes_the_rule_unreadable(self, rule):
+        result = parse_device_rule(rule)
+
+        assert parse_rule_predicates(rule) is None
+        assert result["id"] == ""
+        assert result["with_interface"] == []
+        assert not Device.from_dbus(1, rule).has_hid_interface()
+
+    def test_an_escaped_quote_inside_a_value_still_parses(self):
+        rule = ('block id 1234:5678 serial "" name "USB \\" with-interface { 03:01:01 }" '
+                'hash "H" with-interface 08:06:50')
+        result = parse_device_rule(rule)
+
+        assert result["name"] == 'USB \\" with-interface { 03:01:01 }'
+        assert result["with_interface"] == ["08:06:50"]
+
     def test_a_repeated_attribute_keeps_its_first_value(self):
         result = parse_device_rule("block id 1:2 with-interface 08:06:50 with-interface 03:01:01")
 
@@ -380,7 +406,7 @@ class TestRulePersistenceValidation:
         ('block id 2109:2817', None),
         ('reject id 2109:2817 with-connect-type "unknown"', None),
         ('allow id 1234:5678 name "hub" block with-interface { 03:01:01 }" serial "x" reject',
-         "carries directives that are not device attributes"),
+         "does not parse as a single rule"),
         ('allow id 1:2\nreject with-interface { 03:00:00 }', "contains a control character"),
         ('allow id 1:2\rblock', "contains a control character"),
         ('id 1:2', "does not start with a target verb"),
