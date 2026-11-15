@@ -162,40 +162,6 @@ def interface_class(interface_str: str) -> int:
         return 0
 
 
-# Regex patterns for parsing USBGuard rule strings.
-_QUOTED_VALUE = re.compile(r'"((?:[^"\\]|\\.)*)"')
-_INTERFACE_BLOCK = re.compile(r"with-interface\s*\{([^}]+)\}")
-_INTERFACE_SINGLE = re.compile(r"with-interface\s+([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})")
-
-
-def _extract_field(rule: str, field_name: str) -> str:
-    """Extract a quoted or unquoted field value from a rule string."""
-    # Try quoted value first: field "value"
-    pattern = re.compile(rf'{field_name}\s+"((?:[^"\\]|\\.)*)"')
-    m = pattern.search(rule)
-    if m:
-        return m.group(1)
-    # Try unquoted value: field value
-    pattern = re.compile(rf"{field_name}\s+(\S+)")
-    m = pattern.search(rule)
-    if m:
-        return m.group(1)
-    return ""
-
-
-def _extract_interfaces(rule: str) -> list[str]:
-    """Extract interface list from a rule string."""
-    # Multi-interface: with-interface { 0e:01:00 0e:02:00 }
-    m = _INTERFACE_BLOCK.search(rule)
-    if m:
-        return m.group(1).split()
-    # Single interface: with-interface 09:00:00
-    m = _INTERFACE_SINGLE.search(rule)
-    if m:
-        return [m.group(1)]
-    return []
-
-
 # ---------------------------------------------------------------------------
 # Rule matching
 #
@@ -491,20 +457,62 @@ def parse_device_rule(rule_string: str) -> _ParsedRule:
         allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI Host Controller"
         hash "abc=" parent-hash "def=" via-port "usb1" with-interface 09:00:00
         with-connect-type "hardwired"
+
+    The fields are read from the rule's *tokens*, never searched for in its
+    text.  A device chooses its own name and serial, the daemon writes them
+    ahead of ``with-interface`` and escapes only quotes and backslashes, so a
+    text search finds whatever the device put there first: a product string
+    of ``with-interface { 03:01:01 }`` used to turn a network adapter into a
+    "keyboard" (auto-allowed behind the lock screen, no click) and
+    ``with-interface { 08:06:50 }`` used to turn a keyboard into "mass
+    storage" (no lock-first flow at all).  `has_hid_interface()` is only as
+    trustworthy as this function, so a quoted value is one token here and
+    nothing inside it is syntax.
+
+    Anything the tokens do not say plainly stays empty rather than guessed:
+
+    * a rule that does not tokenise yields no fields at all;
+    * a single-valued field given several values (``id one-of { ... }``)
+      names no one device, so it stays empty;
+    * ``with-interface`` under an explicit set operator (``one-of``,
+      ``none-of``, ...) describes a class of devices, not this device's
+      interfaces, so it stays empty;
+    * a repeated attribute keeps its first value.
+
+    Empty is the safe direction for every caller: a device with no readable
+    interfaces is never auto-allowed, and a rule with no readable identity is
+    never claimed as some device's own.
     """
-    # The first word is the target (allow/block/reject)
     parts = rule_string.strip().split(None, 1)
-    rule_target = parts[0] if parts else "block"
-    rest = parts[1] if len(parts) > 1 else ""
+    scalars: dict[str, str] = {}
+    interfaces: list[str] = []
+
+    predicates = parse_rule_predicates(rule_string)
+    if predicates is None:
+        if parts:
+            log.debug("Rule does not tokenise; no fields read from it: %r", rule_string)
+        predicates = []
+
+    seen: set[str] = set()
+    for attribute, operator, values in predicates:
+        field_name = _MATCHABLE_ATTRS.get(attribute)
+        if field_name is None or field_name in seen:
+            continue
+        seen.add(field_name)
+        if field_name == "with_interface":
+            if operator == _DEFAULT_SET_OPERATOR:
+                interfaces = list(values)
+        elif len(values) == 1:
+            scalars[field_name] = values[0]
 
     return {
-        "rule": rule_target,
-        "id": _extract_field(rest, "id"),
-        "serial": _extract_field(rest, "serial"),
-        "name": _extract_field(rest, "name"),
-        "hash": _extract_field(rest, "hash"),
-        "parent_hash": _extract_field(rest, "parent-hash"),
-        "via_port": _extract_field(rest, "via-port"),
-        "with_interface": _extract_interfaces(rest),
-        "with_connect_type": _extract_field(rest, "with-connect-type"),
+        "rule": parts[0] if parts else "block",
+        "id": scalars.get("id", ""),
+        "serial": scalars.get("serial", ""),
+        "name": scalars.get("name", ""),
+        "hash": scalars.get("hash", ""),
+        "parent_hash": scalars.get("parent_hash", ""),
+        "via_port": scalars.get("via_port", ""),
+        "with_interface": interfaces,
+        "with_connect_type": scalars.get("with_connect_type", ""),
     }

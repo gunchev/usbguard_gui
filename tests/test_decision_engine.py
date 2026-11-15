@@ -9,11 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import IR_RULE, KEYBOARD_RULE
-from fakes import _FakeSettings
+from fakes import _FakeScreensaver, _FakeSettings
 
 from usbguard_gui.app import USBGuardTrayApp
 from usbguard_gui.decision import MAX_PENDING_DECISIONS, dialog_identity
 from usbguard_gui.device import Device, DeviceTarget, Persistence, PresenceEvent
+from usbguard_gui.device_dialog import DeviceActionDialog
 from usbguard_gui.ui_strings import HANDBACK_NOTICE_TITLE
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -1983,3 +1984,63 @@ class TestDecisionEngineStateOwnership:
 
         assert app._engine._lock_available is False
         app._quit()
+
+
+class TestForgedInterfaceList:
+    """A device's own name must not choose its HID treatment.
+
+    The daemon writes the product string ahead of ``with-interface`` and does
+    not escape braces, so a name can carry text that looks like an interface
+    list.  Read as syntax, it turned a network adapter into a "keyboard" that
+    the locked-screen branch authorised with no click at all, and a keyboard
+    into "mass storage" that skipped the lock-first flow for an ordinary
+    prompt.  These pin the engine's reaction; the parser's own tests live in
+    `test_device.py`.
+    """
+
+    NIC_POSING_AS_HID = (
+        'block id 0525:a4a2 serial "" name "USB Ethernet with-interface { 03:01:01 }" hash "nichash" '
+        'parent-hash "" via-port "1-1" with-interface { 02:06:00 0a:00:00 } with-connect-type "hotplug"'
+    )
+    KEYBOARD_POSING_AS_STORAGE = (
+        'block id 1234:5678 serial "" name "SanDisk Ultra with-interface { 08:06:50 }" hash "kbdhash" '
+        'parent-hash "" via-port "1-2" with-interface { 03:01:01 08:06:50 } with-connect-type "hotplug"'
+    )
+
+    def test_a_non_hid_device_is_not_authorised_behind_the_lock(self, tray_app, fake_client,
+                                                                fake_screensaver) -> None:
+        fake_screensaver._active = True
+
+        fake_client.device_presence_changed.emit(
+            12, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self.NIC_POSING_AS_HID, {})
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._engine._screensaver_pending_devices == {12}
+        assert tray_app._engine._hid_pending_devices == set()
+
+    def test_a_non_hid_device_does_not_start_the_lock_flow(self, tray_app, fake_client, fake_screensaver) -> None:
+        fake_client.device_presence_changed.emit(
+            12, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self.NIC_POSING_AS_HID, {})
+
+        assert fake_client.apply_policy_calls == []
+        assert tray_app._engine._hid_pending_devices == set()
+        assert not tray_app._hid_lock_timer.isActive()
+        assert set(tray_app._open_dialogs) == {12}
+
+    def test_a_keyboard_still_takes_the_lock_first_flow(self, tray_app, fake_client, fake_screensaver) -> None:
+        fake_client.device_presence_changed.emit(
+            9, int(PresenceEvent.INSERT), int(DeviceTarget.BLOCK), self.KEYBOARD_POSING_AS_STORAGE, {})
+
+        assert tray_app._engine._hid_pending_devices == {9}
+        assert tray_app._hid_lock_timer.isActive()
+        assert tray_app._open_dialogs == {}
+        assert fake_client.apply_policy_calls == []
+
+    def test_a_keyboard_stays_lock_gated_in_the_prompt(self, fake_client, fake_settings) -> None:
+        """With no working screen lock the gate must still see a HID device."""
+        dialog = DeviceActionDialog(Device.from_dbus(9, self.KEYBOARD_POSING_AS_STORAGE), client=fake_client,
+                                    screensaver=_FakeScreensaver(connected=False), settings=fake_settings)
+
+        assert not dialog._btn_allow_once.isEnabled()
+        assert not dialog._btn_allow_always.isEnabled()
+        assert dialog._btn_block_once.isEnabled()

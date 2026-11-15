@@ -52,6 +52,106 @@ class TestParseDeviceRule:
         assert result["with_interface"] == ["03:01:01"]
 
 
+class TestParseDeviceRuleReadsTokensNotText:
+    """Nothing inside a quoted value is rule syntax.
+
+    A device picks its own name and serial.  The daemon writes both ahead of
+    ``with-interface`` and escapes only quotes and backslashes, so braces,
+    spaces and attribute names inside them reach this parser verbatim.  The
+    old field extraction searched the rule text and took the first hit, which
+    let a product string decide what `has_hid_interface()` returned -- in
+    either direction.
+    """
+
+    # A CDC network adapter whose product string claims a HID interface.
+    NIC_POSING_AS_HID = (
+        'block id 0525:a4a2 serial "" name "USB Ethernet with-interface { 03:01:01 }" hash "H"'
+        ' parent-hash "PH" via-port "1-1" with-interface { 02:06:00 0a:00:00 } with-connect-type "hotplug"'
+    )
+    # A keyboard + storage composite whose product string hides the keyboard.
+    KEYBOARD_POSING_AS_STORAGE = (
+        'block id 1234:5678 serial "" name "SanDisk Ultra with-interface { 08:06:50 }" hash "H"'
+        ' parent-hash "PH" via-port "1-1" with-interface { 03:01:01 08:06:50 } with-connect-type "hotplug"'
+    )
+    # The single-interface spelling needs no braces at all.
+    PLAIN_KEYBOARD_POSING_AS_STORAGE = (
+        'block id 1234:5678 serial "" name "USB DISK with-interface 08:06:50" hash "H"'
+        ' parent-hash "PH" via-port "1-1" with-interface 03:01:01 with-connect-type "hotplug"'
+    )
+
+    def test_a_name_cannot_add_a_hid_interface(self):
+        device = Device.from_dbus(12, self.NIC_POSING_AS_HID)
+
+        assert device.with_interface == ["02:06:00", "0a:00:00"]
+        assert not device.has_hid_interface()
+        assert device.name == "USB Ethernet with-interface { 03:01:01 }"
+
+    @pytest.mark.parametrize("rule", [KEYBOARD_POSING_AS_STORAGE, PLAIN_KEYBOARD_POSING_AS_STORAGE])
+    def test_a_name_cannot_hide_a_hid_interface(self, rule):
+        device = Device.from_dbus(9, rule)
+
+        assert "03:01:01" in device.with_interface
+        assert device.has_hid_interface()
+        assert "Human Interface Device (HID)" in device.class_descriptions()
+
+    def test_a_serial_cannot_forge_the_interfaces_either(self):
+        rule = ('block id 1234:5678 serial "with-interface { 08:06:50 }" name "kbd" hash "H"'
+                ' via-port "1-1" with-interface 03:01:01')
+
+        assert parse_device_rule(rule)["with_interface"] == ["03:01:01"]
+
+    def test_attribute_names_inside_a_value_are_not_fields(self):
+        rule = ('block id 1234:5678 serial "id 0000:0000 via-port 9-9" name "hash \\"FAKE\\" parent-hash x"'
+                ' hash "REAL" parent-hash "PARENT" via-port "1-1" with-interface 03:01:01')
+
+        result = parse_device_rule(rule)
+
+        assert result["id"] == "1234:5678"
+        assert result["serial"] == "id 0000:0000 via-port 9-9"
+        assert result["name"] == 'hash \\"FAKE\\" parent-hash x'
+        assert result["hash"] == "REAL"
+        assert result["parent_hash"] == "PARENT"
+        assert result["via_port"] == "1-1"
+
+    @pytest.mark.parametrize(("rule", "field", "expected"), [
+        # A value ending in an attribute name used to make that field swallow
+        # the text between this value's closing quote and the next opening one.
+        ('block id 1:2 serial "s" name "x hash " hash "REAL" via-port "1-1"', "hash", "REAL"),
+        ('block id 1:2 serial "id " name "N" hash "H"', "id", "1:2"),
+        ('block id 1:2 serial "s" name "x via-port " hash "H" via-port "1-1"', "via_port", "1-1"),
+    ])
+    def test_a_value_ending_in_an_attribute_name_does_not_shift_the_next_field(self, rule, field, expected):
+        assert parse_device_rule(rule)[field] == expected
+
+    def test_parent_hash_is_not_read_as_hash(self):
+        """`hash` used to match inside `parent-hash` when the rule carried no hash of its own."""
+        result = parse_device_rule('allow id 1:2 parent-hash "PARENT" via-port "1-1"')
+
+        assert result["hash"] == ""
+        assert result["parent_hash"] == "PARENT"
+
+    def test_an_explicit_set_operator_describes_a_class_not_this_devices_interfaces(self):
+        result = parse_device_rule("allow with-interface one-of { 03:00:01 03:01:01 }")
+
+        assert result["with_interface"] == []
+
+    def test_a_single_valued_field_given_several_values_stays_empty(self):
+        assert parse_device_rule("allow id one-of { 1:2 3:4 }")["id"] == ""
+
+    @pytest.mark.parametrize("rule", ["", "   ", 'block id 1:2 with-interface { 03:01:01', "block id"])
+    def test_a_rule_that_does_not_tokenise_yields_no_fields(self, rule):
+        result = parse_device_rule(rule)
+
+        assert result["id"] == ""
+        assert result["with_interface"] == []
+        assert not Device.from_dbus(1, rule).has_hid_interface()
+
+    def test_a_repeated_attribute_keeps_its_first_value(self):
+        result = parse_device_rule("block id 1:2 with-interface 08:06:50 with-interface 03:01:01")
+
+        assert result["with_interface"] == ["08:06:50"]
+
+
 class TestDevice:
     """Test Device dataclass methods."""
 
