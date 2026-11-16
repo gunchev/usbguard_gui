@@ -39,5 +39,10 @@ __pypackages__/
 # local environment/secrets - never commit.
 .env
 
+/.obsidian/
+
 # Trail's generated code map - regenerable, not committed (run `trail build`);
 # `.trail/.gitignore` also excludes the per-machine statusline helper.
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/.context/
