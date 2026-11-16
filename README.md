@@ -111,8 +111,9 @@ stale-click problem the lock exists to refuse. The tray raises *"Held Allow clea
 no permanent rule"* so the difference is visible, and you can decide again with
 the device connected. This also applies while locking is inhibited or unavailable:
 the held Allow never becomes an automatic unlocked authorization. The normal prompt
-requires a fresh click when locking is inhibited; while locking is unavailable its
-Allow stays disabled for HID devices (Block and Reject still work). A held Block, or
+requires a fresh click when locking is inhibited; while locking is unavailable the
+prompt's Allow works as anywhere else — a deliberate click is the proof — and only the
+automatic allow-behind-the-lock flow is off. A held Block, or
 a held Allow on a non-HID device, applies as soon as the device is back.
 
 **A blocked return after Allow prompts again immediately.** In the normal dialog
@@ -125,28 +126,69 @@ or Block, repeated appearances stay quiet for the prompt cooldown (30 s by defau
 
 Any device that exposes at least one HID interface — a pure keyboard/mouse **or** a composite
 device such as HID + Mass Storage — is handled specially to defend against "BadUSB"-style
-keystroke-injection attacks:
+keystroke-injection attacks. The full design — use cases, corner cases and the threat model —
+is in `docs/HID-QUARANTINE.md`; this is the behaviour you see.
+
+**You are at the machine** (another working input exists — an internal keyboard or touchpad
+counts; the app reads the kernel's own device list to know, including devices USBGuard
+itself cannot see):
+
+1. A confirm prompt appears for the new device with a short countdown (16 s).
+2. **Allow** (Once or Always) applies it — the click is the proof a person is present, so
+   the screen is never locked for this. **Block** and **Close** work as in any prompt.
+3. If the countdown runs out, nothing is applied: the device stays blocked (fail-closed),
+   and the prompt cooldown applies before it can ask again.
+
+**The new device might be your only input** (nothing else can click the prompt):
 
 1. A tray warning appears: *"New keyboard/HID attached"*.
 2. After a short delay (5 seconds) the screen is locked, and **only once the lock is
    confirmed** is the device temporarily allowed — never the other way round. If the device
    was unplugged before the delay expired, the lock is skipped.
-3. You must enter your password with the newly-attached device to unlock it, which prevents
-   an unattended unlocked machine from being hijacked by an injected keystroke device.
+3. You type your password with the newly-attached device to unlock — which is also the
+   proof that a person used it: at unlock the app checks whether that device was the
+   machine's only working keyboard, and if it was, it stays allowed. No warning, nothing
+   to click.
 
-This flow only triggers for devices inserted while the screen is *unlocked*. An HID device
-plugged in while the screen is already **locked** is instead temporarily allowed immediately —
-without the warning/delay/lock dance — so you can use a newly-attached keyboard to unlock the
-machine. The temporary allow lasts only until the device is unplugged.
+**A device attached while the screen is locked:**
+
+- If it might be your only keyboard (the same kernel input check), it is temporarily
+  allowed immediately, so you can use it to unlock — and at unlock it stays allowed as
+  above, because it carried the password.
+- If another keyboard exists — yours, the laptop's internal one, a Bluetooth one — it is
+  **not** allowed behind the lock. It stays blocked, and you are prompted for it at unlock
+  together with everything else that connected during your absence.
+
+**In every other case, a device that was allowed behind the lock is quarantined at
+unlock**: it is blocked first, before any prompt or notice can be answered, and a
+persistent window — no timeout, no Escape, no default Allow — lists it with three choices:
+**Keep Once** (allowed until unplugged), **Keep Always** (a permanent rule — dock and KVM
+users want this; it ends the warnings for good) and **Block Always** (a permanent block
+rule). If the blocked device is your only input at all, unplug it and plug it back in:
+the replug — same port or another — re-allows it, and the window says so. A device
+returning on a different port is called out in a notice, because an identical unit on
+another port is indistinguishable from the original.
+
+**This defence assumes unlocking is done by typing a password.** If your desktop unlocks
+without one (a grace period, blanking without lock, lock-after-delay), the app cannot tell
+who ended the lock, and such devices fall back to the quarantine warning instead of the
+only-keyboard exemption above.
+
+**A permanently blocked device never gets the automatic flow** — it is prompted like any
+other device, so a Block you recorded is never silently overridden behind a lock.
+
+**What the app cannot stop** (documented, not hidden): a device already allowed before the
+lock; a burst of keystrokes in the moment between your unlock and the app's block landing
+(persistent access is still removed); a perfect hardware proxy of your own keyboard. The
+full list is `docs/HID-QUARANTINE.md` → *Residual risks*.
 
 The entire HID special-treatment flow can be disabled via **Disable special HID device
 treatment** in the tray right-click menu (persisted in `~/.config/usbguard_gui/general.conf`).
 When disabled, HID devices get the same prompt dialog as any other device: nothing is
-allowed automatically, **but the lock-first guarantee goes with it** — you can then allow
-a keyboard while the session stays unlocked, a newly-attached keyboard cannot be used
-to unlock the screen, and Allow keeps working even while screen locking is unavailable
-(the gate is disarmed together with the treatment). "Different", not "more secure": keep
-the treatment enabled unless you specifically want prompt-driven HID handling.
+allowed automatically and nothing is quarantined at unlock — a newly-attached keyboard
+cannot be used to unlock the screen. Manual Allow keeps working either way, with or without
+a working screen lock, because a deliberate click is the proof. "Different", not "more
+secure": keep the treatment enabled unless you specifically want prompt-driven HID handling.
 
 ### When Screen Locking Is Not Possible
 
@@ -171,18 +213,18 @@ Two situations break the lock assumption and the app refuses the one click that 
 lock rather than pretending:
 
 - **No screen-lock service** (none of the services above is reachable — a locker-less or
-  unusual session). The tray shows *"Screen locking unavailable"* and
-  **Allow is disabled for HID devices** — in the dialog and in the device list — while
-  special HID treatment is enabled: allowing a keyboard without being able to lock first
-  would hand an attacker an unlocked session. Everything else stays available: Block and
-  Reject always work, non-HID devices can still be allowed, and with special HID
-  treatment turned off nothing is gated at all (the lock-outage notices become log-only;
-turning the treatment back on during an outage announces it then).
-  Devices stay blocked by USBGuard's own policy. The tray announces it again when
-  locking becomes available. A locker restart invalidates the old lock state; HID
-  allows are re-enabled only after the replacement service's current state has been
-  fetched. An earlier locked state cannot automatically authorize a device during the
-  restart.
+  unusual session). The tray shows *"Screen locking unavailable"* and the **automatic** HID
+  flows do not run: nothing is auto-allowed behind a lock and nothing is armed — a
+  newly-attached keyboard gets the ordinary prompt and stays blocked until you decide.
+  What the lock guards is only that automatic path, which would otherwise allow a keyboard
+  behind a password prompt the app cannot guarantee; a manual Allow is **not** refused,
+  because a deliberate click is itself the proof a person is at the machine. With special
+  HID treatment turned off there is no automatic path to lose either (the lock-outage
+  notices become log-only; turning the treatment back on during an outage announces it
+  then). Devices stay blocked by USBGuard's own policy until clicked. The tray announces
+  the state again when locking becomes available. A locker restart invalidates the old
+  lock state, and an earlier locked state cannot automatically authorize a device during
+  the restart.
 - **A logind idle/block inhibitor is held** (a `dnf`/`rpm` transaction, a *"Prevent screen
   lock"* toggle, `systemd-inhibit --what=idle`, …). The auto-allow-then-lock flow is
   skipped and the HID device falls through to the normal prompt path, where it is **not**
@@ -199,7 +241,9 @@ In both cases the failure direction is the safe one: the device stays blocked.
 ### Screensaver Integration
 
 - When the screen locks: the app tracks all device insertions that occur while locked.
-- When the screen unlocks: displays a notification listing all devices that connected during absence.
+- When the screen unlocks: displays a notification listing all devices that connected during
+  absence — HID devices that were auto-allowed behind the lock follow the quarantine flow in
+  *HID Devices* above instead.
 - Opens an action dialog for each pending device so you can decide what to do.
 - A device removal, a newer choice, or an Allow policy change invalidates its
   pending prompt. A delayed device snapshot cannot reopen an obsolete prompt or
@@ -253,12 +297,6 @@ That is also why you cannot get stuck: the app has no lever that digs below the 
 so it cannot leave the persistent policy worse than a fresh install. Recovery is about getting
 another chance to decide — and there are several.
 
-> **The old asymmetry is gone.** *Block* used to be a pause that left a permanent allow
-> untouched, so the device came back **allowed** at the next boot. With the action set,
-> **Block Always** replaces that allow with a permanent block, and **Block Once** or
-> **Allow Once** remove it outright. Revoking permanent trust is an in-app action now; you
-> no longer need to edit `/etc/usbguard/rules.conf`.
-
 The recovery ladder, cheapest first:
 
 1. **Unplug and replug the device.** It re-enumerates as unknown and the app prompts you
@@ -266,9 +304,10 @@ The recovery ladder, cheapest first:
    fresh prompt is the recovery, not a cleared state.) Covers anything removable: keyboards,
    mice, docks, KVM legs, and Bluetooth (power-cycle the keyboard).
 2. **Reboot.** `rules.conf` is re-read from scratch and the device is blocked again — and
-   then the locked-screen rule above (*"an HID device plugged in while the screen is locked is
-   temporarily allowed"*) lets you log in with it, or the app prompts and you allow it
-   explicitly. The block survives; your way back survives with it.
+   then the locked-screen rule above (*"an HID device plugged in while the screen is locked
+   is temporarily allowed when it might be your only keyboard"*) lets you log in with it,
+   or the app prompts and you allow it explicitly. The block survives; your way back
+   survives with it.
 3. **Use the pre-USBGuard window.** `usbguard.service` activates well after the keyboard is
    usable. GRUB, the kernel and the initramfs all have a working keyboard before the daemon
    starts — including the LUKS passphrase prompt, which is precisely the case where a keyboard

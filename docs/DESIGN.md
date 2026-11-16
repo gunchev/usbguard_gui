@@ -6,10 +6,9 @@ This avoids any GLib / PyGObject dependency.
 
 ## Why dbus-fast + QThread
 
-The original implementation used `dasbus + PyGObject`, which dragged in GLib's type
-introspection layer even though the application is pure Qt.  Replacing it with
-dbus-fast eliminates that dependency while keeping the asyncio model isolated from
-the Qt event loop — each D-Bus subsystem runs in its own thread.
+dbus-fast is pure-Python asyncio, so a pure-Qt application gets D-Bus without any
+GLib / PyGObject dependency, and the asyncio model stays isolated from the Qt event
+loop — each D-Bus subsystem runs in its own thread with its own loop.
 
 ## Dependencies
 
@@ -119,9 +118,9 @@ device event is ever delivered twice.  A worker still running after the
 grace period is wedged inside `MessageBus.connect()`, i.e. holding no live
 bus connection and therefore no ability to emit events, so finishing it off
 is deferred to a single-shot timer rather than blocked on.  Both facades
-recycle: `USBGuardClient.connect()` always has, and `ScreensaverMonitor.connect()`
-now does too — an un-retired screensaver thread keeps its own
-`ActiveChanged` subscription and would deliver every lock/unlock twice.
+recycle — `USBGuardClient.connect()` and `ScreensaverMonitor.connect()` alike: an
+un-retired screensaver thread keeps its own `ActiveChanged` subscription and would
+deliver every lock/unlock twice.
 
 ## Introspection XML
 
@@ -270,17 +269,6 @@ the decision entry points (`on_device_inserted`, `on_device_allowed`,
 `lock_for_pending_hid`, `retry_pending_unlock_cycles`,
 `on_hid_treatment_changed`) and three accessors (`has_pending_hid`,
 `last_prompted`, `mark_prompted`).  The underscore state is the engine's own.
-
-## dasbus → dbus-fast API mapping
-
-| dasbus                        | dbus-fast                                                      |
-|-------------------------------|----------------------------------------------------------------|
-| `SystemMessageBus()`          | `MessageBus(bus_type=BusType.SYSTEM)`                          |
-| `bus.get_proxy(name, path)`   | `bus.get_proxy_object(name, path, xml).get_interface(iface)`   |
-| `proxy.listDevices()`         | `proxy.call_list_devices()`                                    |
-| `proxy.Signal.connect(cb)`    | `proxy.on_signal(cb)`                                          |
-| `proxy.Signal.disconnect(cb)` | `proxy.off_signal(cb)`                                         |
-| `DBusError.error_name`        | `DBusError.type`                                               |
 
 ## Error Handling
 

@@ -93,6 +93,33 @@
 
 ## 1.0
 
+- [ ] **HID unlock quarantine (finding 2, release blocker).** Design documented:
+      `docs/HID-QUARANTINE.md` (assumptions incl. A10 — *the unlock is done by typing a
+      password*, use cases, corner cases, the rogue can/cannot taxonomy, residuals),
+      `README.md` → *HID Devices* (the user-facing contract), `docs/pam-lite.md` (the
+      post-1.0 strong-unlock design note), `handover.md` §3–§3d (decisions, state machine,
+      implementation notes). Implement in reviewable slices, `make check` green between each:
+      1. **Gate removal** (finding 7) — no manual HID allow is ever lock-gated; rewrite the
+         three overstating texts.
+      2. **Finding 10 (High)** — keep-last-known ruleset on failed reads + a `list_rules`
+         failure value; then **rule-match suppression**: a matching permanent block rule
+         kills the HID flow (the device prompts instead);
+         `test_blocked_hid_device_still_triggers_lock` flips deliberately.
+      3. **`input_inventory` + the live device map** — unprivileged sysfs enumeration
+         (bustype, capabilities classification, ownership via `via-port`), INSERT/UPDATE/
+         REMOVE forwarding into the engine, the lock-time baseline snapshot.
+      4. **The arming / confirm / exemption rules** on top of 3: the case-2 confirm prompt
+         when another live input is present; the only-keyboard arming rule (baseline ∪
+         current); the unlock exemption; asymmetric failure (arm on enumeration failure,
+         never exempt an unverified cycle).
+      5. **The quarantine state machine + persistent warning window** — block-at-unlock
+         before the early-return guard, block-confirmation plumbing, Keep Once (default) /
+         Keep Always / Block Always, replug recovery with the port-change notice,
+         daemon-down surfacing.
+      Then: regression tests per `handover.md` §8, `make check`, `trail build`, mark
+      finding 2 fixed in `docs/REVIEW-2026-11-15.md` (finding 3 — per-desktop lock
+      semantics — becomes the remaining release blocker), and a trail learning recording
+      the final decisions and the rejected alternatives.
 - [ ] **Startup race on the permanent-allow cache** (`docs/REVIEW-2026-11-15.md` finding 5).
       The cache is empty until the first `list_rules` answer lands, so a device that arrives
       first is treated as unknown; it also ignores rule order, is wiped when a rules read fails,

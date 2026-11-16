@@ -4,13 +4,19 @@ Instructions for agentic coding agents working in this repository.
 
 ## Read this first
 
-1. **Preserve the HID lock-first contract.** A device exposing a HID interface may
-   only be allowed while the screen is locked — that is the invariant this whole
-   app exists to enforce, and the flow is specified in `README.md` → *How It
-   Works → HID Devices*. The implementation lives in `decision.py`
+1. **Preserve the HID lock-first contract.** No *automatic* and no *held* (queued) allow of
+   a device exposing a HID interface may ever happen outside a working screen lock; a
+   deliberate click in the app's UI is proof a person is present and is never lock-gated.
+   Devices auto-allowed behind the lock are quarantined at unlock — blocked before any
+   prompt can be answered, then either exempt (the device carried the password as the
+   machine's only live keyboard, verified against the lock-time input baseline) or shown a
+   persistent warning. That is the invariant this whole app exists to enforce. The
+   user-facing flow is `README.md` → *How It Works → HID Devices*; the full design —
+   assumptions, use cases, corner cases, and what a rogue device can and cannot do — is
+   `docs/HID-QUARANTINE.md`. The implementation lives in `decision.py`
    (`DecisionEngine`), with `app.py` as its thin GUI host and `gate.py` as the
-   single authority for what a click may do. Touch any of them without the
-   README flow in hand and you risk re-opening a security bug, not just a
+   single authority for what a click may do. Touch any of them without the README flow
+   and the design doc in hand and you risk re-opening a security bug, not just a
    functional one.
 2. **`make check` is the gate.** Lint + typecheck + tests pass, or the change is
    not done. CI enforces it: the workflow runs plain `tox`, and `tox.ini` leads
@@ -200,7 +206,9 @@ tests/
 | Location | What it owns |
 |---|---|
 | `README.md` → *How It Works* | user-facing behaviour, **the HID lock-first security contract**, polkit, install |
-| `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, dasbus→dbus-fast mapping |
+| `docs/DESIGN.md` | QThread + asyncio architecture, signal contracts, introspection XML, testability seams |
+| `docs/HID-QUARANTINE.md` | the HID unlock-quarantine design: assumptions (incl. A10 — unlock is done by typing a password), the three moments, use cases, corner cases, and what a rogue device can and cannot do |
+| `docs/pam-lite.md` | the post-1.0 PAM-lite design note — the optional strong-unlock hook, its placement risks, and the armed-list persistence upgrade path |
 | `docs/REVIEW-*.md` | the current review: findings, stated assumptions, and what was carried forward. Superseded reports are removed and live in git history (`git log --diff-filter=D -- docs/`) |
 | `TODO.md` | **open work only**, versioned roadmap — completed items move to `DONE.md` at every release |
 | `DONE.md` | finished roadmap items with their reasoning intact; the record of why each decision was made |
